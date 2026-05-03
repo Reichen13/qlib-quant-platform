@@ -241,6 +241,26 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         avg_loss = abs(losses.mean()) if len(losses) > 0 else 1
         profit_loss_ratio = avg_gain / avg_loss if avg_loss > 0 else 0
 
+        # ── 统计检验 ──
+        # t 检验（策略收益是否显著 > 0）
+        from scipy import stats as scipy_stats
+        t_stat, p_value = scipy_stats.ttest_1samp(r.dropna(), 0)
+        t_stat = float(t_stat)
+        p_value = float(p_value)
+
+        # 信息比率（超额收益 / 跟踪误差）
+        tracking_error = ex.std() * np.sqrt(252)
+        information_ratio = (ex.mean() * 252) / tracking_error if tracking_error > 0 else 0
+
+        # Sortino 比率（使用下行标准差）
+        downside = r[r < 0]
+        downside_std = downside.std() * np.sqrt(252) if len(downside) > 0 else ann_std
+        sortino = ann_r / downside_std if downside_std > 0 else 0
+
+        # 月度胜率
+        monthly_r = r.resample("ME").apply(lambda x: (1 + x).prod() - 1)
+        monthly_win_rate = (monthly_r > 0).mean()
+
         backtest_tasks[task_id]["progress"] = 90
 
         # ── 生成净值曲线 ──
@@ -327,6 +347,11 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 max_drawdown=round(float(max_dd), 4),
                 win_rate=round(float(win_rate), 4),
                 profit_loss_ratio=round(float(profit_loss_ratio), 2),
+                t_statistic=round(t_stat, 4),
+                p_value=round(p_value, 4),
+                information_ratio=round(float(information_ratio), 2),
+                sortino_ratio=round(float(sortino), 2),
+                monthly_win_rate=round(float(monthly_win_rate), 4),
                 equity=equity_data,
                 drawdown=drawdown_data,
                 top_buys=top_buys,

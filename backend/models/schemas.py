@@ -184,6 +184,12 @@ class BacktestResponse(BaseModel):
     max_drawdown: Optional[float] = None
     win_rate: Optional[float] = None
     profit_loss_ratio: Optional[float] = None
+    # 统计检验
+    t_statistic: Optional[float] = None
+    p_value: Optional[float] = None
+    information_ratio: Optional[float] = None
+    sortino_ratio: Optional[float] = None
+    monthly_win_rate: Optional[float] = None
     # 曲线数据
     equity: Optional[List[EquityPoint]] = None
     drawdown: Optional[List[DrawdownPoint]] = None

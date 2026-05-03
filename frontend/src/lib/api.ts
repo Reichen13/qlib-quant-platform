@@ -174,6 +174,11 @@ export type BacktestResult = {
   max_drawdown?: number
   win_rate?: number
   profit_loss_ratio?: number
+  t_statistic?: number
+  p_value?: number
+  information_ratio?: number
+  sortino_ratio?: number
+  monthly_win_rate?: number
   equity?: Array<{ date: string; value: number; benchmark: number }>
   drawdown?: Array<{ date: string; value: number }>
   top_buys?: Array<{ code: string; name: string; score: number; reason: string }>

@@ -247,3 +247,125 @@ async def list_factors():
         factors.append({"name": name, "category": cat})
 
     return {"total": len(factors), "factors": factors}
+
+
+@router.post("/correlation")
+async def factor_correlation(request: FactorAnalysisRequest):
+    """
+    因子相关性分析
+    计算因子 IC 序列之间的相关性矩阵，用于识别冗余因子
+    """
+    try:
+        import qlib
+        from qlib.data import D
+
+        start_date = request.start_date.isoformat()
+        end_date = request.end_date.isoformat()
+        pred_period = request.predict_period
+
+        # 使用 Qlib Alpha158 计算因子暴露
+        handler_conf = {
+            "class": "Alpha158",
+            "module_path": "qlib.contrib.data.handler",
+            "kwargs": {
+                "start_time": start_date,
+                "end_time": end_date,
+                "fit_start_time": start_date,
+                "fit_end_time": end_date,
+                "instruments": "csi300",
+                "infer_processors": [
+                    {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature", "clip_outlier": True}},
+                    {"class": "Fillna", "kwargs": {"fields_group": "feature"}},
+                ],
+                "learn_processors": [
+                    {"class": "DropnaLabel"},
+                    {"class": "CSRankNorm", "kwargs": {"fields_group": "label"}},
+                ],
+            },
+        }
+
+        from qlib.utils import init_instance_by_config
+        handler = init_instance_by_config(handler_conf)
+
+        # 获取因子数据
+        instruments = D.instruments("csi300")
+        df = handler.fetch()
+
+        if df is None or df.empty:
+            raise HTTPException(status_code=400, detail="因子数据为空")
+
+        # 计算各因子的截面 Spearman Rank IC
+        factor_names = [c for c in df.columns if c.startswith(("KMID", "KLEN", "KMIN", "KMAX", "BETA",
+                "RSQR", "RESI", "MAX", "MIN", "IMXD", "CNTP", "SUMP", "VMA", "VSTD", "WVMA",
+                "STD", "ROC", "MA", "EMA", "MAD", "RANK", "QTLU", "QTLD", "CORD", "CORR",
+                "CORD", "CORR", "STD", "SKEW", "KURT", "RSV", "BIAS", "VEMA", "VSUMP"))]
+
+        if not factor_names:
+            # fallback: take all feature columns
+            factor_names = [c for c in df.columns if c not in ("$close", "$volume", "$open", "$high", "$low")]
+
+        if len(factor_names) < 2:
+            raise HTTPException(status_code=400, detail=f"可用因子数不足: {len(factor_names)}")
+
+        # 只取前 30 个因子以减少计算时间
+        factor_names = factor_names[:30]
+
+        # 计算各因子 IC 序列
+        ic_series = {}
+        for fname in factor_names:
+            try:
+                factor_data = df[[fname]].copy()
+                # 简单 IC：各时间截面的 rank correlation
+                ics = []
+                dates = sorted(df.index.get_level_values(0).unique())
+                for i, dt in enumerate(dates[:-pred_period]):
+                    try:
+                        cross = df.loc[dt]
+                        future_idx = dates.index(dt) + pred_period
+                        if future_idx < len(dates):
+                            future_dt = dates[future_idx]
+                            future_ret = df.loc[future_dt].get("$close", None)
+                            if future_ret is not None and fname in cross.columns:
+                                from scipy import stats as scipy_stats
+                                valid = cross[fname].dropna()
+                                if len(valid) > 10:
+                                    ic, _ = scipy_stats.spearmanr(valid, future_ret.reindex(valid.index).dropna()[:len(valid)])
+                                    ics.append(ic)
+                    except Exception:
+                        continue
+                if len(ics) > 10:
+                    ic_series[fname] = pd.Series(ics)
+            except Exception:
+                continue
+
+        if len(ic_series) < 2:
+            raise HTTPException(status_code=400, detail="无法计算足够的 IC 序列")
+
+        # 计算 IC 相关性矩阵
+        ic_df = pd.DataFrame(ic_series)
+        corr = ic_df.corr()
+
+        result = []
+        names = corr.columns.tolist()
+        for i, n1 in enumerate(names):
+            for j, n2 in enumerate(names):
+                if i < j:
+                    result.append({
+                        "factor1": n1,
+                        "factor2": n2,
+                        "correlation": round(float(corr.loc[n1, n2]), 4),
+                    })
+
+        return {
+            "factors": names,
+            "correlations": result,
+            "total_pairs": len(result),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"因子相关性分析失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"因子相关性分析失败: {str(e)}")

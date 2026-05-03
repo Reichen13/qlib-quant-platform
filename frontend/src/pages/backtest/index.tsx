@@ -478,6 +478,41 @@ export function BacktestPage() {
                             {(result.profit_loss_ratio ?? 0).toFixed(2)}
                           </span>
                         </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-muted-foreground">Sortino 比率</span>
+                          <span className="text-sm font-medium">
+                            {(result.sortino_ratio ?? 0).toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-muted-foreground">信息比率</span>
+                          <span className="text-sm font-medium">
+                            {(result.information_ratio ?? 0).toFixed(2)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="pt-4 border-t space-y-3">
+                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">统计检验</p>
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-muted-foreground">t 统计量</span>
+                          <span className={`text-sm font-medium ${(result.t_statistic ?? 0) > 1.96 ? "text-up" : ""}`}>
+                            {(result.t_statistic ?? 0).toFixed(3)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-muted-foreground">p-value</span>
+                          <span className={`text-sm font-medium ${(result.p_value ?? 1) < 0.05 ? "text-up" : "text-down"}`}>
+                            {(result.p_value ?? 0).toFixed(4)}
+                            {(result.p_value ?? 0) < 0.05 ? " ★" : ""}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-sm text-muted-foreground">月度胜率</span>
+                          <span className="text-sm font-medium">
+                            {((result.monthly_win_rate ?? 0) * 100).toFixed(1)}%
+                          </span>
+                        </div>
                       </div>
 
                       <div className="pt-4 border-t space-y-3">
