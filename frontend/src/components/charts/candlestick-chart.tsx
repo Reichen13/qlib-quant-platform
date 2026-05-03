@@ -103,11 +103,11 @@ export function CandlestickChart({
 
     // K 线
     const candlestickSeries = chart.addSeries(CandlestickSeries, {
-      upColor: "#26a69a",
-      downColor: "#ef5350",
+      upColor: "#ef5350",
+      downColor: "#26a69a",
       borderVisible: false,
-      wickUpColor: "#26a69a",
-      wickDownColor: "#ef5350",
+      wickUpColor: "#ef5350",
+      wickDownColor: "#26a69a",
     })
     candlestickSeriesRef.current = candlestickSeries
 

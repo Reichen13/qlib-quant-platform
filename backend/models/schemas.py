@@ -223,3 +223,64 @@ class DataStatus(BaseModel):
     qlib_end_date: Optional[date] = None
     stock_count: int
     last_update: Optional[datetime] = None
+
+
+# ── 风险管理模型 ──
+class RiskAnalysisRequest(BaseModel):
+    """风险分析请求"""
+    codes: List[str] = Field(default=[], description="股票代码列表，如 ['600519.SS', '000858.SZ']")
+    start_date: Optional[str] = Field(default=None, description="开始日期 YYYY-MM-DD，默认一年前")
+    end_date: Optional[str] = Field(default=None, description="结束日期 YYYY-MM-DD，默认今天")
+
+
+class RiskMetrics(BaseModel):
+    """风险指标"""
+    annual_return: float
+    annual_volatility: float
+    sharpe_ratio: float
+    calmar_ratio: float
+    max_drawdown: float
+    win_rate: float
+    var_95: float
+    cvar_95: float
+    var_99: float
+    cvar_99: float
+    avg_correlation: float
+    vol_cone: dict = Field(default={}, description="波动率锥")
+
+
+class StressTestResult(BaseModel):
+    """压力测试结果"""
+    name: str
+    description: str
+    impact: float  # 百分比
+    scenario_type: str  # historical / hypothetical / historical_proxy
+
+
+class CorrelationItem(BaseModel):
+    """相关性项"""
+    stock1: str
+    stock2: str
+    correlation: float
+
+
+class PositionSizingResult(BaseModel):
+    """头寸规模结果"""
+    kelly_fraction: float
+    half_kelly: float
+    quarter_kelly: float
+    risk_level: str
+    suggestion: str
+
+
+class RiskAnalysisResponse(BaseModel):
+    """风险分析响应"""
+    codes: List[str]
+    start_date: str
+    end_date: str
+    metrics: RiskMetrics
+    stress_tests: List[StressTestResult]
+    correlations: List[CorrelationItem]
+    position_sizing: PositionSizingResult
+    equity: List[dict] = []
+    drawdown: List[dict] = []

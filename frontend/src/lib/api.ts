@@ -556,6 +556,26 @@ export const api = {
     comparison: () =>
       fetch(`${API_BASE}/api/index/comparison`).then(r => handleResponse<any>(r)),
   },
+
+  // 风险管理
+  risk: {
+    analyze: (params: { codes: string[]; start_date?: string; end_date?: string }) =>
+      fetch(`${API_BASE}/api/risk/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+        timeoutMs: 30_000,
+      }).then(r => handleResponse<any>(r)),
+    stressTest: (params: { codes: string[]; start_date?: string; end_date?: string }) =>
+      fetch(`${API_BASE}/api/risk/stress-test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+        timeoutMs: 30_000,
+      }).then(r => handleResponse<any>(r)),
+    dailyChecklist: () =>
+      fetch(`${API_BASE}/api/risk/daily-checklist`).then(r => handleResponse<any>(r)),
+  },
 }
 
 export { ApiError }

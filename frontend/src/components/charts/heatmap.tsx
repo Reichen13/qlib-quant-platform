@@ -39,13 +39,13 @@ export function Heatmap({
   const getColor = (value: number) => {
     const normalized = (value - minValue) / range
     if (colorScale === "green-red") {
-      // 绿色(涨)到红色(跌)
+      // 红色(涨)到绿色(跌)
       if (normalized > 0.5) {
         const intensity = Math.round((normalized - 0.5) * 2 * 255)
-        return `rgba(34, ${197 - intensity}, 94, ${0.6 + normalized * 0.4})`
+        return `rgba(239, ${68 + intensity}, 68, ${0.6 + normalized * 0.4})`
       } else {
         const intensity = Math.round((0.5 - normalized) * 2 * 255)
-        return `rgba(239, ${68 + intensity}, 68, ${0.6 + (1 - normalized) * 0.4})`
+        return `rgba(34, ${197 - intensity}, 94, ${0.6 + (1 - normalized) * 0.4})`
       }
     } else if (colorScale === "blue-yellow") {
       // 蓝色到黄色

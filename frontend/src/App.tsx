@@ -11,6 +11,7 @@ import { PairTradingPage } from "./pages/pair-trading"
 import { EtfRotationPage } from "./pages/etf-rotation"
 import { EtfScreenerPage } from "./pages/etf-screener"
 import { DataManagementPage } from "./pages/data-management"
+import { RiskPage } from "./pages/risk"
 
 // 创建路由
 const router = createBrowserRouter([
@@ -57,6 +58,10 @@ const router = createBrowserRouter([
       {
         path: "data-management",
         element: <DataManagementPage />,
+      },
+      {
+        path: "risk",
+        element: <RiskPage />,
       },
     ],
   },

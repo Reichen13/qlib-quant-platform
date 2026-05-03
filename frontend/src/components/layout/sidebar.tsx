@@ -11,6 +11,7 @@ import {
   RefreshCw,
   Target,
   Database,
+  Shield,
   ChevronLeft,
   ChevronRight,
   X,
@@ -29,6 +30,7 @@ const NAVIGATION_ITEMS = [
   { icon: RefreshCw, label: "ETF轮动", path: "/etf-rotation" },
   { icon: Target, label: "ETF筛选", path: "/etf-screener" },
   { icon: Database, label: "数据管理", path: "/data-management" },
+  { icon: Shield, label: "风险管理", path: "/risk" },
 ]
 
 export function Sidebar() {
