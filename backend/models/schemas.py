@@ -311,7 +311,7 @@ class PortfolioWeight(BaseModel):
 
 class EfficientFrontierPoint(BaseModel):
     """有效前沿数据点"""
-    ret: float = Field(alias="return")
+    ret: float
     volatility: float
     sharpe: float
 

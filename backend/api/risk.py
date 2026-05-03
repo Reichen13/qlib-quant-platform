@@ -27,12 +27,26 @@ from models.schemas import (
 router = APIRouter()
 
 
+def _to_qlib_codes(codes: List[str]) -> List[str]:
+    """将 yfinance 格式代码 (.SS/.SZ) 转为 Qlib 格式 (SH/SZ)"""
+    converted = []
+    for code in codes:
+        if code.endswith(".SS"):
+            converted.append("SH" + code.replace(".SS", ""))
+        elif code.endswith(".SZ"):
+            converted.append("SZ" + code.replace(".SZ", ""))
+        else:
+            converted.append(code)
+    return converted
+
+
 def _get_historical_prices(codes: List[str], start_date: str, end_date: str) -> pd.DataFrame:
     """获取历史收盘价数据"""
     try:
         from qlib.data import D
+        qlib_codes = _to_qlib_codes(codes)
         prices = D.features(
-            codes,
+            qlib_codes,
             ["$close"],
             start_time=start_date,
             end_time=end_date,

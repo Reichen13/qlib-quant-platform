@@ -103,13 +103,13 @@ def scan_mean_reversion_signals(
                     [code],
                     ["$close"],
                     start_time=start_date,
-                    end_date=end_date
+                    end_time=end_date
                 )
 
                 if df.empty:
                     continue
 
-                prices = df.xs(code, level=1)["$close"]
+                prices = df.xs(code, level=0)["$close"]
 
                 if len(prices) < 30:
                     continue
@@ -270,13 +270,13 @@ async def get_stock_signal(
             [code],
             ["$close"],
             start_time=start_date,
-            end_date=end_date
+            end_time=end_date
         )
 
         if df.empty:
             raise HTTPException(status_code=404, detail="无法获取股票数据")
 
-        prices = df.xs(code, level=1)["$close"]
+        prices = df.xs(code, level=0)["$close"]
 
         # 计算指标
         rsi = calc_rsi(prices)

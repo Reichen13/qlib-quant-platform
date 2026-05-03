@@ -1,5 +1,6 @@
 // 因子分析页面 - Alpha158 因子 IC 分析
 import { useState, useMemo } from "react"
+import { useAppStore } from "@/stores/app-store"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -57,10 +58,11 @@ interface FactorItem {
 export function FactorAnalysisPage() {
   const [selectedCategory, setSelectedCategory] = useState("全部")
   const [sortBy, setSortBy] = useState<"ic" | "rankIC">("ic")
-  const [predictPeriod, setPredictPeriod] = useState("5")
-  const [dateRange, setDateRange] = useState("2026ytd")
-  const [startDate, setStartDate] = useState("2026-01-01")
-  const [endDate, setEndDate] = useState("2026-04-30")
+  const factorParams = useAppStore((s) => s.factorParams)
+  const setFactorParams = useAppStore((s) => s.setFactorParams)
+  const predictPeriod = String(factorParams.predictPeriod)
+  const startDate = factorParams.startDate
+  const endDate = factorParams.endDate
 
   const [selectedFactor, setSelectedFactor] = useState<string | null>(null)
   const [detailTab, setDetailTab] = useState<"ic_stability" | "factor_series">("ic_stability")
@@ -150,11 +152,9 @@ export function FactorAnalysisPage() {
   }, [decayData])
 
   const handleDateRangeChange = (value: string) => {
-    setDateRange(value)
     const range = dateRanges.find((item) => item.value === value)
     if (range && range.value !== "custom") {
-      setStartDate(range.start)
-      setEndDate(range.end)
+      setFactorParams({ startDate: range.start, endDate: range.end })
     }
   }
 
@@ -209,7 +209,7 @@ export function FactorAnalysisPage() {
           <div className="grid gap-4 md:grid-cols-5">
             <div className="space-y-2">
               <Label>预测周期</Label>
-              <Select value={predictPeriod} onValueChange={setPredictPeriod}>
+              <Select value={predictPeriod} onValueChange={(v) => setFactorParams({ predictPeriod: Number(v) })}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -225,7 +225,7 @@ export function FactorAnalysisPage() {
 
             <div className="space-y-2">
               <Label>数据周期</Label>
-              <Select value={dateRange} onValueChange={handleDateRangeChange}>
+              <Select value={dateRanges.find(r => r.start === startDate && r.end === endDate)?.value || "custom"} onValueChange={handleDateRangeChange}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -245,8 +245,7 @@ export function FactorAnalysisPage() {
                 type="date"
                 value={startDate}
                 onChange={(event) => {
-                  setDateRange("custom")
-                  setStartDate(event.target.value)
+                  setFactorParams({ startDate: event.target.value })
                 }}
               />
             </div>
@@ -257,8 +256,7 @@ export function FactorAnalysisPage() {
                 type="date"
                 value={endDate}
                 onChange={(event) => {
-                  setDateRange("custom")
-                  setEndDate(event.target.value)
+                  setFactorParams({ endDate: event.target.value })
                 }}
               />
             </div>

@@ -83,6 +83,7 @@ const queryClient = new QueryClient({
     queries: {
       retry: false,
       refetchOnWindowFocus: false,
+      staleTime: 60 * 1000, // 1分钟内不重新请求，减少页面切换时的重复加载
     },
   },
 })

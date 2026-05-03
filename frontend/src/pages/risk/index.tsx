@@ -19,9 +19,7 @@ import { Heatmap } from "@/components/charts/heatmap"
 import { InstructionsPanel } from "@/components/features/instructions-panel"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
-
-// 默认分析股票（CSI300 代表性成分股）
-const DEFAULT_CODES = ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS", "601012.SS", "300750.SZ", "000002.SZ"]
+import { useAppStore } from "@/stores/app-store"
 
 const getRiskBadge = (level: string) => {
   if (level === "低风险") return <Badge variant="default">{level}</Badge>
@@ -43,15 +41,16 @@ const getScenarioBadge = (type: string) => {
 }
 
 export function RiskPage() {
-  const [codes, setCodes] = useState<string[]>(DEFAULT_CODES)
-  const [inputValue, setInputValue] = useState(DEFAULT_CODES.join(" "))
+  const riskCodes = useAppStore((s) => s.riskCodes)
+  const riskInputValue = useAppStore((s) => s.riskInputValue)
+  const setRiskCodes = useAppStore((s) => s.setRiskCodes)
   const [analyzeEnabled, setAnalyzeEnabled] = useState(true)
 
   // 风险分析
   const { data: riskData, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ["risk", "analyze", codes],
-    queryFn: () => api.risk.analyze({ codes }),
-    enabled: analyzeEnabled && codes.length > 0,
+    queryKey: ["risk", "analyze", riskCodes],
+    queryFn: () => api.risk.analyze({ codes: riskCodes }),
+    enabled: analyzeEnabled && riskCodes.length > 0,
     retry: 1,
   })
 
@@ -62,20 +61,19 @@ export function RiskPage() {
   })
 
   const handleAnalyze = () => {
-    const parsedCodes = inputValue
+    const parsedCodes = riskInputValue
       .split(/[\s,]+/)
       .map(s => s.trim())
       .filter(Boolean)
     if (parsedCodes.length === 0) return
-    setCodes(parsedCodes)
+    setRiskCodes(parsedCodes, riskInputValue)
     setAnalyzeEnabled(true)
     setTimeout(() => refetch(), 0)
   }
 
   const handleRemoveCode = (code: string) => {
-    const newCodes = codes.filter(c => c !== code)
-    setCodes(newCodes)
-    setInputValue(newCodes.join(" "))
+    const newCodes = riskCodes.filter(c => c !== code)
+    setRiskCodes(newCodes, newCodes.join(" "))
   }
 
   const formatPct = (val: number | undefined) => {
@@ -132,8 +130,8 @@ export function RiskPage() {
         <CardContent>
           <div className="flex gap-2">
             <Input
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              value={riskInputValue}
+              onChange={(e) => setRiskCodes(riskCodes, e.target.value)}
               placeholder="输入股票代码..."
               className="flex-1 font-mono text-sm"
               onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
@@ -143,9 +141,9 @@ export function RiskPage() {
               <span className="ml-2">开始分析</span>
             </Button>
           </div>
-          {codes.length > 0 && (
+          {riskCodes.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-3">
-              {codes.map(code => (
+              {riskCodes.map(code => (
                 <Badge key={code} variant="secondary" className="gap-1">
                   {code}
                   <X

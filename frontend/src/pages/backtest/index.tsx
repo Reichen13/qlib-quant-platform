@@ -20,6 +20,7 @@ import { InstructionsPanel, commonInstructions } from "@/components/features/ins
 import { useMutation } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import type { BacktestResult } from "@/lib/api"
+import { useAppStore } from "@/stores/app-store"
 
 // 默认空结果
 const emptyResult: BacktestResult = {
@@ -41,22 +42,12 @@ const emptyResult: BacktestResult = {
 }
 
 export function BacktestPage() {
-  const [activeTab, setActiveTab] = useState("config")
+  const activeTab = useAppStore((s) => s.backtestActiveTab)
+  const setActiveTab = useAppStore((s) => s.setBacktestActiveTab)
+  const params = useAppStore((s) => s.backtestParams)
+  const setParams = useAppStore((s) => s.setBacktestParams)
   const [result, setResult] = useState<BacktestResult>(emptyResult)
   const [pollingTaskId, setPollingTaskId] = useState<string | null>(null)
-  const [params, setParams] = useState({
-    model: "lightgbm",
-    trainStart: "2023-01-01",
-    trainEnd: "2024-06-30",
-    testStart: "2024-07-01",
-    testEnd: "2024-12-31",
-    topK: "30",
-    rebalance: "5",
-    commission: "0.0003",
-    slippage: "0.0003",
-    singlePosition: "0.05",
-    stopLoss: "-0.08",
-  })
 
   // 运行回测 mutation
   const backtestMutation = useMutation({

@@ -21,8 +21,7 @@ import { BarChart } from "@/components/charts/bar-chart"
 import { InstructionsPanel } from "@/components/features/instructions-panel"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
-
-const DEFAULT_CODES = ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS", "601012.SS", "300750.SZ", "000002.SZ"]
+import { useAppStore } from "@/stores/app-store"
 
 const METHODS = [
   { value: "max_sharpe", label: "最大夏普比率", desc: "Max Sharpe Ratio - 收益/风险最优化" },
@@ -32,8 +31,9 @@ const METHODS = [
 ]
 
 export function PortfolioPage() {
-  const [codes, setCodes] = useState<string[]>(DEFAULT_CODES)
-  const [inputValue, setInputValue] = useState(DEFAULT_CODES.join(" "))
+  const portfolioCodesStr = useAppStore((s) => s.portfolioCodes)
+  const setPortfolioCodes = useAppStore((s) => s.setPortfolioCodes)
+  const codes = portfolioCodesStr.split(/[\s,]+/).filter(Boolean)
   const [method, setMethod] = useState("max_sharpe")
   const [maxWeight, setMaxWeight] = useState(30)
   const [optimizeEnabled, setOptimizeEnabled] = useState(false)
@@ -50,20 +50,18 @@ export function PortfolioPage() {
   })
 
   const handleOptimize = () => {
-    const parsedCodes = inputValue
+    const parsedCodes = portfolioCodesStr
       .split(/[\s,]+/)
       .map(s => s.trim())
       .filter(Boolean)
     if (parsedCodes.length < 2) return
-    setCodes(parsedCodes)
     setOptimizeEnabled(true)
     setTimeout(() => refetch(), 0)
   }
 
   const handleRemoveCode = (code: string) => {
     const newCodes = codes.filter(c => c !== code)
-    setCodes(newCodes)
-    setInputValue(newCodes.join(" "))
+    setPortfolioCodes(newCodes.join(" "))
   }
 
   const formatPct = (val: number | undefined) => {
@@ -126,8 +124,8 @@ export function PortfolioPage() {
               <Label className="text-xs">股票代码</Label>
               <div className="flex gap-2">
                 <Input
-                  value={inputValue}
-                  onChange={(e) => setInputValue(e.target.value)}
+                  value={portfolioCodesStr}
+                  onChange={(e) => setPortfolioCodes(e.target.value)}
                   placeholder="600519.SS 000858.SZ ..."
                   className="flex-1 font-mono text-sm"
                   onKeyDown={(e) => e.key === "Enter" && handleOptimize()}
