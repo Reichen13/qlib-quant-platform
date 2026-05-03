@@ -92,7 +92,7 @@ async def lifespan(app: FastAPI):
     # 导入路由
     from api import (
         stocks, hot, quote, factors, backtest, etf,
-        pair, mean_reversion, financials, industry, index, sectors, risk
+        pair, mean_reversion, financials, industry, index, sectors, risk, portfolio
     )
 
     app.include_router(stocks.router, prefix="/api/stocks", tags=["stocks"])
@@ -108,6 +108,7 @@ async def lifespan(app: FastAPI):
     app.include_router(index.router, prefix="/api/index", tags=["index"])
     app.include_router(sectors.router, prefix="/api/sectors", tags=["sectors"])
     app.include_router(risk.router, prefix="/api/risk", tags=["risk"])
+    app.include_router(portfolio.router, prefix="/api/portfolio", tags=["portfolio"])
 
     logger.info("✅ 所有路由已注册")
 

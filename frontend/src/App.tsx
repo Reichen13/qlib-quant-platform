@@ -12,6 +12,7 @@ import { EtfRotationPage } from "./pages/etf-rotation"
 import { EtfScreenerPage } from "./pages/etf-screener"
 import { DataManagementPage } from "./pages/data-management"
 import { RiskPage } from "./pages/risk"
+import { PortfolioPage } from "./pages/portfolio"
 
 // 创建路由
 const router = createBrowserRouter([
@@ -62,6 +63,10 @@ const router = createBrowserRouter([
       {
         path: "risk",
         element: <RiskPage />,
+      },
+      {
+        path: "portfolio",
+        element: <PortfolioPage />,
       },
     ],
   },

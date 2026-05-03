@@ -284,3 +284,41 @@ class RiskAnalysisResponse(BaseModel):
     position_sizing: PositionSizingResult
     equity: List[dict] = []
     drawdown: List[dict] = []
+
+
+# ── 投资组合优化模型 ──
+class PortfolioOptimizeRequest(BaseModel):
+    """组合优化请求"""
+    codes: List[str] = Field(..., description="股票代码列表")
+    start_date: Optional[str] = Field(default=None, description="开始日期")
+    end_date: Optional[str] = Field(default=None, description="结束日期")
+    method: str = Field(default="max_sharpe", description="优化方法: max_sharpe, min_variance, risk_parity, equal_weight")
+    max_weight: float = Field(default=0.3, ge=0.01, le=1.0, description="单票最大权重")
+
+
+class PortfolioWeight(BaseModel):
+    """持仓权重"""
+    code: str
+    weight: float
+
+
+class EfficientFrontierPoint(BaseModel):
+    """有效前沿数据点"""
+    ret: float = Field(alias="return")
+    volatility: float
+    sharpe: float
+
+
+class PortfolioOptimizeResponse(BaseModel):
+    """组合优化响应"""
+    codes: List[str]
+    start_date: str
+    end_date: str
+    method: str
+    weights: List[PortfolioWeight]
+    expected_return: float
+    expected_volatility: float
+    sharpe_ratio: float
+    diversification_ratio: float
+    efficient_frontier: List[EfficientFrontierPoint]
+    benchmark: dict

@@ -576,6 +576,17 @@ export const api = {
     dailyChecklist: () =>
       fetch(`${API_BASE}/api/risk/daily-checklist`).then(r => handleResponse<any>(r)),
   },
+
+  // 投资组合优化
+  portfolio: {
+    optimize: (params: { codes: string[]; start_date?: string; end_date?: string; method: string; max_weight: number }) =>
+      fetch(`${API_BASE}/api/portfolio/optimize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+        timeoutMs: 30_000,
+      }).then(r => handleResponse<any>(r)),
+  },
 }
 
 export { ApiError }

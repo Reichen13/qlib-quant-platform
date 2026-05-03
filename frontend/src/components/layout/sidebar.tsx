@@ -12,6 +12,7 @@ import {
   Target,
   Database,
   Shield,
+  PieChart,
   ChevronLeft,
   ChevronRight,
   X,
@@ -31,6 +32,7 @@ const NAVIGATION_ITEMS = [
   { icon: Target, label: "ETF筛选", path: "/etf-screener" },
   { icon: Database, label: "数据管理", path: "/data-management" },
   { icon: Shield, label: "风险管理", path: "/risk" },
+  { icon: PieChart, label: "组合优化", path: "/portfolio" },
 ]
 
 export function Sidebar() {
