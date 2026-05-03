@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+*.egg
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Qlib data & MLflow
+home/
+mlruns/
+
+# Backup files
+*.bak
+
+# Node.js (also covered by frontend/.gitignore)
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# CSV data exports
+*.csv
+
+# Deploy secrets
+*.pem
+*.key

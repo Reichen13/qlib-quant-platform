@@ -1,0 +1,186 @@
+"""
+Qlib 量化平台 - FastAPI 后端
+提供 REST API 供前端调用
+"""
+
+import os
+import sys
+from pathlib import Path
+from contextlib import asynccontextmanager
+from datetime import datetime
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from loguru import logger
+import uvicorn
+
+# 添加路径以导入项目模块
+project_root = str(Path(__file__).parent.parent)
+backend_dir = str(Path(__file__).parent)
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
+
+# ── 日志配置 ──
+logger.remove()
+logger.add(
+    sys.stderr,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
+    level="INFO"
+)
+
+# ── Qlib 初始化状态 ──
+qlib_initialized = False
+qlib_init_error = None
+
+
+def init_qlib():
+    """初始化 Qlib"""
+    global qlib_initialized, qlib_init_error
+    try:
+        import qlib
+        from qlib.config import REG_CN
+
+        # 修复 Qlib 0.9.6 与 joblib 1.5+ 的兼容性问题
+        _patch_parallel_ext()
+
+        data_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data"
+        if not data_dir.exists():
+            raise FileNotFoundError(f"Qlib 数据目录不存在: {data_dir}")
+
+        qlib.init(provider_uri=str(data_dir), region=REG_CN)
+        qlib_initialized = True
+        logger.info(f"Qlib 初始化成功，数据目录: {data_dir}")
+        return True
+    except Exception as e:
+        qlib_init_error = str(e)
+        logger.error(f"Qlib 初始化失败: {e}")
+        return False
+
+
+def _patch_parallel_ext():
+    """修复 Qlib 0.9.6 与 joblib 1.5+ 的兼容性问题
+    joblib 1.5+ 将 _backend_args 改名为 _backend_kwargs
+    """
+    try:
+        from qlib.utils.paral import ParallelExt
+        from joblib._parallel_backends import MultiprocessingBackend
+
+        def _new_init(self, *args, **kwargs):
+            maxtasksperchild = kwargs.pop("maxtasksperchild", None)
+            super(ParallelExt, self).__init__(*args, **kwargs)
+            backend_args = getattr(self, '_backend_kwargs', getattr(self, '_backend_args', None))
+            if backend_args is not None and isinstance(self._backend, MultiprocessingBackend):
+                backend_args["maxtasksperchild"] = maxtasksperchild
+
+        ParallelExt.__init__ = _new_init
+        logger.info("ParallelExt 兼容性补丁已应用")
+    except Exception as e:
+        logger.warning(f"ParallelExt 补丁失败: {e}")
+
+
+# ── 应用生命周期 ──
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用启动和关闭时的处理"""
+    # 启动时初始化 Qlib
+    logger.info("🚀 FastAPI 服务启动中...")
+    init_qlib()
+
+    # 导入路由
+    from api import (
+        stocks, hot, quote, factors, backtest, etf,
+        pair, mean_reversion, financials, industry, index, sectors
+    )
+
+    app.include_router(stocks.router, prefix="/api/stocks", tags=["stocks"])
+    app.include_router(hot.router, prefix="/api/hot", tags=["hot"])
+    app.include_router(quote.router, prefix="/api/quote", tags=["quote"])
+    app.include_router(factors.router, prefix="/api/factors", tags=["factors"])
+    app.include_router(backtest.router, prefix="/api/backtest", tags=["backtest"])
+    app.include_router(etf.router, prefix="/api/etf", tags=["etf"])
+    app.include_router(pair.router, prefix="/api/pair", tags=["pair"])
+    app.include_router(mean_reversion.router, prefix="/api/mean-reversion", tags=["mean-reversion"])
+    app.include_router(financials.router, prefix="/api/financials", tags=["financials"])
+    app.include_router(industry.router, prefix="/api/industry", tags=["industry"])
+    app.include_router(index.router, prefix="/api/index", tags=["index"])
+    app.include_router(sectors.router, prefix="/api/sectors", tags=["sectors"])
+
+    logger.info("✅ 所有路由已注册")
+
+    yield
+
+    # 关闭时清理
+    logger.info("🛑 FastAPI 服务关闭")
+
+
+# ── 创建 FastAPI 应用 ──
+app = FastAPI(
+    title="Qlib 量化平台 API",
+    description="A股量化分析平台后端接口",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan,
+)
+
+# ── CORS 中间件 ──
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Docker 部署时通过 Nginx 代理，需要允许所有来源
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ── 根路由 ──
+@app.get("/")
+async def root():
+    """API 根路径"""
+    return {
+        "name": "Qlib 量化平台 API",
+        "version": "1.0.0",
+        "status": "running",
+        "qlib_initialized": qlib_initialized,
+        "qlib_error": qlib_init_error,
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+# ── 健康检查 ──
+@app.get("/health")
+async def health():
+    """健康检查端点"""
+    return {
+        "status": "healthy" if qlib_initialized else "degraded",
+        "qlib": "initialized" if qlib_initialized else "not_initialized",
+        "timestamp": datetime.now().isoformat(),
+    }
+
+
+# ── 全局异常处理 ──
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    """全局异常处理"""
+    logger.error(f"未捕获的异常: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "内部服务器错误",
+            "message": str(exc) if os.getenv("DEBUG") else "请联系管理员",
+        }
+    )
+
+
+# ── 启动服务 ──
+if __name__ == "__main__":
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        log_level="info",
+    )

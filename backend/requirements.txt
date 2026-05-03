@@ -1,0 +1,29 @@
+# FastAPI 后端依赖
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.2
+pydantic-settings==2.6.0
+python-multipart==0.0.12
+
+# CORS
+cors==1.0.1
+
+# 数据处理
+pandas==2.2.3
+numpy==2.0.0
+
+# Qlib (量化引擎)
+pyqlib==0.9.6
+
+# 数据源
+yfinance==0.2.50
+
+# 异步任务
+celery==5.4.0
+redis==5.2.0
+
+# 日志
+loguru==0.7.2
+
+# 工具
+python-dotenv==1.0.1

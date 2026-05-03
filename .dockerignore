@@ -1,0 +1,43 @@
+# Version control
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+.claude
+*.swp
+*.swo
+
+# Python artifacts
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+venv
+.venv
+.pytest_cache
+.mypy_cache
+
+# Frontend (rebuilt in Docker)
+frontend/node_modules
+frontend/dist
+frontend/tsconfig.tsbuildinfo
+
+# Qlib data (bind-mounted at runtime)
+.qlib
+
+# Runtime data
+mlruns
+*.csv
+*.log
+
+# Docs (not needed in image)
+*.md
+docs
+
+# Misc
+.DS_Store
+*.bak
+*.tmp
+deploy.sh
