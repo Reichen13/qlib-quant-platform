@@ -21,6 +21,31 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 os.environ['NUMBA_NUM_THREADS'] = '1'
 os.environ['QLIB_NO_MULTI_PROCESS'] = '1'
 
+# ── 因子类别映射（基于 Alpha158 命名前缀）──
+FACTOR_CATEGORIES = {
+    "KMID": "K线", "KLEN": "K线", "KMID2": "K线",
+    "KUP": "K线", "KUP2": "K线", "KLOW": "K线", "KLOW2": "K线",
+    "KSFT": "K线", "KSFT2": "K线",
+    "OPEN": "价格", "HIGH": "价格", "LOW": "价格", "VWAP": "价格",
+    "ROC": "动量", "MA": "均线", "STD": "波动率",
+    "BETA": "Beta", "RSQR": "R²", "RESI": "残差",
+    "MAX": "极值", "MIN": "极值", "QTLU": "分位数", "QTLD": "分位数",
+    "RANK": "排名", "RSV": "RSV", "IMAX": "极值位置", "IMIN": "极值位置",
+    "IMXD": "极值距离", "CORR": "相关性", "CORD": "相关性",
+    "CNTP": "计数", "CNTN": "计数", "CNTD": "计数",
+    "SUMP": "求和", "SUMN": "求和", "SUMD": "求和",
+    "VMA": "成交量均线", "VSTD": "成交量波动", "WVMA": "加权成交量",
+    "VSUMP": "成交量求和", "VSUMN": "成交量求和", "VSUMD": "成交量求和",
+}
+
+
+def _get_factor_category(name: str) -> str:
+    """根据因子名称前缀推断类别"""
+    for prefix, category in FACTOR_CATEGORIES.items():
+        if name.startswith(prefix):
+            return category
+    return "其他"
+
 
 def _fix_parallel():
     try:
@@ -179,7 +204,8 @@ async def analyze_factors(params: FactorAnalysisRequest):
                         factor=feat_name,
                         ic=round(float(mean_ic), 4),
                         rank_ic=round(float(mean_ic), 4),
-                        icir=round(float(icir), 2)
+                        icir=round(float(icir), 2),
+                        category=_get_factor_category(feat_name),
                     ))
 
             except Exception as e:
@@ -369,3 +395,390 @@ async def factor_correlation(request: FactorAnalysisRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"因子相关性分析失败: {str(e)}")
+
+
+@router.post("/decay")
+async def factor_decay(request: FactorAnalysisRequest):
+    """
+    因子 IC 衰减分析 - 计算不同预测周期下的 IC 变化
+    多周期: 1, 3, 5, 10, 20 日
+    """
+    try:
+        from scipy.stats import spearmanr
+        import qlib
+        from qlib.data import D
+        from qlib.utils import init_instance_by_config
+
+        periods = [1, 3, 5, 10, 20]
+        start_str = str(request.start_date)
+        end_str = str(request.end_date)
+        top_k = min(request.top_k, 15)
+
+        qlib.config.N_PROC = 1
+        _fix_parallel()
+
+        logger.info(f"因子衰减分析: {start_str}~{end_str}, Top {top_k}")
+
+        # 先用单次 analyze 获取 Top 因子列表
+        dataset = init_instance_by_config({
+            "class": "DatasetH",
+            "module_path": "qlib.data.dataset",
+            "kwargs": {
+                "handler": {
+                    "class": "Alpha158",
+                    "module_path": "qlib.contrib.data.handler",
+                    "kwargs": {
+                        "start_time": start_str,
+                        "end_time": end_str,
+                        "fit_start_time": start_str,
+                        "fit_end_time": end_str,
+                        "instruments": "csi300",
+                    },
+                },
+                "segments": {"test": (start_str, end_str)},
+            },
+        })
+
+        df_features = dataset.prepare("test", col_set="feature")
+        if df_features is None or df_features.empty:
+            handler = dataset.handler
+            df_features = handler.fetch(col_set="feature")
+
+        if df_features is None or df_features.empty:
+            raise HTTPException(status_code=500, detail="因子数据为空")
+
+        # 获取收盘价
+        stock_codes = df_features.index.get_level_values("instrument").unique().tolist()[:80]
+        raw_df = D.features(stock_codes, ["$close"], start_time=start_str, end_time=end_str)
+
+        # 获取特征列名（只用前 top_k 个）
+        feature_names = [str(c) for c in df_features.columns[:top_k]]
+
+        # 计算每个周期下每个因子的 IC
+        decay_data = []
+        for feat_name in feature_names:
+            feat_col = df_features[feat_name] if feat_name in df_features.columns else df_features.iloc[:, feature_names.index(feat_name)]
+            ic_values = []
+
+            for period in periods:
+                # 计算该周期的前向收益
+                future_returns = {}
+                for code in stock_codes:
+                    try:
+                        prices = raw_df.xs(code, level="instrument")["$close"].sort_index()
+                        ret = prices.pct_change(period).shift(-period)
+                        for dt, val in ret.items():
+                            if not np.isnan(val):
+                                future_returns[(code, dt)] = val
+                    except Exception:
+                        continue
+
+                fr_series = pd.Series(future_returns, name="future_return")
+                fr_series.index = pd.MultiIndex.from_tuples(fr_series.index, names=["instrument", "datetime"])
+
+                # 计算每日 IC
+                daily_ics = []
+                test_dates = df_features.index.get_level_values("datetime").unique()
+                for dt in test_dates:
+                    try:
+                        fv = feat_col.xs(dt, level="datetime").dropna()
+                        fr = fr_series.xs(dt, level="datetime").dropna()
+                        common = fv.index.intersection(fr.index)
+                        if len(common) < 15:
+                            continue
+                        fv_vals = fv[common].values
+                        fr_vals = fr[common].values
+                        valid = np.isfinite(fv_vals) & np.isfinite(fr_vals)
+                        if valid.sum() < 15:
+                            continue
+                        ic, _ = spearmanr(fv_vals[valid], fr_vals[valid])
+                        if not np.isnan(ic):
+                            daily_ics.append(ic)
+                    except Exception:
+                        continue
+
+                mean_ic = np.mean(daily_ics) if daily_ics else 0
+                ic_values.append(round(float(mean_ic), 4))
+
+            decay_data.append({"factor": feat_name, "ic_values": ic_values})
+
+        logger.info(f"因子衰减分析完成: {len(decay_data)} 个因子")
+
+        return {
+            "factors": [d["factor"] for d in decay_data],
+            "periods": periods,
+            "decay_data": decay_data,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"因子衰减分析失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"因子衰减分析失败: {str(e)}")
+
+
+@router.post("/combine")
+async def combine_signals(request: FactorAnalysisRequest):
+    """
+    信号组合 - 从 Top N 因子构建 IC 加权复合评分
+    """
+    try:
+        from scipy.stats import spearmanr, zscore
+        import qlib
+        from qlib.data import D
+        from qlib.utils import init_instance_by_config
+
+        top_n = min(request.top_k, 15)
+        start_str = str(request.start_date)
+        end_str = str(request.end_date)
+
+        qlib.config.N_PROC = 1
+        _fix_parallel()
+
+        logger.info(f"信号组合: {start_str}~{end_str}, Top {top_n}")
+
+        dataset = init_instance_by_config({
+            "class": "DatasetH",
+            "module_path": "qlib.data.dataset",
+            "kwargs": {
+                "handler": {
+                    "class": "Alpha158",
+                    "module_path": "qlib.contrib.data.handler",
+                    "kwargs": {
+                        "start_time": start_str,
+                        "end_time": end_str,
+                        "fit_start_time": start_str,
+                        "fit_end_time": end_str,
+                        "instruments": "csi300",
+                    },
+                },
+                "segments": {"test": (start_str, end_str)},
+            },
+        })
+
+        df_features = dataset.prepare("test", col_set="feature")
+        if df_features is None or df_features.empty:
+            handler = dataset.handler
+            df_features = handler.fetch(col_set="feature")
+
+        feature_names = [str(c) for c in df_features.columns[:top_n]]
+
+        stock_codes = df_features.index.get_level_values("instrument").unique().tolist()[:80]
+        raw_df = D.features(stock_codes, ["$close"], start_time=start_str, end_time=end_str)
+
+        pred_period = request.predict_period
+
+        # 计算每个因子的 IC 权重
+        factor_weights = []
+        for feat_name in feature_names:
+            feat_col = df_features[feat_name] if feat_name in df_features.columns else df_features.iloc[:, feature_names.index(feat_name)]
+
+            future_returns = {}
+            for code in stock_codes:
+                try:
+                    prices = raw_df.xs(code, level="instrument")["$close"].sort_index()
+                    ret = prices.pct_change(pred_period).shift(-pred_period)
+                    for dt, val in ret.items():
+                        if not np.isnan(val):
+                            future_returns[(code, dt)] = val
+                except Exception:
+                    continue
+
+            fr_series = pd.Series(future_returns)
+            fr_series.index = pd.MultiIndex.from_tuples(fr_series.index, names=["instrument", "datetime"])
+
+            daily_ics = []
+            test_dates = df_features.index.get_level_values("datetime").unique()
+            for dt in test_dates:
+                try:
+                    fv = feat_col.xs(dt, level="datetime").dropna()
+                    fr = fr_series.xs(dt, level="datetime").dropna()
+                    common = fv.index.intersection(fr.index)
+                    if len(common) < 15:
+                        continue
+                    valid = np.isfinite(fv[common].values) & np.isfinite(fr[common].values)
+                    if valid.sum() < 15:
+                        continue
+                    ic, _ = spearmanr(fv[common].values[valid], fr[common].values[valid])
+                    if not np.isnan(ic):
+                        daily_ics.append(ic)
+                except Exception:
+                    continue
+
+            mean_ic = np.mean(daily_ics) if daily_ics else 0
+            factor_weights.append({"factor": feat_name, "ic": round(float(mean_ic), 4), "abs_weight": abs(mean_ic)})
+
+        # 归一化权重
+        total_abs_ic = sum(fw["abs_weight"] for fw in factor_weights) or 1
+        for fw in factor_weights:
+            fw["weight"] = round(fw["abs_weight"] / total_abs_ic, 4)
+
+        factor_weights.sort(key=lambda x: x["weight"], reverse=True)
+
+        # 获取最近一个交易日的复合评分
+        last_date = sorted(df_features.index.get_level_values("datetime").unique())[-1]
+        composite_scores = []
+
+        for code in stock_codes[:50]:
+            try:
+                score = 0
+                for fw in factor_weights[:10]:
+                    feat_name = fw["factor"]
+                    feat_col = df_features[feat_name] if feat_name in df_features.columns else df_features.iloc[:, feature_names.index(feat_name)]
+                    try:
+                        val = feat_col.xs((code, last_date), level=("instrument", "datetime"))
+                        if not np.isnan(val):
+                            # Z-score normalize the factor value
+                            all_vals = feat_col.dropna()
+                            if len(all_vals) > 10:
+                                z_val = (val - all_vals.mean()) / (all_vals.std() or 1)
+                                direction = 1 if fw["ic"] > 0 else -1
+                                score += direction * z_val * fw["weight"]
+                    except Exception:
+                        continue
+
+                composite_scores.append({"code": code, "score": round(float(score), 4)})
+            except Exception:
+                continue
+
+        composite_scores.sort(key=lambda x: x["score"], reverse=True)
+
+        logger.info(f"信号组合完成: {len(factor_weights)} 个因子, {len(composite_scores)} 只股票")
+
+        return {
+            "date": str(last_date),
+            "factor_weights": factor_weights[:10],
+            "top_stocks": composite_scores[:10],
+            "all_stocks": composite_scores,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"信号组合失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"信号组合失败: {str(e)}")
+
+
+@router.get("/{factor_name}/detail")
+async def factor_detail(factor_name: str, start_date: str, end_date: str, predict_period: int = 5):
+    """
+    单因子详情 - 每日 IC 序列和因子暴露时序
+    """
+    try:
+        from scipy.stats import spearmanr
+        import qlib
+        from qlib.data import D
+        from qlib.utils import init_instance_by_config
+
+        qlib.config.N_PROC = 1
+        _fix_parallel()
+
+        logger.info(f"因子详情: {factor_name}, {start_date}~{end_date}")
+
+        dataset = init_instance_by_config({
+            "class": "DatasetH",
+            "module_path": "qlib.data.dataset",
+            "kwargs": {
+                "handler": {
+                    "class": "Alpha158",
+                    "module_path": "qlib.contrib.data.handler",
+                    "kwargs": {
+                        "start_time": start_date,
+                        "end_time": end_date,
+                        "fit_start_time": start_date,
+                        "fit_end_time": end_date,
+                        "instruments": "csi300",
+                    },
+                },
+                "segments": {"test": (start_date, end_date)},
+            },
+        })
+
+        df_features = dataset.prepare("test", col_set="feature")
+        if df_features is None or df_features.empty:
+            handler = dataset.handler
+            df_features = handler.fetch(col_set="feature")
+
+        if factor_name not in df_features.columns:
+            raise HTTPException(status_code=404, detail=f"因子 {factor_name} 不存在")
+
+        feat_col = df_features[factor_name]
+
+        # 计算每日 IC
+        stock_codes = df_features.index.get_level_values("instrument").unique().tolist()[:80]
+        raw_df = D.features(stock_codes, ["$close"], start_time=start_date, end_time=end_date)
+
+        future_returns = {}
+        for code in stock_codes:
+            try:
+                prices = raw_df.xs(code, level="instrument")["$close"].sort_index()
+                ret = prices.pct_change(predict_period).shift(-predict_period)
+                for dt, val in ret.items():
+                    if not np.isnan(val):
+                        future_returns[(code, dt)] = val
+            except Exception:
+                continue
+
+        fr_series = pd.Series(future_returns)
+        fr_series.index = pd.MultiIndex.from_tuples(fr_series.index, names=["instrument", "datetime"])
+
+        daily_ic_records = []
+        test_dates = sorted(df_features.index.get_level_values("datetime").unique())
+
+        for dt in test_dates:
+            try:
+                fv = feat_col.xs(dt, level="datetime").dropna()
+                fr = fr_series.xs(dt, level="datetime").dropna()
+                common = fv.index.intersection(fr.index)
+                if len(common) < 15:
+                    continue
+                valid = np.isfinite(fv[common].values) & np.isfinite(fr[common].values)
+                if valid.sum() < 15:
+                    continue
+                ic, _ = spearmanr(fv[common].values[valid], fr[common].values[valid])
+                if not np.isnan(ic):
+                    daily_ic_records.append({
+                        "date": str(dt),
+                        "ic": round(float(ic), 4),
+                        "n_stocks": int(valid.sum()),
+                    })
+            except Exception:
+                continue
+
+        # 因子均值时序
+        factor_mean_series = []
+        for dt in test_dates:
+            try:
+                vals = feat_col.xs(dt, level="datetime").dropna()
+                factor_mean_series.append({
+                    "date": str(dt),
+                    "value": round(float(vals.mean()), 6),
+                    "std": round(float(vals.std()), 6),
+                })
+            except Exception:
+                continue
+
+        mean_ic = np.mean([r["ic"] for r in daily_ic_records]) if daily_ic_records else 0
+        std_ic = np.std([r["ic"] for r in daily_ic_records]) if daily_ic_records else 0
+
+        return {
+            "factor": factor_name,
+            "category": _get_factor_category(factor_name),
+            "mean_ic": round(float(mean_ic), 4),
+            "std_ic": round(float(std_ic), 4),
+            "icir": round(float(mean_ic / std_ic), 2) if std_ic > 0 else 0,
+            "daily_ics": daily_ic_records,
+            "factor_series": factor_mean_series,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"因子详情失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"因子详情失败: {str(e)}")

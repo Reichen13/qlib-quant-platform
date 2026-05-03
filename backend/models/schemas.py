@@ -106,6 +106,7 @@ class FactorIC(BaseModel):
     ic: float
     rank_ic: float
     icir: float
+    category: str = Field(default="未分类", description="因子类别")
 
 
 class FactorAnalysisRequest(BaseModel):
@@ -328,3 +329,46 @@ class PortfolioOptimizeResponse(BaseModel):
     diversification_ratio: float
     efficient_frontier: List[EfficientFrontierPoint]
     benchmark: dict
+
+
+# ── 宏观策略模型 ──
+
+class MacroIndicator(BaseModel):
+    """宏观指标数据点"""
+    name: str = Field(..., description="指标名称")
+    symbol: str = Field(..., description="yfinance symbol")
+    value: float = Field(..., description="当前值")
+    change_pct: float = Field(..., description="日涨跌幅")
+    trend: str = Field(default="flat", description="趋势方向")
+    z_score: float = Field(default=0, description="标准化得分")
+
+
+class MacroRegimeRequest(BaseModel):
+    """市场状态分类请求"""
+    indicators: dict = Field(default={}, description="指标数据字典")
+
+
+class MacroRegimeResponse(BaseModel):
+    """市场状态分类响应"""
+    growth_score: float = Field(..., description="增长得分")
+    inflation_score: float = Field(..., description="通胀得分")
+    regime: str = Field(..., description="状态标识")
+    regime_label: str = Field(..., description="状态中文标签")
+    confidence: float = Field(default=0.5, description="置信度")
+    quadrant: str = Field(default="Q1", description="象限")
+
+
+class AllocationAsset(BaseModel):
+    """配置资产"""
+    asset: str = Field(..., description="资产类别")
+    weight: float = Field(..., description="建议权重")
+    reason: str = Field(default="", description="配置理由")
+
+
+class AllocationResponse(BaseModel):
+    """全天候配置建议"""
+    regime: str = Field(..., description="当前状态")
+    regime_label: str = Field(..., description="状态中文标签")
+    allocation: List[AllocationAsset] = Field(..., description="资产配置方案")
+    risk_level: str = Field(default="中性", description="风险等级")
+    summary: str = Field(default="", description="配置总结")

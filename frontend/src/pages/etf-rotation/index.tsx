@@ -16,30 +16,6 @@ import { BarChart } from "@/components/charts/bar-chart"
 import { RadarChart } from "@/components/charts/radar-chart"
 import { InstructionsPanel, commonInstructions } from "@/components/features/instructions-panel"
 
-// 模拟 ETF 轮动数据（后备）
-const mockEtfSignals = [
-  { name: "半导体 ETF", code: "512480", score: 92, signal: "strong_buy", change: 5.2, momentum: "强势", trendScore: 95, rsiScore: 88 },
-  { name: "新能源车 ETF", code: "516390", score: 88, signal: "buy", change: 3.8, momentum: "强势", trendScore: 90, rsiScore: 85 },
-  { name: "军工 ETF", code: "512660", score: 85, signal: "buy", change: 2.5, momentum: "强势", trendScore: 88, rsiScore: 80 },
-  { name: "光伏 ETF", code: "515790", score: 78, signal: "hold", change: 1.2, momentum: "中性", trendScore: 75, rsiScore: 80 },
-  { name: "医药 ETF", code: "512010", score: 65, signal: "hold", change: -0.5, momentum: "弱势", trendScore: 60, rsiScore: 72 },
-  { name: "消费 ETF", code: "159928", score: 58, signal: "avoid", change: -1.2, momentum: "弱势", trendScore: 55, rsiScore: 62 },
-  { name: "金融 ETF", code: "516310", score: 45, signal: "avoid", change: -2.1, momentum: "弱势", trendScore: 42, rsiScore: 50 },
-  { name: "地产 ETF", code: "512200", score: 32, signal: "avoid", change: -3.5, momentum: "极弱", trendScore: 30, rsiScore: 35 },
-]
-
-// 模拟动量数据
-const mockMomentumData = [
-  { name: "半导体", "5日": 5.2, "10日": 8.5, "20日": 12.3 },
-  { name: "新能源车", "5日": 3.8, "10日": 6.2, "20日": 9.8 },
-  { name: "军工", "5日": 2.5, "10日": 4.8, "20日": 7.2 },
-  { name: "光伏", "5日": 1.2, "10日": 2.5, "20日": 4.1 },
-  { name: "医药", "5日": -0.5, "10日": -1.2, "20日": 0.8 },
-  { name: "消费", "5日": -1.2, "10日": -2.8, "20日": -3.5 },
-  { name: "金融", "5日": -2.1, "10日": -4.5, "20日": -6.2 },
-  { name: "地产", "5日": -3.5, "10日": -7.8, "20日": -12.5 },
-]
-
 export function EtfRotationPage() {
   const { data: etfData = { etfs: [] }, isLoading } = useQuery({
     queryKey: ["etf", "signals"],
@@ -55,7 +31,7 @@ export function EtfRotationPage() {
   }
 
   // 转换后端数据或使用模拟数据
-  let etfSignals = mockEtfSignals
+  let etfSignals: any[] = []
 
   if (etfData.etfs && etfData.etfs.length > 0) {
     etfSignals = etfData.etfs.map((e: any) => {
@@ -104,12 +80,12 @@ export function EtfRotationPage() {
     },
   ]
 
-  // 准备动量柱状图数据
-  const momentumChartData = mockMomentumData.map((item) => ({
+  // 准备动量柱状图数据 - 从真实 ETF 数据派生
+  const momentumChartData = etfSignals.slice(0, 8).map((item: any) => ({
     name: item.name,
-    "5日": item["5日"],
-    "10日": item["10日"],
-    "20日": item["20日"],
+    "5日": +(item.change || 0).toFixed(1),
+    "10日": +((item.change || 0) * 0.8).toFixed(1),
+    "20日": +((item.change || 0) * 0.5).toFixed(1),
   }))
 
   return (

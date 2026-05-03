@@ -26,22 +26,6 @@ import { Heatmap } from "@/components/charts/heatmap"
 import { BarChart } from "@/components/charts/bar-chart"
 import { InstructionsPanel } from "@/components/features/instructions-panel"
 
-// 模拟 ETF 数据
-const mockEtfs = [
-  { code: "512480", name: "半导体 ETF", category: "科技", pe: 35.2, size: 128.5, change: 5.2, volume: 12.3, sharpe: 1.25, calmar: 0.85, aboveMA20: 0.85, excessReturn: 8.5 },
-  { code: "515790", name: "光伏 ETF", category: "新能源", pe: 28.5, size: 95.2, change: 1.2, volume: 8.5, sharpe: 0.95, calmar: 0.65, aboveMA20: 0.55, excessReturn: 2.1 },
-  { code: "516390", name: "新能源车 ETF", category: "新能源", pe: 42.8, size: 156.8, change: 3.8, volume: 15.2, sharpe: 1.15, calmar: 0.75, aboveMA20: 0.78, excessReturn: 6.8 },
-  { code: "512660", name: "军工 ETF", category: "国防", pe: 45.2, size: 85.3, change: 2.5, volume: 6.8, sharpe: 1.05, calmar: 0.70, aboveMA20: 0.65, excessReturn: 4.2 },
-  { code: "512010", name: "医药 ETF", category: "医药", pe: 32.5, size: 198.5, change: -0.5, volume: 18.5, sharpe: 0.65, calmar: 0.45, aboveMA20: 0.45, excessReturn: -1.5 },
-  { code: "159928", name: "消费 ETF", category: "消费", pe: 28.5, size: 235.6, change: -1.2, volume: 22.3, sharpe: 0.55, calmar: 0.35, aboveMA20: 0.35, excessReturn: -3.2 },
-  { code: "516310", name: "金融 ETF", category: "金融", pe: 6.5, size: 156.2, change: -2.1, volume: 10.5, sharpe: 0.45, calmar: 0.30, aboveMA20: 0.25, excessReturn: -4.5 },
-  { code: "512200", name: "地产 ETF", category: "地产", pe: 8.2, size: 45.8, change: -3.5, volume: 3.2, sharpe: -0.15, calmar: -0.10, aboveMA20: 0.15, excessReturn: -8.5 },
-  { code: "512690", name: "白酒 ETF", category: "消费", pe: 32.8, size: 125.5, change: 0.8, volume: 9.5, sharpe: 0.75, calmar: 0.50, aboveMA20: 0.52, excessReturn: 0.5 },
-  { code: "515030", name: "新能车 ETF", category: "新能源", pe: 38.5, size: 112.3, change: 2.8, volume: 11.2, sharpe: 1.05, calmar: 0.68, aboveMA20: 0.70, excessReturn: 5.2 },
-  { code: "512400", name: "有色金属 ETF", category: "资源", pe: 22.5, size: 68.5, change: 1.5, volume: 5.8, sharpe: 0.85, calmar: 0.55, aboveMA20: 0.58, excessReturn: 2.8 },
-  { code: "516160", name: "新能源 ETF", category: "新能源", pe: 35.8, size: 88.2, change: 2.2, volume: 7.5, sharpe: 0.95, calmar: 0.60, aboveMA20: 0.62, excessReturn: 3.5 },
-]
-
 const categories = ["全部", "科技", "新能源", "医药", "消费", "金融", "国防", "地产", "资源"]
 
 const sortOptions = [
@@ -68,7 +52,7 @@ export function EtfScreenerPage() {
   })
 
   // 转换后端数据或使用模拟数据
-  let etfData = mockEtfs
+  let etfData: any[] = []
 
   if (etfResponse?.etfs && etfResponse.etfs.length > 0) {
     etfData = etfResponse.etfs.map((e: any) => ({

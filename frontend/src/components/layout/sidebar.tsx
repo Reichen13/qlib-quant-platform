@@ -13,6 +13,7 @@ import {
   Database,
   Shield,
   PieChart,
+  Globe,
   ChevronLeft,
   ChevronRight,
   X,
@@ -33,6 +34,7 @@ const NAVIGATION_ITEMS = [
   { icon: Database, label: "数据管理", path: "/data-management" },
   { icon: Shield, label: "风险管理", path: "/risk" },
   { icon: PieChart, label: "组合优化", path: "/portfolio" },
+  { icon: Globe, label: "宏观策略", path: "/macro-dashboard" },
 ]
 
 export function Sidebar() {

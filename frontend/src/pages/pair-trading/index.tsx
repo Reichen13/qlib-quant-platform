@@ -17,131 +17,28 @@ import { InstructionsPanel, commonInstructions } from "@/components/features/ins
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 
-// 预设配对对
-const defaultPairs = [
-  {
-    pair: "招商银行 / 平安银行",
-    stock1: "600036.SH",
-    stock2: "000001.SZ",
-    category: "银行",
-    correlation: 0.92,
-    pValue: 0.001,
-    zScore: 2.35,
-    signal: "做空价差",
-    status: "开仓机会",
-  },
-  {
-    pair: "贵州茅台 / 五粮液",
-    stock1: "600519.SH",
-    stock2: "000858.SZ",
-    category: "白酒",
-    correlation: 0.88,
-    pValue: 0.005,
-    zScore: -1.85,
-    signal: "做多价差",
-    status: "观察中",
-  },
-  {
-    pair: "中国平安 / 中国人寿",
-    stock1: "601318.SH",
-    stock2: "601628.SH",
-    category: "保险",
-    correlation: 0.85,
-    pValue: 0.008,
-    zScore: 0.45,
-    signal: "中性",
-    status: "正常",
-  },
-  {
-    pair: "万科A / 保利发展",
-    stock1: "000002.SZ",
-    stock2: "600048.SH",
-    category: "地产",
-    correlation: 0.81,
-    pValue: 0.012,
-    zScore: -2.12,
-    signal: "做多价差",
-    status: "开仓机会",
-  },
-  {
-    pair: "美的集团 / 格力电器",
-    stock1: "000333.SZ",
-    stock2: "000651.SZ",
-    category: "家电",
-    correlation: 0.79,
-    pValue: 0.015,
-    zScore: 1.05,
-    signal: "中性",
-    status: "正常",
-  },
-  {
-    pair: "伊利股份 / 光明乳业",
-    stock1: "600887.SH",
-    stock2: "600597.SH",
-    category: "食品",
-    correlation: 0.76,
-    pValue: 0.020,
-    zScore: -0.85,
-    signal: "中性",
-    status: "正常",
-  },
-  {
-    pair: "比亚迪 / 长城汽车",
-    stock1: "002594.SZ",
-    stock2: "601633.SH",
-    category: "汽车",
-    correlation: 0.72,
-    pValue: 0.035,
-    zScore: 0.65,
-    signal: "中性",
-    status: "观察中",
-  },
-]
-
-// 模拟价差数据
-const mockSpreadData = [
-  { date: "2024-01", spread: 1.0, upper: 2, lower: -2 },
-  { date: "2024-02", spread: 1.2, upper: 2, lower: -2 },
-  { date: "2024-03", spread: 0.8, upper: 2, lower: -2 },
-  { date: "2024-04", spread: 1.5, upper: 2, lower: -2 },
-  { date: "2024-05", spread: 2.2, upper: 2, lower: -2 },
-  { date: "2024-06", spread: 1.8, upper: 2, lower: -2 },
-  { date: "2024-07", spread: 0.5, upper: 2, lower: -2 },
-  { date: "2024-08", spread: -0.5, upper: 2, lower: -2 },
-  { date: "2024-09", spread: -1.2, upper: 2, lower: -2 },
-  { date: "2024-10", spread: -0.8, upper: 2, lower: -2 },
-  { date: "2024-11", spread: 0.2, upper: 2, lower: -2 },
-  { date: "2024-12", spread: 0.8, upper: 2, lower: -2 },
-]
-
 export function PairTradingPage() {
-  const [selectedPair, setSelectedPair] = useState(defaultPairs[0])
+  const [selectedPair, setSelectedPair] = useState<any>(null)
   const [selectedCategory, setSelectedCategory] = useState("全部")
 
   // 从后端获取配对交易数据
   const { data: pairsData, isLoading: pairsLoading } = useQuery({
     queryKey: ["pair-trading", "pairs"],
-    queryFn: async () => {
-      try {
-        return await api.pair.list()
-      } catch {
-        return { pairs: defaultPairs }
-      }
-    },
+    queryFn: () => api.pair.list(),
   })
 
   // 获取价差数据
-  const { data: spreadResponse = { data: mockSpreadData }, isLoading: spreadLoading } = useQuery({
+  const { data: spreadResponse, isLoading: spreadLoading } = useQuery({
     queryKey: ["pair-trading", "spread", selectedPair?.stock1, selectedPair?.stock2],
     queryFn: () => api.pair.spread(selectedPair.stock1, selectedPair.stock2),
     enabled: !!selectedPair,
   })
 
   // 从响应中提取数据数组
-  const spreadData = spreadResponse?.data || mockSpreadData
+  const spreadData = spreadResponse?.data || []
 
-  // 转换后端数据或使用模拟数据
-  let pairs = defaultPairs
+  // 转换后端数据
+  let pairs: any[] = []
 
   if (pairsData?.pairs && pairsData.pairs.length > 0) {
     pairs = pairsData.pairs
@@ -224,8 +121,8 @@ export function PairTradingPage() {
             <CardTitle className="text-sm font-medium">胜率</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">68.5%</div>
-            <p className="text-xs text-muted-foreground">历史回测</p>
+            <div className="text-2xl font-bold">--</div>
+            <p className="text-xs text-muted-foreground">基于API数据</p>
           </CardContent>
         </Card>
 
@@ -344,9 +241,15 @@ export function PairTradingPage() {
           <Card>
             <CardHeader>
               <CardTitle>配对详情</CardTitle>
-              <CardDescription>{selectedPair.pair}</CardDescription>
+              <CardDescription>{selectedPair?.pair || "请从左侧列表选择配对"}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {!selectedPair ? (
+                <div className="text-center py-8 text-muted-foreground">
+                  点击左侧配对行查看详情
+                </div>
+              ) : (
+              <>
               <div className="space-y-0.5">
                 <p className="text-sm text-muted-foreground">股票 A</p>
                 <p className="font-medium">{selectedPair.stock1}</p>
@@ -410,6 +313,8 @@ export function PairTradingPage() {
                   查看历史回测
                 </Button>
               </a>
+              </>
+              )}
             </CardContent>
           </Card>
         </div>
@@ -420,7 +325,7 @@ export function PairTradingPage() {
         <CardHeader>
           <CardTitle>价差走势</CardTitle>
           <CardDescription>
-            {selectedPair.pair} - Z-Score 变化
+            {selectedPair?.pair || "价差"} - Z-Score 变化
           </CardDescription>
         </CardHeader>
         <CardContent>

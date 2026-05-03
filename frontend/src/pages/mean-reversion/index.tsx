@@ -39,22 +39,6 @@ const bollingerPeriods = [
   { value: "30", label: "30日" },
 ]
 
-// 模拟超买超卖数据
-const mockSignals = [
-  { code: "600519.SH", name: "贵州茅台", rsi: 78.5, bollingerPosition: 0.85, signal: "超买", score: 85, strength: "强" },
-  { code: "000858.SZ", name: "五粮液", rsi: 75.2, bollingerPosition: 0.72, signal: "超买", score: 82, strength: "强" },
-  { code: "600036.SH", name: "招商银行", rsi: 28.5, bollingerPosition: 0.15, signal: "超卖", score: 75, strength: "强" },
-  { code: "000001.SZ", name: "平安银行", rsi: 25.8, bollingerPosition: 0.12, signal: "超卖", score: 78, strength: "强" },
-  { code: "600000.SH", name: "浦发银行", rsi: 72.5, bollingerPosition: 0.65, signal: "超买", score: 70, strength: "中" },
-  { code: "601318.SH", name: "中国平安", rsi: 30.2, bollingerPosition: 0.22, signal: "超卖", score: 72, strength: "中" },
-  { code: "000002.SZ", name: "万科A", rsi: 22.5, bollingerPosition: 0.08, signal: "超卖", score: 80, strength: "强" },
-  { code: "600276.SH", name: "恒瑞医药", rsi: 76.8, bollingerPosition: 0.78, signal: "超买", score: 77, strength: "强" },
-  { code: "000333.SZ", name: "美的集团", rsi: 26.5, bollingerPosition: 0.18, signal: "超卖", score: 74, strength: "中" },
-  { code: "600887.SH", name: "伊利股份", rsi: 73.5, bollingerPosition: 0.68, signal: "超买", score: 71, strength: "中" },
-  { code: "002594.SZ", name: "比亚迪", rsi: 68.5, bollingerPosition: 0.55, signal: "关注", score: 65, strength: "弱" },
-  { code: "300750.SZ", name: "宁德时代", rsi: 65.2, bollingerPosition: 0.48, signal: "关注", score: 62, strength: "弱" },
-]
-
 interface SignalItem {
   code: string
   name: string
@@ -81,10 +65,10 @@ export function MeanReversionPage() {
     }),
   })
 
-  // 使用后端数据或模拟数据
+  // 使用后端数据
   const meanReversionSignals = signalsData?.signals?.length > 0
     ? signalsData.signals
-    : mockSignals
+    : []
 
   const filteredSignals = meanReversionSignals.filter(
     (s: SignalItem) =>
@@ -350,9 +334,9 @@ export function MeanReversionPage() {
                           <Badge variant="outline">{stock.score}</Badge>
                         </TableCell>
                         <TableCell className="text-right">
-                          <Button variant="ghost" size="sm">
+                          <a href={`/quote?stock=${stock.code}`} className="text-sm text-primary hover:underline">
                             查看详情
-                          </Button>
+                          </a>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -416,9 +400,9 @@ export function MeanReversionPage() {
                           <Badge variant="outline">{stock.score}</Badge>
                         </TableCell>
                         <TableCell className="text-right">
-                          <Button variant="ghost" size="sm">
+                          <a href={`/quote?stock=${stock.code}`} className="text-sm text-primary hover:underline">
                             查看详情
-                          </Button>
+                          </a>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -478,9 +462,9 @@ export function MeanReversionPage() {
                           <Badge variant="outline">{stock.score}</Badge>
                         </TableCell>
                         <TableCell className="text-right">
-                          <Button variant="ghost" size="sm">
+                          <a href={`/quote?stock=${stock.code}`} className="text-sm text-primary hover:underline">
                             查看详情
-                          </Button>
+                          </a>
                         </TableCell>
                       </TableRow>
                     ))}

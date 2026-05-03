@@ -33,68 +33,13 @@ function getLastTradeDate(daysAgo: number = 0): string {
   return date.toISOString().split("T")[0]
 }
 
-// 模拟数据状态（使用动态日期）
-const createMockDataStatus = () => ({
-  stocks: {
-    total: 3800,
-    last_date: getLastTradeDate(0), // 今天
-    lag_days: 0,
-    status: "normal" as const,
-  },
-  etf: {
-    total: 320,
-    last_date: getLastTradeDate(0), // 今天
-    lag_days: 0,
-    status: "normal" as const,
-  },
-  index: {
-    total: 12,
-    last_date: getLastTradeDate(0), // 今天
-    lag_days: 0,
-    status: "normal" as const,
-  },
-})
-
-// 模拟更新步骤
-const mockUpdateSteps = [
-  {
-    id: "check",
-    name: "检查数据状态",
-    status: "completed" as const,
-    progress: 100,
-    message: "数据状态检查完成",
-    startTime: new Date().toISOString(),
-    endTime: new Date().toISOString(),
-  },
-  {
-    id: "download",
-    name: "下载增量数据",
-    status: "running" as const,
-    progress: 65,
-    message: "正在下载股票行情数据...",
-    startTime: new Date().toISOString(),
-  },
-  {
-    id: "process",
-    name: "处理数据",
-    status: "pending" as const,
-    progress: 0,
-  },
-  {
-    id: "save",
-    name: "保存到数据库",
-    status: "pending" as const,
-    progress: 0,
-  },
-]
-
 export function DataManagementPage() {
   const [isUpdating, setIsUpdating] = useState(false)
-  const [updateSteps, setUpdateSteps] = useState(mockUpdateSteps)
-  const [overallProgress, setOverallProgress] = useState(25)
+  const [updateSteps, setUpdateSteps] = useState<any[]>([])
+  const [overallProgress, setOverallProgress] = useState(0)
 
-  // 获取数据状态 - 使用真实 API
-  const { data: dataStatus = createMockDataStatus(), isLoading, refetch } = useQuery({
+  // 获取数据状态
+  const { data: dataStatus, isLoading, refetch } = useQuery({
     queryKey: ["data", "status"],
     queryFn: () => api.data.status(),
     staleTime: 5 * 60 * 1000, // 5分钟内不重新获取
@@ -107,129 +52,26 @@ export function DataManagementPage() {
   const handleUpdate = async (type: "stocks" | "etf" | "index" | "all") => {
     setIsUpdating(true)
     setUpdateSteps([
-      {
-        id: "check",
-        name: "检查数据状态",
-        status: "running",
-        progress: 50,
-        message: "正在检查数据状态...",
-        startTime: new Date().toISOString(),
-      },
-      {
-        id: "download",
-        name: "下载增量数据",
-        status: "pending",
-        progress: 0,
-      },
-      {
-        id: "process",
-        name: "处理数据",
-        status: "pending",
-        progress: 0,
-      },
-      {
-        id: "save",
-        name: "保存到数据库",
-        status: "pending",
-        progress: 0,
-      },
+      { id: "request", name: "发送更新请求", status: "running", progress: 30, message: `正在请求${type === 'all' ? '全量' : type}数据更新...`, startTime: new Date().toISOString() },
+      { id: "process", name: "处理数据", status: "pending", progress: 0 },
+      { id: "save", name: "保存到数据库", status: "pending", progress: 0 },
     ])
     setOverallProgress(10)
 
-    // 模拟更新进度
-    setTimeout(() => {
-      setUpdateSteps((prev) => {
-        const newSteps = [...prev] as typeof prev
-        newSteps[0] = {
-          id: newSteps[0].id,
-          name: newSteps[0].name,
-          status: "completed" as const,
-          progress: 100,
-          message: "数据状态检查完成",
-          startTime: newSteps[0].status === "running" || newSteps[0].status === "completed" ? newSteps[0].startTime! : new Date(Date.now() - 1500).toISOString(),
-          endTime: new Date().toISOString()
-        }
-        newSteps[1] = {
-          id: newSteps[1].id,
-          name: newSteps[1].name,
-          status: "running" as const,
-          progress: 30,
-          message: `正在下载${type === 'all' ? '全量' : type}数据...`,
-          startTime: new Date().toISOString()
-        }
-        return newSteps
-      })
-      setOverallProgress(30)
-    }, 1500)
-
-    setTimeout(() => {
-      setUpdateSteps((prev) => {
-        const newSteps = [...prev] as typeof prev
-        newSteps[1] = {
-          id: newSteps[1].id,
-          name: newSteps[1].name,
-          status: "completed" as const,
-          progress: 100,
-          message: "数据下载完成",
-          startTime: newSteps[1].status === "running" || newSteps[1].status === "completed" ? newSteps[1].startTime! : new Date(Date.now() - 1500).toISOString(),
-          endTime: new Date().toISOString()
-        }
-        newSteps[2] = {
-          id: newSteps[2].id,
-          name: newSteps[2].name,
-          status: "running" as const,
-          progress: 50,
-          message: "正在处理数据...",
-          startTime: new Date().toISOString()
-        }
-        return newSteps
-      })
-      setOverallProgress(60)
-    }, 3000)
-
-    setTimeout(() => {
-      setUpdateSteps((prev) => {
-        const newSteps = [...prev] as typeof prev
-        newSteps[2] = {
-          id: newSteps[2].id,
-          name: newSteps[2].name,
-          status: "completed" as const,
-          progress: 100,
-          message: "数据处理完成",
-          startTime: newSteps[2].status === "running" || newSteps[2].status === "completed" ? newSteps[2].startTime! : new Date().toISOString(),
-          endTime: new Date().toISOString()
-        }
-        newSteps[3] = {
-          id: newSteps[3].id,
-          name: newSteps[3].name,
-          status: "running" as const,
-          progress: 80,
-          message: "正在保存到数据库...",
-          startTime: new Date().toISOString()
-        }
-        return newSteps
-      })
-      setOverallProgress(85)
-    }, 4500)
-
-    setTimeout(() => {
-      setUpdateSteps((prev) => {
-        const newSteps = [...prev] as typeof prev
-        newSteps[3] = {
-          id: newSteps[3].id,
-          name: newSteps[3].name,
-          status: "completed" as const,
-          progress: 100,
-          message: "数据保存完成",
-          startTime: newSteps[3].status === "running" || newSteps[3].status === "completed" ? newSteps[3].startTime! : new Date(Date.now() - 5000).toISOString(),
-          endTime: new Date().toISOString()
-        }
-        return newSteps
-      })
+    try {
+      const result = await api.data.update(type)
+      setUpdateSteps([
+        { id: "request", name: "发送更新请求", status: "completed", progress: 100, message: "更新请求已发送", startTime: new Date(Date.now() - 2000).toISOString(), endTime: new Date().toISOString() },
+        { id: "process", name: "处理数据", status: "completed", progress: 100, message: result.message || "数据处理完成", startTime: new Date(Date.now() - 1000).toISOString(), endTime: new Date().toISOString() },
+        { id: "save", name: "保存到数据库", status: "completed", progress: 100, message: "数据已保存", startTime: new Date(Date.now() - 500).toISOString(), endTime: new Date().toISOString() },
+      ])
       setOverallProgress(100)
-      setIsUpdating(false)
       refetch()
-    }, 6000)
+    } catch {
+      setUpdateSteps((prev) => prev.map((s: any) => s.status === "running" ? { ...s, status: "error" as const, message: "更新失败" } : s))
+    } finally {
+      setIsUpdating(false)
+    }
   }
 
   const getStatusIcon = (status: string) => {
@@ -325,8 +167,8 @@ export function DataManagementPage() {
             <div className="flex items-center justify-between">
               <CardTitle>股票数据</CardTitle>
               <div className="flex items-center gap-2">
-                {getStatusIcon(dataStatus.stocks.status)}
-                {getStatusBadge(dataStatus.stocks.status)}
+                {getStatusIcon(dataStatus?.stocks?.status || "unknown")}
+                {getStatusBadge(dataStatus?.stocks?.status || "unknown")}
               </div>
             </div>
             <CardDescription>A股全市场日线数据</CardDescription>
@@ -335,16 +177,16 @@ export function DataManagementPage() {
             <div className="space-y-3 text-sm">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">覆盖数量</span>
-                <span className="font-medium">{dataStatus.stocks.total} 只</span>
+                <span className="font-medium">{dataStatus?.stocks?.total ?? "--"} 只</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">最新日期</span>
-                <span className="font-medium">{dataStatus.stocks.last_date}</span>
+                <span className="font-medium">{dataStatus?.stocks?.last_date || "--"}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">滞后天数</span>
-                <span className={`font-medium ${dataStatus.stocks.lag_days > 1 ? "text-yellow-600" : ""}`}>
-                  {dataStatus.stocks.lag_days} 天
+                <span className={`font-medium ${(dataStatus?.stocks?.lag_days ?? 0) > 1 ? "text-yellow-600" : ""}`}>
+                  {dataStatus?.stocks?.lag_days ?? "--"} 天
                 </span>
               </div>
               <div className="flex justify-between">
@@ -361,8 +203,8 @@ export function DataManagementPage() {
             <div className="flex items-center justify-between">
               <CardTitle>ETF 数据</CardTitle>
               <div className="flex items-center gap-2">
-                {getStatusIcon(dataStatus.etf.status)}
-                {getStatusBadge(dataStatus.etf.status)}
+                {getStatusIcon(dataStatus?.etf?.status || "unknown")}
+                {getStatusBadge(dataStatus?.etf?.status || "unknown")}
               </div>
             </div>
             <CardDescription>全市场 ETF 日线数据</CardDescription>
@@ -371,15 +213,15 @@ export function DataManagementPage() {
             <div className="space-y-3 text-sm">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">覆盖数量</span>
-                <span className="font-medium">{dataStatus.etf.total} 只</span>
+                <span className="font-medium">{dataStatus?.etf?.total ?? "--"} 只</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">最新日期</span>
-                <span className="font-medium">{dataStatus.etf.last_date}</span>
+                <span className="font-medium">{dataStatus?.etf?.last_date || "--"}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">滞后天数</span>
-                <span className="font-medium">{dataStatus.etf.lag_days} 天</span>
+                <span className="font-medium">{dataStatus?.etf?.lag_days ?? "--"} 天</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">数据来源</span>
@@ -395,8 +237,8 @@ export function DataManagementPage() {
             <div className="flex items-center justify-between">
               <CardTitle>指数数据</CardTitle>
               <div className="flex items-center gap-2">
-                {getStatusIcon(dataStatus.index.status)}
-                {getStatusBadge(dataStatus.index.status)}
+                {getStatusIcon(dataStatus?.index?.status || "unknown")}
+                {getStatusBadge(dataStatus?.index?.status || "unknown")}
               </div>
             </div>
             <CardDescription>主要指数日线数据</CardDescription>
@@ -405,15 +247,15 @@ export function DataManagementPage() {
             <div className="space-y-3 text-sm">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">覆盖数量</span>
-                <span className="font-medium">{dataStatus.index.total} 个</span>
+                <span className="font-medium">{dataStatus?.index?.total ?? "--"} 个</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">最新日期</span>
-                <span className="font-medium">{dataStatus.index.last_date}</span>
+                <span className="font-medium">{dataStatus?.index?.last_date || "--"}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">滞后天数</span>
-                <span className="font-medium">{dataStatus.index.lag_days} 天</span>
+                <span className="font-medium">{dataStatus?.index?.lag_days ?? "--"} 天</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">数据来源</span>

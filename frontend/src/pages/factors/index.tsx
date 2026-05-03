@@ -1,5 +1,5 @@
 // 因子分析页面 - Alpha158 因子 IC 分析
-import { useState } from "react"
+import { useState, useMemo } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -20,12 +20,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Microscope, Loader2, BarChart3, RefreshCw } from "lucide-react"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Microscope, Loader2, BarChart3, RefreshCw, X, Layers } from "lucide-react"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { BarChart } from "@/components/charts/bar-chart"
 import { Histogram } from "@/components/charts/histogram"
+import { LineChartComponent } from "@/components/charts/line-chart"
 
 // 预测周期选项
 const predictPeriods = [
@@ -44,12 +45,11 @@ const dateRanges = [
   { value: "custom", label: "自定义", start: "", end: "" },
 ]
 
-const factorCategories = ["全部", "技术指标", "量价", "财务", "风险"]
-
 interface FactorItem {
   name: string
   ic: number
   rankIC: number
+  icir: number
   type: string
   category: string
 }
@@ -61,6 +61,11 @@ export function FactorAnalysisPage() {
   const [dateRange, setDateRange] = useState("2026ytd")
   const [startDate, setStartDate] = useState("2026-01-01")
   const [endDate, setEndDate] = useState("2026-04-30")
+
+  const [selectedFactor, setSelectedFactor] = useState<string | null>(null)
+  const [detailTab, setDetailTab] = useState<"ic_stability" | "factor_series">("ic_stability")
+  const [showDecay, setShowDecay] = useState(false)
+  const [showCombination, setShowCombination] = useState(false)
 
   const { data: analyzeData, isLoading, isFetching, error, refetch } = useQuery({
     queryKey: ["factors", "analyze", predictPeriod, startDate, endDate],
@@ -75,6 +80,74 @@ export function FactorAnalysisPage() {
     staleTime: Infinity,
     gcTime: Infinity,
   })
+
+  // 获取因子列表（用于动态分类）
+  const { data: factorListData } = useQuery({
+    queryKey: ["factors", "list"],
+    queryFn: () => api.factors.list(),
+    staleTime: Infinity,
+    gcTime: Infinity,
+  })
+
+  // 动态分类
+  const dynamicCategories = useMemo(() => {
+    const cats = new Set<string>()
+    if (factorListData?.factors) {
+      for (const f of factorListData.factors) {
+        const cat = f.category || "其他"
+        if (cat) cats.add(cat)
+      }
+    }
+    if (analyzeData?.factors) {
+      for (const f of analyzeData.factors) {
+        if (f.category) cats.add(f.category)
+      }
+    }
+    return ["全部", ...Array.from(cats).sort()]
+  }, [factorListData, analyzeData])
+
+  // 单因子详情
+  const { data: factorDetail, isLoading: detailLoading } = useQuery({
+    queryKey: ["factors", "detail", selectedFactor, startDate, endDate, predictPeriod],
+    queryFn: () => api.factors.detail(selectedFactor!, startDate, endDate, parseInt(predictPeriod)),
+    enabled: !!selectedFactor,
+  })
+
+  // IC 衰减分析
+  const { data: decayData, isLoading: decayLoading } = useQuery({
+    queryKey: ["factors", "decay", predictPeriod, startDate, endDate],
+    queryFn: () => api.factors.decay({
+      start_date: startDate,
+      end_date: endDate,
+      predict_period: parseInt(predictPeriod),
+      top_k: 10,
+    }),
+    enabled: showDecay && !!analyzeData && analyzeData.factors?.length > 0,
+  })
+
+  // 信号组合
+  const { data: combineData, isLoading: combineLoading } = useQuery({
+    queryKey: ["factors", "combine", predictPeriod, startDate, endDate],
+    queryFn: () => api.factors.combine({
+      start_date: startDate,
+      end_date: endDate,
+      predict_period: parseInt(predictPeriod),
+      top_k: 10,
+    }),
+    enabled: showCombination && !!analyzeData,
+  })
+
+  // IC 衰减图表数据
+  const decayChartData = useMemo(() => {
+    if (!decayData?.periods || !decayData?.decay_data) return []
+    return decayData.periods.map((period: number, idx: number) => {
+      const row: Record<string, string | number> = { period: `${period}日` }
+      decayData.decay_data.slice(0, 6).forEach((d: any) => {
+        row[d.factor] = d.ic_values[idx]
+      })
+      return row
+    })
+  }, [decayData])
 
   const handleDateRangeChange = (value: string) => {
     setDateRange(value)
@@ -93,8 +166,9 @@ export function FactorAnalysisPage() {
       name: f.factor.replace("$", ""),
       ic: f.ic,
       rankIC: f.rank_ic || f.ic,
+      icir: f.icir || 0,
       type: f.ic > 0 ? "动量" : "反转",
-      category: "技术指标",
+      category: f.category || "未分类",
     }))
   }
 
@@ -390,7 +464,7 @@ export function FactorAnalysisPage() {
             <CardContent>
               {/* 分类筛选 */}
               <div className="flex flex-wrap gap-2 mb-4">
-                {factorCategories.map((cat) => (
+                {dynamicCategories.map((cat) => (
                   <Badge
                     key={cat}
                     variant={selectedCategory === cat ? "default" : "outline"}
@@ -450,10 +524,13 @@ export function FactorAnalysisPage() {
                           </span>
                         </TableCell>
                         <TableCell className="text-right text-muted-foreground">
-                          {(factor.ic / (0.02 + Math.abs(factor.ic))).toFixed(2)}
+                          {factor.icir ? factor.icir.toFixed(2) : "-"}
                         </TableCell>
                         <TableCell className="text-right">
-                          <button className="text-sm text-muted-foreground hover:text-foreground">
+                          <button
+                            className="text-sm text-primary hover:underline"
+                            onClick={() => { setSelectedFactor(factor.name); setDetailTab("ic_stability") }}
+                          >
                             分析
                           </button>
                         </TableCell>
@@ -546,30 +623,16 @@ export function FactorAnalysisPage() {
                 <div className="pt-4 border-t">
                   <h4 className="text-sm font-medium mb-3">因子类型分布</h4>
                   <div className="space-y-2 text-sm">
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">技术指标</span>
-                      <span>
-                        {factors.filter((f) => f.category === "技术指标").length}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">量价</span>
-                      <span>
-                        {factors.filter((f) => f.category === "量价").length}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">财务</span>
-                      <span>
-                        {factors.filter((f) => f.category === "财务").length}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">风险</span>
-                      <span>
-                        {factors.filter((f) => f.category === "风险").length}
-                      </span>
-                    </div>
+                    {dynamicCategories.slice(1).map((cat) => {
+                      const count = factors.filter((f) => f.category === cat).length
+                      if (count === 0) return null
+                      return (
+                        <div key={cat} className="flex justify-between">
+                          <span className="text-muted-foreground">{cat}</span>
+                          <span>{count}</span>
+                        </div>
+                      )
+                    })}
                   </div>
                 </div>
               </div>
@@ -577,6 +640,186 @@ export function FactorAnalysisPage() {
           </Card>
         </div>
       </div>
+
+      {/* 因子详情面板 */}
+      {selectedFactor && (
+        <Card className="border-primary/50">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base">
+                因子详情: {selectedFactor}
+                {factorDetail?.category && (
+                  <Badge variant="outline" className="ml-2">{factorDetail.category}</Badge>
+                )}
+              </CardTitle>
+              <Button variant="ghost" size="icon" onClick={() => setSelectedFactor(null)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            {factorDetail && (
+              <CardDescription>
+                Mean IC: {factorDetail.mean_ic} | Std IC: {factorDetail.std_ic} | ICIR: {factorDetail.icir}
+              </CardDescription>
+            )}
+          </CardHeader>
+          <CardContent>
+            {detailLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : factorDetail ? (
+              <Tabs value={detailTab} onValueChange={(v) => setDetailTab(v as any)}>
+                <TabsList>
+                  <TabsTrigger value="ic_stability">IC 稳定性</TabsTrigger>
+                  <TabsTrigger value="factor_series">因子时序</TabsTrigger>
+                </TabsList>
+                <TabsContent value="ic_stability" className="mt-4">
+                  <LineChartComponent
+                    data={factorDetail.daily_ics?.map((d: any) => ({
+                      date: d.date,
+                      IC: d.ic,
+                    })) || []}
+                    lines={[{ dataKey: "IC", name: "每日 IC", color: "var(--color-primary)" }]}
+                    xKey="date"
+                    height={280}
+                  />
+                </TabsContent>
+                <TabsContent value="factor_series" className="mt-4">
+                  <LineChartComponent
+                    data={factorDetail.factor_series?.map((d: any) => ({
+                      date: d.date,
+                      均值: d.value,
+                    })) || []}
+                    lines={[{ dataKey: "均值", name: "因子均值", color: "var(--color-up)" }]}
+                    xKey="date"
+                    height={280}
+                  />
+                </TabsContent>
+              </Tabs>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">暂无详情数据</div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* IC 衰减分析 */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <CardTitle>IC 衰减分析</CardTitle>
+              <CardDescription>Top 因子在不同预测周期下的 IC 变化趋势</CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              disabled={!analyzeData || analyzeData.factors?.length === 0}
+              onClick={() => setShowDecay(!showDecay)}
+            >
+              {showDecay ? "刷新分析" : "运行衰减分析"}
+            </Button>
+          </div>
+        </CardHeader>
+        {showDecay && (
+          <CardContent>
+            {decayLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : decayData ? (
+              <>
+                <LineChartComponent
+                  data={decayChartData}
+                  lines={decayData.factors?.slice(0, 6).map((f: string) => ({
+                    dataKey: f,
+                    name: f,
+                  })) || []}
+                  xKey="period"
+                  height={350}
+                />
+                <p className="text-xs text-muted-foreground mt-2">
+                  X 轴为预测周期（1/3/5/10/20日），Y 轴为 IC 值。IC 衰减越快说明信号持续性越弱。
+                </p>
+              </>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">暂无衰减数据</div>
+            )}
+          </CardContent>
+        )}
+      </Card>
+
+      {/* 信号组合 */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="space-y-0.5">
+              <CardTitle className="flex items-center gap-2">
+                <Layers className="h-5 w-5" />
+                信号组合评分
+              </CardTitle>
+              <CardDescription>IC 加权复合信号，识别最优选股</CardDescription>
+            </div>
+            <Button
+              variant="outline"
+              disabled={!analyzeData || analyzeData.factors?.length === 0}
+              onClick={() => setShowCombination(!showCombination)}
+            >
+              {showCombination ? "刷新评分" : "构建复合信号"}
+            </Button>
+          </div>
+        </CardHeader>
+        {showCombination && (
+          <CardContent>
+            {combineLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : combineData ? (
+              <div className="grid gap-6 md:grid-cols-2">
+                <div>
+                  <h4 className="text-sm font-medium mb-3">因子权重 (IC 加权)</h4>
+                  <div className="space-y-2">
+                    {combineData.factor_weights?.map((fw: any) => (
+                      <div key={fw.factor} className="space-y-1">
+                        <div className="flex items-center justify-between text-sm">
+                          <span className="text-muted-foreground truncate max-w-[160px]">{fw.factor}</span>
+                          <span className="font-medium">{(fw.weight * 100).toFixed(1)}%</span>
+                        </div>
+                        <div className="h-2 bg-muted rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-primary rounded-full"
+                            style={{ width: `${fw.weight * 100}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <h4 className="text-sm font-medium mb-3">Top 选股 ({combineData.date})</h4>
+                  <div className="space-y-2">
+                    {combineData.top_stocks?.slice(0, 10).map((s: any, i: number) => (
+                      <div key={s.code} className="flex items-center justify-between text-sm p-2 bg-muted/50 rounded">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="w-6 h-6 flex items-center justify-center p-0 text-xs">
+                            {i + 1}
+                          </Badge>
+                          <span className="font-medium">{s.code}</span>
+                        </div>
+                        <Badge variant={s.score > 0 ? "default" : "outline"}>
+                          {s.score.toFixed(2)}
+                        </Badge>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-8 text-muted-foreground">暂无组合数据</div>
+            )}
+          </CardContent>
+        )}
+      </Card>
     </div>
   )
 }

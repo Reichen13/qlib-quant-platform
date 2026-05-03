@@ -18,40 +18,6 @@ import { api } from "@/lib/api"
 import { BarChart } from "@/components/charts/bar-chart"
 import { InstructionsPanel } from "@/components/features/instructions-panel"
 
-// 模拟板块数据
-const mockSectors = [
-  { name: "半导体", change: 5.2, volume: 125.6, stocks: 58, factorScore: 88, advice: "强势" },
-  { name: "新能源", change: 3.8, volume: 98.2, stocks: 45, factorScore: 82, advice: "关注" },
-  { name: "军工", change: 2.5, volume: 45.8, stocks: 32, factorScore: 75, advice: "中性" },
-  { name: "医药", change: -0.5, volume: 88.5, stocks: 65, factorScore: 60, advice: "观望" },
-  { name: "消费", change: -1.2, volume: 156.2, stocks: 78, factorScore: 55, advice: "规避" },
-  { name: "金融", change: -2.1, volume: 145.6, stocks: 52, factorScore: 48, advice: "规避" },
-  { name: "地产", change: -3.5, volume: 35.8, stocks: 28, factorScore: 32, advice: "规避" },
-  { name: "传媒", change: 1.8, volume: 55.2, stocks: 35, factorScore: 70, advice: "中性" },
-  { name: "通信", change: 0.8, volume: 78.5, stocks: 29, factorScore: 68, advice: "中性" },
-  { name: "电力", change: 1.2, volume: 92.3, stocks: 38, factorScore: 72, advice: "中性" },
-]
-
-// 模拟成分股数据
-const mockStocksBySector: Record<string, Array<{ code: string; name: string; change: number; score: number }>> = {
-  "半导体": [
-    { code: "688981.SH", name: "中芯国际-U", change: 6.5, score: 92 },
-    { code: "002371.SZ", name: "北方华创", change: 5.8, score: 88 },
-    { code: "300782.SZ", name: "卓胜微", change: 4.2, score: 85 },
-    { code: "688008.SH", name: "澜起科技", change: 3.8, score: 82 },
-  ],
-  "新能源": [
-    { code: "300750.SZ", name: "宁德时代", change: 5.2, score: 90 },
-    { code: "002594.SZ", name: "比亚迪", change: 3.8, score: 85 },
-    { code: "601012.SH", name: "隆基绿能", change: 2.5, score: 78 },
-    { code: "688590.SH", name: "新风光", change: 1.8, score: 75 },
-  ],
-  "军工": [
-    { code: "600760.SH", name: "中航沈飞", change: 3.2, score: 86 },
-    { code: "002025.SZ", name: "航天电器", change: 2.8, score: 82 },
-  ],
-}
-
 interface SectorItem {
   name: string
   change: number
@@ -80,8 +46,8 @@ export function HotSectorsPage() {
   })
 
   // 转换后端数据格式或使用模拟数据
-  let sectors: SectorItem[] = mockSectors
-  let usingMockData = false
+  let sectors: SectorItem[] = []
+  let apiError = false
 
   if (sectorData?.sectors && sectorData.sectors.length > 0) {
     sectors = sectorData.sectors.map((s: any) => ({
@@ -92,8 +58,8 @@ export function HotSectorsPage() {
       factorScore: Math.round(50 + s.change_pct * 5),
       advice: s.change_pct > 2 ? "强势" : s.change_pct > 0 ? "关注" : s.change_pct > -2 ? "观望" : "规避",
     }))
-  } else if (isError && !sectorData?.sectors?.length) {
-    usingMockData = true
+  } else if (isError) {
+    apiError = true
   }
 
   const sortedSectors = [...sectors].sort((a, b) => b.change - a.change)
@@ -354,31 +320,9 @@ export function HotSectorsPage() {
                                     </div>
                                   </div>
                                 ))
-                              ) : (mockStocksBySector[sector.name] || []).length > 0 ? (
-                                mockStocksBySector[sector.name].map((stock) => (
-                                  <div
-                                    key={stock.code}
-                                    className="flex items-center justify-between p-3 bg-background rounded-lg"
-                                  >
-                                    <div className="space-y-0.5">
-                                      <span className="font-medium">{stock.name}</span>
-                                      <span className="text-xs text-muted-foreground ml-2">
-                                        {stock.code}
-                                      </span>
-                                    </div>
-                                    <div className="flex items-center gap-4">
-                                      <Badge variant="outline">{stock.score}分</Badge>
-                                      <span className={`text-sm font-medium ${
-                                        stock.change >= 0 ? "text-up" : "text-down"
-                                      }`}>
-                                        {stock.change >= 0 ? "+" : ""}{stock.change.toFixed(2)}%
-                                      </span>
-                                    </div>
-                                  </div>
-                                ))
                               ) : (
                                 <div className="text-center py-4 text-muted-foreground text-sm">
-                                  加载中或暂无成分股数据
+                                  暂无成分股数据
                                 </div>
                               )}
                             </div>
@@ -496,12 +440,12 @@ export function HotSectorsPage() {
         ]}
       />
 
-      {/* 数据来源提示 */}
-      {usingMockData && (
-        <Card className="border-yellow-200 bg-yellow-50 dark:bg-yellow-950/20">
+      {/* API 错误提示 */}
+      {apiError && (
+        <Card className="border-red-200 bg-red-50 dark:bg-red-950/20">
           <CardContent className="pt-4">
-            <p className="text-sm text-yellow-800 dark:text-yellow-200">
-              ℹ️ 无法连接到后端 API，当前显示为模拟数据
+            <p className="text-sm text-red-800 dark:text-red-200">
+              无法连接到后端 API，请检查服务是否正常运行
             </p>
           </CardContent>
         </Card>

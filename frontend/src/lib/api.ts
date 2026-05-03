@@ -405,6 +405,30 @@ export const api = {
         timeoutMs: 300_000, // 5 分钟超时
       }).then(r => handleResponse<any>(r)),
     list: () => fetch(`${API_BASE}/api/factors/list`).then(r => handleResponse<any>(r)),
+    decay: (params: { start_date: string; end_date: string; predict_period: number; top_k: number }) =>
+      fetch(`${API_BASE}/api/factors/decay`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+        timeoutMs: 300_000,
+      }).then(r => handleResponse<any>(r)),
+    correlation: (params: { start_date: string; end_date: string; predict_period: number; top_k: number }) =>
+      fetch(`${API_BASE}/api/factors/correlation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+        timeoutMs: 120_000,
+      }).then(r => handleResponse<any>(r)),
+    combine: (params: { start_date: string; end_date: string; predict_period: number; top_k: number }) =>
+      fetch(`${API_BASE}/api/factors/combine`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+        timeoutMs: 120_000,
+      }).then(r => handleResponse<any>(r)),
+    detail: (factorName: string, startDate: string, endDate: string, predictPeriod: number = 5) =>
+      fetch(`${API_BASE}/api/factors/${encodeURIComponent(factorName)}/detail?start_date=${startDate}&end_date=${endDate}&predict_period=${predictPeriod}`)
+        .then(r => handleResponse<any>(r)),
   },
 
   // 回测（需要较长超时）
@@ -591,6 +615,26 @@ export const api = {
         body: JSON.stringify(params),
         timeoutMs: 30_000,
       }).then(r => handleResponse<any>(r)),
+  },
+
+  // 宏观策略
+  macro: {
+    indicators: () =>
+      fetch(`${API_BASE}/api/macro/indicators`).then(r => handleResponse<any>(r)),
+    regime: (indicators: Record<string, number>) =>
+      fetch(`${API_BASE}/api/macro/regime`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ indicators }),
+      }).then(r => handleResponse<any>(r)),
+    allocation: (indicators: Record<string, number>) =>
+      fetch(`${API_BASE}/api/macro/allocation`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ indicators }),
+      }).then(r => handleResponse<any>(r)),
+    history: (months: number = 12) =>
+      fetch(`${API_BASE}/api/macro/history?months=${months}`).then(r => handleResponse<any>(r)),
   },
 }
 

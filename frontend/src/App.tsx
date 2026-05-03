@@ -13,6 +13,7 @@ import { EtfScreenerPage } from "./pages/etf-screener"
 import { DataManagementPage } from "./pages/data-management"
 import { RiskPage } from "./pages/risk"
 import { PortfolioPage } from "./pages/portfolio"
+import { MacroDashboardPage } from "./pages/macro-dashboard"
 
 // 创建路由
 const router = createBrowserRouter([
@@ -67,6 +68,10 @@ const router = createBrowserRouter([
       {
         path: "portfolio",
         element: <PortfolioPage />,
+      },
+      {
+        path: "macro-dashboard",
+        element: <MacroDashboardPage />,
       },
     ],
   },
