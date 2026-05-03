@@ -17,6 +17,7 @@ pyqlib==0.9.6
 
 # 数据源
 yfinance==0.2.50
+akshare>=1.14.0
 
 # 异步任务
 celery==5.4.0

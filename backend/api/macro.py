@@ -1,6 +1,6 @@
 """
 宏观策略 API - Bridgewater 风格宏观仪表板
-使用 yfinance 获取宏观指标，进行市场状态分类和全天候配置
+使用 akshare 获取宏观指标，进行市场状态分类和全天候配置
 """
 
 from datetime import date, datetime, timedelta
@@ -18,85 +18,160 @@ router = APIRouter()
 
 # ── 宏观指标配置 ──
 INDICATOR_CONFIG = {
-    "SP500": {"symbol": "^GSPC", "name": "标普500", "type": "growth"},
-    "Nasdaq": {"symbol": "^IXIC", "name": "纳斯达克", "type": "growth"},
-    "VIX": {"symbol": "^VIX", "name": "波动率指数", "type": "risk"},
-    "10Y_Yield": {"symbol": "^TNX", "name": "10年美债收益率", "type": "rates"},
-    "USD_Index": {"symbol": "DX-Y.NYB", "name": "美元指数", "type": "currency"},
-    "Gold": {"symbol": "GC=F", "name": "黄金期货", "type": "commodity"},
-    "Oil": {"symbol": "CL=F", "name": "原油期货", "type": "commodity"},
-    "Russell2000": {"symbol": "^RUT", "name": "罗素2000", "type": "growth"},
+    "SP500": {"name": "标普500", "type": "growth"},
+    "Nasdaq": {"name": "纳斯达克", "type": "growth"},
+    "Volatility": {"name": "SP500波动率", "type": "risk"},
+    "10Y_Yield": {"name": "10年美债收益率", "type": "rates"},
+    "USD_Index": {"name": "美元指数", "type": "currency"},
+    "Gold": {"name": "黄金期货", "type": "commodity"},
+    "Oil": {"name": "原油期货", "type": "commodity"},
+    "DJI": {"name": "道琼斯", "type": "growth"},
 }
 
 
-def _fetch_single_indicator(key: str, cfg: dict) -> tuple:
-    """获取单个宏观指标（用于并发调用）"""
-    import yfinance as yf
-    try:
-        ticker = yf.Ticker(cfg["symbol"])
-        hist = ticker.history(period="1y")
-        if hist.empty:
-            logger.warning(f"未获取到 {cfg['name']} 数据")
-            return key, None
+def _to_datetime_index(df: pd.DataFrame, date_col: str) -> pd.DataFrame:
+    """统一将日期列转为 DatetimeIndex"""
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col])
+    df = df.set_index(date_col)
+    return df
 
-        current = hist["Close"].iloc[-1]
-        if len(hist) >= 21:
-            prev_20d = hist["Close"].iloc[-21]
-            change_pct = ((current - prev_20d) / prev_20d) * 100
-        else:
-            change_pct = 0
 
-        if len(hist) >= 252:
-            hist_1y = hist["Close"].iloc[-252:]
-            z_score = (current - hist_1y.mean()) / (hist_1y.std() or 1)
-        else:
-            z_score = 0
+def _compute_indicator(close: pd.Series, name: str, symbol: str) -> MacroIndicator:
+    """基于收盘价序列计算宏观指标"""
+    current = close.iloc[-1]
+    if len(close) >= 21:
+        prev_20d = close.iloc[-21]
+        change_pct = ((current - prev_20d) / prev_20d) * 100
+    else:
+        change_pct = 0
 
-        ma20 = hist["Close"].iloc[-20:].mean() if len(hist) >= 20 else current
-        ma60 = hist["Close"].iloc[-60:].mean() if len(hist) >= 60 else current
-        trend = "up" if ma20 > ma60 else "down"
+    if len(close) >= 252:
+        hist_1y = close.iloc[-252:]
+        z_score = round(float((current - hist_1y.mean()) / (hist_1y.std() or 1)), 2)
+    else:
+        z_score = 0
 
-        indicator = MacroIndicator(
-            name=cfg["name"],
-            symbol=cfg["symbol"],
-            value=round(float(current), 2),
-            change_pct=round(float(change_pct), 2),
-            trend=trend,
-            z_score=round(float(z_score), 2),
-        )
-        return key, indicator
-    except Exception as e:
-        logger.warning(f"获取 {cfg['name']} 失败: {e}")
-        return key, None
+    ma20 = close.iloc[-20:].mean() if len(close) >= 20 else current
+    ma60 = close.iloc[-60:].mean() if len(close) >= 60 else current
+    trend = "up" if ma20 > ma60 else "down"
+
+    return MacroIndicator(
+        name=name,
+        symbol=symbol,
+        value=round(float(current), 2),
+        change_pct=round(float(change_pct), 2),
+        trend=trend,
+        z_score=z_score,
+    )
+
+
+def _fetch_sp500() -> pd.DataFrame:
+    """获取标普500历史数据 (akshare)"""
+    import akshare as ak
+    df = ak.index_us_stock_sina(symbol=".INX")
+    df = _to_datetime_index(df, "date")
+    return df
 
 
 def _fetch_macro_data() -> dict:
-    """使用 yfinance 并发获取宏观指标数据，整体超时 15 秒"""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    """使用 akshare 获取宏观指标数据"""
+    import akshare as ak
 
     indicators = {}
 
+    # 1. 标普500 (最先获取，后续波动率计算依赖)
+    sp500_df = None
     try:
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {
-                executor.submit(_fetch_single_indicator, key, cfg): key
-                for key, cfg in INDICATOR_CONFIG.items()
-            }
-            for future in as_completed(futures, timeout=15):
-                try:
-                    key, result = future.result(timeout=0)
-                    if result is not None:
-                        indicators[key] = result
-                except Exception:
-                    key = futures[future]
-                    logger.warning(f"获取 {INDICATOR_CONFIG[key]['name']} 超时")
-                    continue
-
-    except TimeoutError:
-        logger.warning(f"宏观数据获取超时: {len(indicators)}/{len(INDICATOR_CONFIG)} 个指标成功")
+        sp500_df = _fetch_sp500()
+        indicators["SP500"] = _compute_indicator(sp500_df["close"], "标普500", "^GSPC")
+        logger.info("标普500: {:.2f}".format(sp500_df["close"].iloc[-1]))
     except Exception as e:
-        logger.error(f"宏观数据获取失败: {e}")
-        # 不抛异常，返回已获取的部分数据
+        logger.warning(f"获取标普500失败: {e}")
+
+    # 2. 纳斯达克
+    try:
+        nasdaq_df = ak.index_us_stock_sina(symbol=".IXIC")
+        nasdaq_df = _to_datetime_index(nasdaq_df, "date")
+        indicators["Nasdaq"] = _compute_indicator(nasdaq_df["close"], "纳斯达克", "^IXIC")
+        logger.info("纳斯达克: {:.2f}".format(nasdaq_df["close"].iloc[-1]))
+    except Exception as e:
+        logger.warning(f"获取纳斯达克失败: {e}")
+
+    # 3. SP500波动率 (替代VIX)
+    try:
+        if sp500_df is not None and not sp500_df.empty:
+            vol_df = sp500_df
+        else:
+            vol_df = _fetch_sp500()
+        returns = vol_df["close"].pct_change().dropna()
+        vol_20d = returns.rolling(20).std() * (252 ** 0.5) * 100
+        if len(vol_20d) >= 20:
+            current_vol = vol_20d.iloc[-1]
+            prev_20d_vol = vol_20d.iloc[-21] if len(vol_20d) >= 21 else current_vol
+            change_pct = ((current_vol - prev_20d_vol) / prev_20d_vol) * 100 if prev_20d_vol != 0 else 0
+            z_score = round(float((current_vol - vol_20d.mean()) / (vol_20d.std() or 1)), 2)
+            trend = "down" if current_vol < vol_20d.mean() else "up"
+            indicators["Volatility"] = MacroIndicator(
+                name="SP500波动率",
+                symbol="^VIX(proxy)",
+                value=round(float(current_vol), 2),
+                change_pct=round(float(change_pct), 2),
+                trend=trend,
+                z_score=z_score,
+            )
+            logger.info("SP500波动率: {:.1f}%".format(current_vol))
+    except Exception as e:
+        logger.warning(f"计算波动率失败: {e}")
+
+    # 4. 10年美债收益率
+    try:
+        bond_df = ak.bond_zh_us_rate()
+        bond_df = _to_datetime_index(bond_df, "日期")
+        yield_col = "美国国债收益率10年"
+        if yield_col in bond_df.columns:
+            bond_close = bond_df[yield_col].dropna()
+            if len(bond_close) > 0:
+                indicators["10Y_Yield"] = _compute_indicator(bond_close, "10年美债收益率", "^TNX")
+                logger.info("10年美债: {:.2f}%".format(bond_close.iloc[-1]))
+    except Exception as e:
+        logger.warning(f"获取美债收益率失败: {e}")
+
+    # 5. 美元指数
+    try:
+        usd_df = ak.index_global_hist_em(symbol="美元指数")
+        usd_df = _to_datetime_index(usd_df, "日期")
+        indicators["USD_Index"] = _compute_indicator(usd_df["最新价"], "美元指数", "DX-Y.NYB")
+        logger.info("美元指数: {:.2f}".format(usd_df["最新价"].iloc[-1]))
+    except Exception as e:
+        logger.warning(f"获取美元指数失败: {e}")
+
+    # 6. 黄金期货
+    try:
+        gold_df = ak.futures_foreign_hist(symbol="GC")
+        gold_df = _to_datetime_index(gold_df, "date")
+        indicators["Gold"] = _compute_indicator(gold_df["close"], "黄金期货", "GC=F")
+        logger.info("黄金期货: {:.2f}".format(gold_df["close"].iloc[-1]))
+    except Exception as e:
+        logger.warning(f"获取黄金期货失败: {e}")
+
+    # 7. 原油期货
+    try:
+        oil_df = ak.futures_foreign_hist(symbol="CL")
+        oil_df = _to_datetime_index(oil_df, "date")
+        indicators["Oil"] = _compute_indicator(oil_df["close"], "原油期货", "CL=F")
+        logger.info("原油期货: {:.2f}".format(oil_df["close"].iloc[-1]))
+    except Exception as e:
+        logger.warning(f"获取原油期货失败: {e}")
+
+    # 8. 道琼斯 (替代罗素2000)
+    try:
+        dji_df = ak.index_us_stock_sina(symbol=".DJI")
+        dji_df = _to_datetime_index(dji_df, "date")
+        indicators["DJI"] = _compute_indicator(dji_df["close"], "道琼斯", "^DJI")
+        logger.info("道琼斯: {:.2f}".format(dji_df["close"].iloc[-1]))
+    except Exception as e:
+        logger.warning(f"获取道琼斯失败: {e}")
 
     return indicators
 
@@ -104,16 +179,15 @@ def _fetch_macro_data() -> dict:
 def _compute_regime_scores(indicators: dict) -> dict:
     """
     计算增长/通胀得分
-    增长因子: SP500趋势 + 纳斯达克趋势 + 罗素2000趋势
-    通胀/风险因子: VIX水平 + 原油趋势 + 黄金趋势 + 美元强度
+    增长因子: SP500趋势 + 纳斯达克趋势 + 道琼斯趋势
+    通胀/风险因子: SP500波动率 + 原油趋势 + 黄金趋势 + 美元强度
     """
     # 增长得分
     growth_z = 0
     growth_count = 0
-    for key in ["SP500", "Nasdaq", "Russell2000"]:
+    for key in ["SP500", "Nasdaq", "DJI"]:
         if key in indicators:
             ind = indicators[key]
-            # 20日涨跌幅 + Z-score 综合
             score = (ind.change_pct / 5) * 0.6 + ind.z_score * 0.4
             growth_z += score
             growth_count += 1
@@ -125,12 +199,12 @@ def _compute_regime_scores(indicators: dict) -> dict:
     # 通胀/风险得分
     inflation_z = 0
     inflation_count = 0
-    for key in ["Oil", "Gold", "VIX"]:
+    for key in ["Oil", "Gold", "Volatility"]:
         if key in indicators:
             ind = indicators[key]
-            if key == "VIX":
-                # VIX>25为高风险，<15为低风险
-                score = (ind.value - 20) / 10
+            if key == "Volatility":
+                # 波动率>30高风险，<15低风险
+                score = (ind.value - 22) / 12
             else:
                 score = (ind.change_pct / 5) * 0.6 + ind.z_score * 0.4
             inflation_z += score
@@ -158,7 +232,6 @@ def _compute_regime_scores(indicators: dict) -> dict:
         regime = "stagflation"
         regime_label = "滞胀期"
 
-    # 置信度
     confidence = 0.5 + abs(growth_score) * 0.1 + abs(inflation_score) * 0.1
     confidence = min(0.95, confidence)
 
@@ -225,20 +298,18 @@ ALLOCATION_MAP = {
 async def get_macro_indicators():
     """
     获取宏观指标面板数据
-    使用 yfinance 获取 VIX、SP500、国债收益率、黄金、原油等关键指标
+    使用 akshare 获取标普500、纳斯达克、美债收益率、美元指数、黄金、原油等关键指标
     """
     try:
         indicators = _fetch_macro_data()
 
-        # 衍生指标
         derived = {}
         if "10Y_Yield" in indicators:
             derived["yield_level"] = "高" if indicators["10Y_Yield"].value > 4.5 else "中" if indicators["10Y_Yield"].value > 3 else "低"
-        if "VIX" in indicators:
-            vix_val = indicators["VIX"].value
-            derived["fear_level"] = "恐慌" if vix_val > 30 else "担忧" if vix_val > 20 else "平静"
+        if "Volatility" in indicators:
+            vol_val = indicators["Volatility"].value
+            derived["fear_level"] = "恐慌" if vol_val > 30 else "担忧" if vol_val > 20 else "平静"
         if "SP500" in indicators and "Gold" in indicators:
-            # 股票 vs 黄金比价
             derived["risk_on_ratio"] = round(indicators["SP500"].value / indicators["Gold"].value, 2)
 
         return {
@@ -321,53 +392,48 @@ async def get_regime_history(months: int = 12):
     每月末重新评估状态，返回时间序列
     """
     try:
-        import yfinance as yf
+        import akshare as ak
 
         history = []
         today = date.today()
 
-        # 使用 SP500 和 VIX 的历史数据估算状态演变
+        # 获取 SP500 历史数据
         try:
-            sp500 = yf.Ticker("^GSPC")
-            sp500_hist = sp500.history(period=f"{months + 3}mo")
-            vix = yf.Ticker("^VIX")
-            vix_hist = vix.history(period=f"{months + 3}mo")
-        except Exception:
-            # yfinance 失败时返回空
+            sp500_df = ak.index_us_stock_sina(symbol=".INX")
+            sp500_df = _to_datetime_index(sp500_df, "date")
+        except Exception as e:
+            logger.warning(f"akshare 获取 SP500 历史失败: {e}")
             return {"history": [], "message": "无法获取历史数据"}
 
-        if sp500_hist.empty or vix_hist.empty:
+        if sp500_df.empty:
             return {"history": [], "message": "历史数据为空"}
 
         # 每月评估一次
         for month_offset in range(months, -1, -1):
             eval_date = today - timedelta(days=30 * month_offset)
-            # 找到最接近的交易日
-            sp500_before = sp500_hist[sp500_hist.index <= pd.Timestamp(eval_date)]
-            if sp500_before.empty:
+            before = sp500_df[sp500_df.index <= pd.Timestamp(eval_date)]
+            if before.empty:
                 continue
 
-            eval_ts = sp500_before.index[-1]
-            sp500_slice = sp500_hist[sp500_hist.index <= eval_ts].tail(60)
-            vix_slice = vix_hist[vix_hist.index <= eval_ts].tail(60)
+            eval_ts = before.index[-1]
+            sp500_slice = sp500_df[sp500_df.index <= eval_ts].tail(60)
 
-            if len(sp500_slice) < 20 or len(vix_slice) < 20:
+            if len(sp500_slice) < 20:
                 continue
 
             # 增长: SP500 20日涨跌幅
-            sp500_current = sp500_slice["Close"].iloc[-1]
-            sp500_20d_ago = sp500_slice["Close"].iloc[-min(21, len(sp500_slice))]
+            sp500_current = sp500_slice["close"].iloc[-1]
+            sp500_20d_ago = sp500_slice["close"].iloc[-min(21, len(sp500_slice))]
             growth_20d = (sp500_current - sp500_20d_ago) / sp500_20d_ago * 100
 
-            # 通胀/风险: VIX 水平
-            vix_current = vix_slice["Close"].iloc[-1]
-            vix_score = (vix_current - 20) / 10
+            # 通胀/风险: SP500 20日波动率
+            returns = sp500_slice["close"].pct_change().dropna()
+            vol_20d = returns.rolling(20).std().iloc[-1] * (252 ** 0.5) * 100 if len(returns) >= 20 else 15
+            vix_score = (vol_20d - 22) / 12
 
-            # 映射到得分
             growth_score = max(-2, min(2, growth_20d / 5))
             inflation_score = max(-2, min(2, vix_score))
 
-            # 状态
             if growth_score >= 0 and inflation_score <= 0:
                 regime = "recovery"
                 label = "复苏期"
