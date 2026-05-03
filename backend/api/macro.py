@@ -29,57 +29,74 @@ INDICATOR_CONFIG = {
 }
 
 
-def _fetch_macro_data() -> dict:
-    """使用 yfinance 获取宏观指标数据"""
+def _fetch_single_indicator(key: str, cfg: dict) -> tuple:
+    """获取单个宏观指标（用于并发调用）"""
     import yfinance as yf
+    try:
+        ticker = yf.Ticker(cfg["symbol"])
+        hist = ticker.history(period="1y")
+        if hist.empty:
+            logger.warning(f"未获取到 {cfg['name']} 数据")
+            return key, None
 
-    symbols = list(set(c["symbol"] for c in INDICATOR_CONFIG.values()))
+        current = hist["Close"].iloc[-1]
+        if len(hist) >= 21:
+            prev_20d = hist["Close"].iloc[-21]
+            change_pct = ((current - prev_20d) / prev_20d) * 100
+        else:
+            change_pct = 0
+
+        if len(hist) >= 252:
+            hist_1y = hist["Close"].iloc[-252:]
+            z_score = (current - hist_1y.mean()) / (hist_1y.std() or 1)
+        else:
+            z_score = 0
+
+        ma20 = hist["Close"].iloc[-20:].mean() if len(hist) >= 20 else current
+        ma60 = hist["Close"].iloc[-60:].mean() if len(hist) >= 60 else current
+        trend = "up" if ma20 > ma60 else "down"
+
+        indicator = MacroIndicator(
+            name=cfg["name"],
+            symbol=cfg["symbol"],
+            value=round(float(current), 2),
+            change_pct=round(float(change_pct), 2),
+            trend=trend,
+            z_score=round(float(z_score), 2),
+        )
+        return key, indicator
+    except Exception as e:
+        logger.warning(f"获取 {cfg['name']} 失败: {e}")
+        return key, None
+
+
+def _fetch_macro_data() -> dict:
+    """使用 yfinance 并发获取宏观指标数据，整体超时 15 秒"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     indicators = {}
 
     try:
-        for key, cfg in INDICATOR_CONFIG.items():
-            try:
-                ticker = yf.Ticker(cfg["symbol"])
-                hist = ticker.history(period="1y")
-                if hist.empty:
-                    logger.warning(f"未获取到 {cfg['name']} 数据")
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {
+                executor.submit(_fetch_single_indicator, key, cfg): key
+                for key, cfg in INDICATOR_CONFIG.items()
+            }
+            for future in as_completed(futures, timeout=15):
+                try:
+                    key, result = future.result(timeout=0)
+                    if result is not None:
+                        indicators[key] = result
+                except Exception:
+                    key = futures[future]
+                    logger.warning(f"获取 {INDICATOR_CONFIG[key]['name']} 超时")
                     continue
 
-                current = hist["Close"].iloc[-1]
-                # 20日变动
-                if len(hist) >= 21:
-                    prev_20d = hist["Close"].iloc[-21]
-                    change_pct = ((current - prev_20d) / prev_20d) * 100
-                else:
-                    change_pct = 0
-
-                # Z-Score (vs 252日)
-                if len(hist) >= 252:
-                    hist_1y = hist["Close"].iloc[-252:]
-                    z_score = (current - hist_1y.mean()) / (hist_1y.std() or 1)
-                else:
-                    z_score = 0
-
-                # 趋势判断 (20日均线 vs 60日均线)
-                ma20 = hist["Close"].iloc[-20:].mean() if len(hist) >= 20 else current
-                ma60 = hist["Close"].iloc[-60:].mean() if len(hist) >= 60 else current
-                trend = "up" if ma20 > ma60 else "down"
-
-                indicators[key] = MacroIndicator(
-                    name=cfg["name"],
-                    symbol=cfg["symbol"],
-                    value=round(float(current), 2),
-                    change_pct=round(float(change_pct), 2),
-                    trend=trend,
-                    z_score=round(float(z_score), 2),
-                )
-            except Exception as e:
-                logger.warning(f"获取 {cfg['name']} 失败: {e}")
-                continue
-
+    except TimeoutError:
+        logger.warning(f"宏观数据获取超时: {len(indicators)}/{len(INDICATOR_CONFIG)} 个指标成功")
     except Exception as e:
         logger.error(f"宏观数据获取失败: {e}")
-        raise HTTPException(status_code=500, detail=f"宏观数据获取失败: {str(e)}")
+        # 不抛异常，返回已获取的部分数据
 
     return indicators
 
