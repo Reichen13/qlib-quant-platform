@@ -20,6 +20,7 @@ from core.factor_utils import (
     compute_industry_weighted_ic,
     cluster_factors_by_ic,
 )
+from core.alpha158_cache import load_cached_features, save_features_cache
 
 router = APIRouter()
 
@@ -100,38 +101,43 @@ async def analyze_factors(params: FactorAnalysisRequest):
 
         logger.info(f"Alpha158 因子分析: {start_str}~{end_str}, 预测期={pred_period}天")
 
-        # ── 1. 使用 Qlib 原生 Alpha158 handler 生成全部 158 个因子 ──
-        dataset = init_instance_by_config({
-            "class": "DatasetH",
-            "module_path": "qlib.data.dataset",
-            "kwargs": {
-                "handler": {
-                    "class": "Alpha158",
-                    "module_path": "qlib.contrib.data.handler",
-                    "kwargs": {
-                        "start_time": start_str,
-                        "end_time": end_str,
-                        "fit_start_time": start_str,
-                        "fit_end_time": end_str,
-                        "instruments": "csi300",
+        # ── 1. 尝试从缓存加载 Alpha158 特征 ──
+        df_features = load_cached_features(start_str, end_str, "csi300")
+
+        if df_features is None:
+            # ── 缓存未命中，使用 Qlib 原生 Alpha158 handler 生成 ──
+            dataset = init_instance_by_config({
+                "class": "DatasetH",
+                "module_path": "qlib.data.dataset",
+                "kwargs": {
+                    "handler": {
+                        "class": "Alpha158",
+                        "module_path": "qlib.contrib.data.handler",
+                        "kwargs": {
+                            "start_time": start_str,
+                            "end_time": end_str,
+                            "fit_start_time": start_str,
+                            "fit_end_time": end_str,
+                            "instruments": "csi300",
+                        },
+                    },
+                    "segments": {
+                        "test": (start_str, end_str),
                     },
                 },
-                "segments": {
-                    "test": (start_str, end_str),
-                },
-            },
-        })
+            })
 
-        logger.info("Alpha158 数据集构建完成")
+            logger.info("Alpha158 数据集构建完成")
 
-        # ── 2. 获取特征数据 ──
-        # dataset prepares features internally; we get them from the handler
-        df_features = dataset.prepare("test", col_set="feature")
+            df_features = dataset.prepare("test", col_set="feature")
 
-        # 如果 prepare 不可用，直接从 handler 获取
-        if df_features is None or (hasattr(df_features, 'empty') and df_features.empty):
-            handler = dataset.handler
-            df_features = handler.fetch(col_set="feature")
+            # 如果 prepare 不可用，直接从 handler 获取
+            if df_features is None or (hasattr(df_features, 'empty') and df_features.empty):
+                handler = dataset.handler
+                df_features = handler.fetch(col_set="feature")
+
+            if df_features is not None and not df_features.empty:
+                save_features_cache(df_features, start_str, end_str, "csi300")
 
         if df_features is None or df_features.empty:
             raise HTTPException(status_code=500, detail="Alpha158 因子数据为空")
