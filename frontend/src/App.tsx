@@ -14,6 +14,11 @@ import { DataManagementPage } from "./pages/data-management"
 import { RiskPage } from "./pages/risk"
 import { PortfolioPage } from "./pages/portfolio"
 import { MacroDashboardPage } from "./pages/macro-dashboard"
+import { NewsAnalysisPage } from "./pages/news-analysis"
+import { AiStrategyPage } from "./pages/ai-strategy"
+import { AgentDebatePage } from "./pages/agent-debate"
+import { DlModelsPage } from "./pages/dl-models"
+import { StockPoolPage } from "./pages/stock-pool"
 
 // 创建路由
 const router = createBrowserRouter([
@@ -72,6 +77,26 @@ const router = createBrowserRouter([
       {
         path: "macro-dashboard",
         element: <MacroDashboardPage />,
+      },
+      {
+        path: "news-analysis",
+        element: <NewsAnalysisPage />,
+      },
+      {
+        path: "ai-strategy",
+        element: <AiStrategyPage />,
+      },
+      {
+        path: "agent-debate",
+        element: <AgentDebatePage />,
+      },
+      {
+        path: "dl-models",
+        element: <DlModelsPage />,
+      },
+      {
+        path: "stock-pool",
+        element: <StockPoolPage />,
       },
     ],
   },

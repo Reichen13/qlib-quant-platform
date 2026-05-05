@@ -24,21 +24,6 @@ const strategySliders = [
   { id: "etf", name: "ETF 配置", value: 25, min: 0, max: 100, step: 5, unit: "%", color: "oklch(0.398 0.07 227.392)", description: "行业 ETF 轮动配置" },
 ]
 
-const mockTodayETF = [
-  { name: "半导体 ETF", code: "512480", price: 1.256, change: 2.35, signal: "strong_buy" },
-  { name: "新能源车 ETF", code: "516390", price: 0.982, change: 1.88, signal: "buy" },
-  { name: "光伏 ETF", code: "515790", price: 0.875, change: -0.56, signal: "hold" },
-  { name: "军工 ETF", code: "512660", price: 1.145, change: 1.22, signal: "buy" },
-  { name: "医药 ETF", code: "512010", price: 0.658, change: -1.25, signal: "avoid" },
-  { name: "消费 ETF", code: "159928", price: 0.892, change: 0.45, signal: "hold" },
-]
-
-const mockWeeklySignals = [
-  { strategy: "因子策略", signal: "买入", reason: "多因子共振向上", stocks: 25 },
-  { strategy: "主题轮动", signal: "增持", reason: "科技板块强势", stocks: 12 },
-  { strategy: "ETF 轮动", signal: "持有", reason: "震荡整理", stocks: 8 },
-]
-
 function average(values: number[]) {
   return values.reduce((sum, value) => sum + value, 0) / values.length
 }
@@ -88,6 +73,12 @@ export function DashboardPage() {
     queryKey: ["index", "comparison"],
     queryFn: () => api.index.comparison(),
     refetchInterval: 300000,
+  })
+
+  const { data: dashboardData } = useQuery({
+    queryKey: ["dashboard", "summary"],
+    queryFn: () => api.dashboard.summary(),
+    refetchInterval: 120000,
   })
 
   const stocksCount = stocksData?.total || 0
@@ -256,7 +247,7 @@ export function DashboardPage() {
             </CardHeader>
             <CardContent>
               <div className="space-y-2">
-                {mockWeeklySignals.map((s) => (
+                {(dashboardData?.strategy_signals || []).map((s: any) => (
                   <div key={s.strategy} className="flex items-center justify-between p-2.5 rounded-lg bg-muted/40">
                     <div className="flex items-center gap-2.5">
                       <div className="w-0.5 h-5 rounded-full bg-foreground/40" />
@@ -269,7 +260,7 @@ export function DashboardPage() {
                       <Badge variant={s.signal === "持有" ? "outline" : "default"} className="text-[11px] px-1.5 py-0">
                         {s.signal}
                       </Badge>
-                      <p className="text-[11px] text-muted-foreground">{s.stocks} 只标的</p>
+                      <p className="text-[11px] text-muted-foreground">{s.stocks_count} 只标的</p>
                     </div>
                   </div>
                 ))}
@@ -314,7 +305,7 @@ export function DashboardPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {(etfData?.etfs || mockTodayETF).slice(0, 8).map((etf: any) => {
+                {(etfData?.etfs || []).slice(0, 8).map((etf: any) => {
                   const price = etf.price ?? 1
                   const change = etf.change_pct ?? etf.change ?? 0
                   const signal = etf.signal ?? "hold"
@@ -348,7 +339,7 @@ export function DashboardPage() {
 
           {/* 移动端卡片列表 */}
           <div className="md:hidden space-y-2">
-            {(etfData?.etfs || mockTodayETF).slice(0, 6).map((etf: any) => {
+            {(etfData?.etfs || []).slice(0, 6).map((etf: any) => {
               const price = etf.price ?? 1
               const change = etf.change_pct ?? etf.change ?? 0
               return (
@@ -386,11 +377,7 @@ export function DashboardPage() {
         </CardHeader>
         <CardContent>
           <div className="grid gap-3 grid-cols-1 sm:grid-cols-3">
-            {(indexComparison?.comparison || [
-              { code: "hs300", total_return: 2.5, avg_daily_change: 0.12, max_drawdown: -1.8, current_price: 3850 },
-              { code: "sz50", total_return: 1.8, avg_daily_change: 0.08, max_drawdown: -1.2, current_price: 2750 },
-              { code: "zz500", total_return: 3.2, avg_daily_change: 0.15, max_drawdown: -2.5, current_price: 5420 },
-            ]).map((index: any) => {
+            {(indexComparison?.comparison || []).map((index: any) => {
               const indexNames: Record<string, string> = {
                 "hs300": "沪深300",
                 "sz50": "上证50",

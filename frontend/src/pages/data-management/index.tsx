@@ -16,23 +16,6 @@ import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { UpdateProgress } from "@/components/features/update-progress"
 
-// 获取最近一个交易日期（排除周末）
-function getLastTradeDate(daysAgo: number = 0): string {
-  const today = new Date()
-  const date = new Date(today)
-  date.setDate(date.getDate() - daysAgo)
-
-  // 如果是周末（周六=6，周日=0），往前推到周五
-  const dayOfWeek = date.getDay()
-  if (dayOfWeek === 0) {
-    date.setDate(date.getDate() - 2) // 周日 -> 周五
-  } else if (dayOfWeek === 6) {
-    date.setDate(date.getDate() - 1) // 周六 -> 周五
-  }
-
-  return date.toISOString().split("T")[0]
-}
-
 export function DataManagementPage() {
   const [isUpdating, setIsUpdating] = useState(false)
   const [updateSteps, setUpdateSteps] = useState<any[]>([])
@@ -43,6 +26,13 @@ export function DataManagementPage() {
     queryKey: ["data", "status"],
     queryFn: () => api.data.status(),
     staleTime: 5 * 60 * 1000, // 5分钟内不重新获取
+  })
+
+  // 获取数据更新日志
+  const { data: dataLogs } = useQuery({
+    queryKey: ["data", "logs"],
+    queryFn: () => api.data.logs(),
+    staleTime: 2 * 60 * 1000,
   })
 
   const handleCheckStatus = () => {
@@ -324,45 +314,29 @@ export function DataManagementPage() {
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
-              <div className="flex items-center gap-3">
-                <CheckCircle className="h-5 w-5 text-up" />
-                <div className="space-y-0.5">
-                  <p className="font-medium">全量数据更新完成</p>
-                  <p className="text-xs text-muted-foreground">更新股票 3800 只，ETF 320 只，指数 12 个</p>
+            {(dataLogs?.logs || []).map((log: any, i: number) => (
+              <div key={i} className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+                <div className="flex items-center gap-3">
+                  {log.type === "normal" || log.type === "success" ? (
+                    <CheckCircle className="h-5 w-5 text-up" />
+                  ) : log.type === "warning" ? (
+                    <AlertCircle className="h-5 w-5 text-yellow-600" />
+                  ) : (
+                    <XCircle className="h-5 w-5 text-down" />
+                  )}
+                  <div className="space-y-0.5">
+                    <p className="font-medium">{log.title}</p>
+                    <p className="text-xs text-muted-foreground">{log.detail}</p>
+                  </div>
+                </div>
+                <div className="text-right text-sm text-muted-foreground">
+                  <p>{log.time}</p>
                 </div>
               </div>
-              <div className="text-right text-sm text-muted-foreground">
-                <p>{getLastTradeDate(0)}</p>
-                <p>15:30</p>
-              </div>
-            </div>
-            <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
-              <div className="flex items-center gap-3">
-                <CheckCircle className="h-5 w-5 text-up" />
-                <div className="space-y-0.5">
-                  <p className="font-medium">股票数据增量更新</p>
-                  <p className="text-xs text-muted-foreground">更新 1 天数据</p>
-                </div>
-              </div>
-              <div className="text-right text-sm text-muted-foreground">
-                <p>{getLastTradeDate(1)}</p>
-                <p>15:30</p>
-              </div>
-            </div>
-            <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
-              <div className="flex items-center gap-3">
-                <CheckCircle className="h-5 w-5 text-up" />
-                <div className="space-y-0.5">
-                  <p className="font-medium">ETF 数据补充更新</p>
-                  <p className="text-xs text-muted-foreground">新增 15 只 ETF 数据</p>
-                </div>
-              </div>
-              <div className="text-right text-sm text-muted-foreground">
-                <p>{getLastTradeDate(2)}</p>
-                <p>10:15</p>
-              </div>
-            </div>
+            ))}
+            {(!dataLogs?.logs || dataLogs.logs.length === 0) && (
+              <p className="text-sm text-muted-foreground text-center py-4">暂无数据更新记录，点击"检查状态"获取最新信息</p>
+            )}
           </div>
         </CardContent>
       </Card>

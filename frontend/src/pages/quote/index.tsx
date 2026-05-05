@@ -478,7 +478,7 @@ export function QuoteAnalysisPage() {
                 <div className="space-y-3">
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-muted-foreground">MA5</span>
-                    <span className="font-medium text-white">
+                    <span className="font-medium text-foreground">
                       {currentMA5?.toFixed(2) || "--"}
                     </span>
                   </div>

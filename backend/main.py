@@ -93,7 +93,8 @@ async def lifespan(app: FastAPI):
     from api import (
         stocks, hot, quote, factors, backtest, etf,
         pair, mean_reversion, financials, industry, index, sectors, risk, portfolio,
-        macro, data,
+        macro, data, dashboard, news_analysis, ai_strategy, agent_debate,
+        dl_models, stock_pool,
     )
 
     app.include_router(stocks.router, prefix="/api/stocks", tags=["stocks"])
@@ -112,8 +113,21 @@ async def lifespan(app: FastAPI):
     app.include_router(portfolio.router, prefix="/api/portfolio", tags=["portfolio"])
     app.include_router(macro.router, prefix="/api/macro", tags=["macro"])
     app.include_router(data.router, prefix="/api/data", tags=["data"])
+    app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
+    app.include_router(news_analysis.router, prefix="/api/news", tags=["news"])
+    app.include_router(ai_strategy.router, prefix="/api/ai-strategy", tags=["ai-strategy"])
+    app.include_router(agent_debate.router, prefix="/api/agent", tags=["agent"])
+    app.include_router(dl_models.router, prefix="/api/dl-models", tags=["dl-models"])
+    app.include_router(stock_pool.router, prefix="/api/stock-pool", tags=["stock-pool"])
 
     logger.info("✅ 所有路由已注册")
+
+    # ── 初始化数据库 ──
+    try:
+        from db.task_store import task_store
+        task_store.init_db()
+    except Exception as e:
+        logger.warning(f"⚠️ 数据库初始化跳过（非致命）: {e}")
 
     # ── 预加载行业映射（避免首次因子分析请求耗时 16 秒）──
     try:

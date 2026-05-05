@@ -1,6 +1,7 @@
 // 全局状态管理
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
+import { relativeDate } from "@/lib/utils"
 
 // ── 页面参数持久化类型 ──
 export interface BacktestParams {
@@ -63,30 +64,34 @@ interface AppState {
   setPortfolioCodes: (codes: string) => void
 }
 
-// 默认值
-const DEFAULT_BACKTEST_PARAMS: BacktestParams = {
-  model: "lightgbm",
-  trainStart: "2023-01-01",
-  trainEnd: "2024-06-30",
-  testStart: "2024-07-01",
-  testEnd: "2024-12-31",
-  topK: "30",
-  rebalance: "5",
-  commission: "0.0003",
-  slippage: "0.0003",
-  singlePosition: "0.05",
-  stopLoss: "-0.08",
-  sourceFactor: "",
+// 动态默认值工厂函数
+function createDefaultBacktestParams(): BacktestParams {
+  return {
+    model: "lightgbm",
+    trainStart: relativeDate({ months: -24 }),
+    trainEnd: relativeDate({ months: -7 }),
+    testStart: relativeDate({ months: -6 }),
+    testEnd: relativeDate({ days: -1 }),
+    topK: "30",
+    rebalance: "5",
+    commission: "0.0003",
+    slippage: "0.0003",
+    singlePosition: "0.05",
+    stopLoss: "-0.08",
+    sourceFactor: "",
+  }
 }
 
-const DEFAULT_FACTOR_PARAMS: FactorParams = {
-  startDate: "2026-01-01",
-  endDate: "2026-04-30",
-  predictPeriod: 5,
-  topK: 20,
-  neutralize: "none",
-  selectedFactors: [],
-  activeTab: "overview",
+function createDefaultFactorParams(): FactorParams {
+  return {
+    startDate: relativeDate({ months: -6 }),
+    endDate: relativeDate({ days: -1 }),
+    predictPeriod: 5,
+    topK: 20,
+    neutralize: "none",
+    selectedFactors: [],
+    activeTab: "overview",
+  }
 }
 
 const DEFAULT_RISK_CODES = ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS", "601012.SS", "300750.SZ", "000002.SZ"]
@@ -131,13 +136,13 @@ export const useAppStore = create<AppState>()(
       setRiskCodes: (codes, inputValue) => set({ riskCodes: codes, riskInputValue: inputValue }),
 
       // 回测
-      backtestParams: DEFAULT_BACKTEST_PARAMS,
+      backtestParams: createDefaultBacktestParams(),
       backtestActiveTab: "config",
       setBacktestParams: (params) => set({ backtestParams: params }),
       setBacktestActiveTab: (tab) => set({ backtestActiveTab: tab }),
 
       // 因子分析
-      factorParams: DEFAULT_FACTOR_PARAMS,
+      factorParams: createDefaultFactorParams(),
       setFactorParams: (params) => set((state) => ({
         factorParams: { ...state.factorParams, ...params },
       })),

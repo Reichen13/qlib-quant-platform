@@ -10,8 +10,9 @@ from datetime import date, datetime, timedelta
 from typing import List, Optional
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from loguru import logger
+from auth import verify_api_key
 
 # 添加路径
 project_root = str(Path(__file__).parent.parent.parent)
@@ -24,7 +25,7 @@ from models.schemas import (
     PositionSizingResult,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 
 def _to_qlib_codes(codes: List[str]) -> List[str]:

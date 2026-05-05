@@ -27,9 +27,17 @@ async function apiFetch(input: RequestInfo | URL, init: ApiRequestInit = {}): Pr
     }
   }
 
+  // 注入 API Key（如果已配置）
+  const apiKey = localStorage.getItem("qlib-api-key")
+  const headers = { ...(requestInit.headers as Record<string, string> || {}) }
+  if (apiKey) {
+    headers["X-API-Key"] = apiKey
+  }
+
   try {
     return await globalThis.fetch(input, {
       ...requestInit,
+      headers,
       signal: controller.signal,
     })
   } catch (error) {
@@ -398,6 +406,18 @@ export interface IndexComparisonResponse {
   }>
 }
 
+export interface DataLogEntry {
+  type: string
+  title: string
+  detail: string
+  time: string
+}
+
+export interface DataLogsResponse {
+  logs: DataLogEntry[]
+  checked_at: string
+}
+
 export const api = {
   // 股票相关
   stocks: {
@@ -494,7 +514,7 @@ export const api = {
       fetch(`${API_BASE}/api/etf/list`).then(r => handleResponse<any>(r)),
   },
 
-  // 数据管理 - 使用 stocks/etf 接口获取最新信息
+  // 数据管理
   data: {
     status: async () => {
       const health = await fetch(`${API_BASE}/api/data/health`).then(r => handleResponse<any>(r))
@@ -505,22 +525,12 @@ export const api = {
         index: src.stocks.index,
       }
     },
-    update: async (type: "stocks" | "etf" | "index" | "all") => {
-      // 模拟更新响应
-      return {
-        task_id: `update-${Date.now()}`,
-        status: "completed" as const,
-        progress: 100,
-        message: `${type} 数据已是最新`,
-      }
-    },
-    updateProgress: (taskId: string) =>
-      Promise.resolve({
-        task_id: taskId,
-        status: "completed" as const,
-        progress: 100,
-        message: "数据已是最新",
-      }),
+    logs: () =>
+      fetch(`${API_BASE}/api/data/logs`).then(r => handleResponse<DataLogsResponse>(r)),
+    update: async (_type: "stocks" | "etf" | "index" | "all") =>
+      fetch(`${API_BASE}/api/data/health`).then(r => handleResponse<any>(r)),
+    updateProgress: (_taskId: string) =>
+      fetch(`${API_BASE}/api/data/health`).then(r => handleResponse<any>(r)),
   },
 
   // 配对交易
@@ -637,6 +647,12 @@ export const api = {
       }).then(r => handleResponse<any>(r)),
   },
 
+  // 首页仪表盘汇总
+  dashboard: {
+    summary: () =>
+      fetch(`${API_BASE}/api/dashboard/summary`).then(r => handleResponse<any>(r)),
+  },
+
   // 宏观策略
   macro: {
     indicators: () =>
@@ -655,6 +671,97 @@ export const api = {
       }).then(r => handleResponse<any>(r)),
     history: (months: number = 12) =>
       fetch(`${API_BASE}/api/macro/history?months=${months}`).then(r => handleResponse<any>(r)),
+  },
+
+  // 新闻分析
+  news: {
+    sentiment: (code: string, days: number = 7) =>
+      fetch(`${API_BASE}/api/news/sentiment/${encodeURIComponent(code)}?days=${days}`).then(r => handleResponse<any>(r)),
+    dailyBrief: () =>
+      fetch(`${API_BASE}/api/news/daily-brief`).then(r => handleResponse<any>(r)),
+    events: (code: string, days: number = 30) =>
+      fetch(`${API_BASE}/api/news/events/${encodeURIComponent(code)}?days=${days}`).then(r => handleResponse<any>(r)),
+    marketSentiment: () =>
+      fetch(`${API_BASE}/api/news/market-sentiment`).then(r => handleResponse<any>(r)),
+  },
+
+  // AI 策略
+  aiStrategy: {
+    templates: () =>
+      fetch(`${API_BASE}/api/ai-strategy/templates`).then(r => handleResponse<any>(r)),
+    generate: (description: string, useDeep: boolean = false) =>
+      fetch(`${API_BASE}/api/ai-strategy/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description, use_deep: useDeep }),
+      }).then(r => handleResponse<any>(r)),
+    analyze: (holdings: { code: string; name: string; weight: number; cost?: number }[], totalCapital?: number, riskTolerance?: string) =>
+      fetch(`${API_BASE}/api/ai-strategy/analyze`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          holdings,
+          total_capital: totalCapital || 1_000_000,
+          risk_tolerance: riskTolerance || "moderate",
+        }),
+      }).then(r => handleResponse<any>(r)),
+    optimize: (strategyType: string, paramRanges?: Record<string, any>) =>
+      fetch(`${API_BASE}/api/ai-strategy/optimize`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          strategy_type: strategyType,
+          param_ranges: paramRanges || {},
+        }),
+      }).then(r => handleResponse<any>(r)),
+  },
+
+  // 多智能体辩论
+  agent: {
+    analyze: (code: string, asyncMode: boolean = true) =>
+      fetch(`${API_BASE}/api/agent/analyze?code=${encodeURIComponent(code)}&async_mode=${asyncMode}`, {
+        method: "POST",
+      }).then(r => handleResponse<any>(r)),
+    report: (taskId: string) =>
+      fetch(`${API_BASE}/api/agent/report/${taskId}`).then(r => handleResponse<any>(r)),
+    memory: (code: string) =>
+      fetch(`${API_BASE}/api/agent/memory/${encodeURIComponent(code)}`).then(r => handleResponse<any>(r)),
+  },
+
+  // 深度学习模型
+  dlModels: {
+    list: () =>
+      fetch(`${API_BASE}/api/dl-models/list`).then(r => handleResponse<any>(r)),
+    train: (modelName: string, config?: Record<string, any>) =>
+      fetch(`${API_BASE}/api/dl-models/train?model_name=${encodeURIComponent(modelName)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(config || {}),
+      }).then(r => handleResponse<any>(r)),
+    status: (taskId: string) =>
+      fetch(`${API_BASE}/api/dl-models/status/${taskId}`).then(r => handleResponse<any>(r)),
+  },
+
+  // 智能股票池
+  stockPool: {
+    list: () =>
+      fetch(`${API_BASE}/api/stock-pool/list`).then(r => handleResponse<any>(r)),
+    create: (definition: any) =>
+      fetch(`${API_BASE}/api/stock-pool/create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(definition),
+      }).then(r => handleResponse<any>(r)),
+    get: (id: string) =>
+      fetch(`${API_BASE}/api/stock-pool/${id}`).then(r => handleResponse<any>(r)),
+    refresh: (id: string) =>
+      fetch(`${API_BASE}/api/stock-pool/${id}/refresh`, {
+        method: "POST",
+      }).then(r => handleResponse<any>(r)),
+    delete: (id: string) =>
+      fetch(`${API_BASE}/api/stock-pool/${id}`, {
+        method: "DELETE",
+      }).then(r => handleResponse<any>(r)),
   },
 }
 

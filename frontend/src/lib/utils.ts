@@ -63,3 +63,20 @@ export function formatDate(date: string | Date): string {
     day: "2-digit",
   })
 }
+
+/** 将 Date 转为 YYYY-MM-DD 字符串 */
+export function toDateString(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+/** 相对 today 偏移的日期字符串 */
+export function relativeDate(offsets: { years?: number; months?: number; days?: number }): string {
+  const d = new Date()
+  if (offsets.years) d.setFullYear(d.getFullYear() + offsets.years)
+  if (offsets.months) d.setMonth(d.getMonth() + offsets.months)
+  if (offsets.days) d.setDate(d.getDate() + offsets.days)
+  return toDateString(d)
+}

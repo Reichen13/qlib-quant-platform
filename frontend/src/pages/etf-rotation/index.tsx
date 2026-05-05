@@ -45,7 +45,7 @@ export function EtfRotationPage() {
         change: changePct,
         momentum: changePct > 2 ? "强势" : changePct < -2 ? "弱势" : "中性",
         trendScore: Math.round(score * 0.7 + (changePct > 0 ? 10 : -10)),
-        rsiScore: Math.round(score * 0.9 + Math.random() * 10),
+        rsiScore: Math.round(score * 0.9),
       }
     })
   }

@@ -9,8 +9,9 @@ from typing import List, Optional
 import pandas as pd
 import numpy as np
 import uuid
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from loguru import logger
+from auth import verify_api_key
 
 # 全局禁用多进程（必须在 import qlib 之前设置）
 os.environ['NUMBA_NUM_THREADS'] = '1'
@@ -24,16 +25,14 @@ from models.schemas import (
     AttributionPoint, AttributionSummary,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 # 导入核心模块
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from stock_names import get_stock_name
-
-# 回测任务存储（生产环境应使用 Redis）
-backtest_tasks = {}
+from db.task_store import task_store
 
 
 def _fix_parallel_ext():
@@ -176,12 +175,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
     - 科创板/创业板: 自动排除（±20% 涨跌幅不匹配 0.095 阈值）
     """
     try:
-        backtest_tasks[task_id] = {
-            "status": "running",
-            "progress": 5,
-            "result": None,
-            "error": None
-        }
+        task_store.create_task(task_id, params.model_dump_json())
 
         import qlib
         from qlib.utils import init_instance_by_config
@@ -194,7 +188,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         # 修复 ParallelExt 兼容性
         _fix_parallel_ext()
 
-        backtest_tasks[task_id]["progress"] = 10
+        task_store.update_progress(task_id, 10)
 
         # ── 构建数据集（Alpha158 因子） ──
         train_start = str(params.train_start)
@@ -213,7 +207,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         available_end = calendars[-1] if len(calendars) > 0 else test_end_dt
         backtest_end = min(test_end_dt, available_end - pd.Timedelta(days=2))
 
-        backtest_tasks[task_id]["progress"] = 20
+        task_store.update_progress(task_id, 20)
 
         logger.info(f"回测参数: train={train_start}~{train_end}, test={test_start}~{backtest_end}")
 
@@ -249,7 +243,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
             },
         })
 
-        backtest_tasks[task_id]["progress"] = 40
+        task_store.update_progress(task_id, 40)
 
         # ── 训练模型（轻量化配置以加速回测） ──
         if params.model == "xgboost":
@@ -293,7 +287,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
             # 如果要真正只用指定因子，需要在训练前过滤 handler 输出
             # 这里记录因子来源用于结果展示
 
-        backtest_tasks[task_id]["progress"] = 60
+        task_store.update_progress(task_id, 60)
 
         # ── 执行回测 ──
         # 获取沪深300成分股并运行A股约束检测
@@ -301,7 +295,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         all_csi300 = D.list_instruments(instruments, as_list=True)
         constraint_analysis = _check_a_share_constraints(all_csi300, train_start, str(backtest_end))
 
-        backtest_tasks[task_id]["progress"] = 55
+        task_store.update_progress(task_id, 55)
 
         exchange_kwargs = {
             "codes": "csi300",
@@ -335,7 +329,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
             exchange_kwargs=exchange_kwargs,
         )
 
-        backtest_tasks[task_id]["progress"] = 80
+        task_store.update_progress(task_id, 80)
 
         # ── 计算回测指标 ──
         r = report["return"]
@@ -421,7 +415,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
             instruments=instruments,
         )
 
-        backtest_tasks[task_id]["progress"] = 90
+        task_store.update_progress(task_id, 90)
 
         # ── 生成净值曲线 ──
         equity_data = []
@@ -442,7 +436,11 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 value=round(float(dd_series.iloc[i]) * 100, 2),
             ))
 
-        # ── 生成买卖推荐 ──
+        # ── 生成买卖推荐（含归因上下文）──
+        attr_ind_map = attribution_result.get("industry_map", {}) if attribution_result else {}
+        attr_ind_contrib = attribution_result.get("summary", {}).get("by_industry", {}) if attribution_result else {}
+        attr_main = attribution_result.get("main_driver", "") if attribution_result else ""
+
         top_buys = []
         top_sells = []
 
@@ -450,7 +448,6 @@ def run_backtest_task(task_id: str, params: BacktestParams):
             pred_df = pred.reset_index()
             pred_df.columns = ['日期', '代码', '预测得分']
 
-            # 取最新日期的预测
             latest_date = pred_df['日期'].max()
             latest_pred = pred_df[pred_df['日期'] == latest_date].copy()
             latest_pred = latest_pred.sort_values('预测得分', ascending=False)
@@ -460,7 +457,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 code = str(row['代码']).upper()
                 score = float(row['预测得分'])
                 name = get_stock_name(code)
-                reason = _generate_buy_reason(score, name)
+                reason = _generate_buy_reason(score, name, code, attr_ind_map, attr_ind_contrib, attr_main)
                 top_buys.append(StockRecommendation(
                     code=code,
                     name=name,
@@ -473,7 +470,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 code = str(row['代码']).upper()
                 score = float(row['预测得分'])
                 name = get_stock_name(code)
-                reason = _generate_sell_reason(score, name)
+                reason = _generate_sell_reason(score, name, code, attr_ind_map, attr_ind_contrib, attr_main)
                 top_sells.append(StockRecommendation(
                     code=code,
                     name=name,
@@ -493,10 +490,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         else:
             position_advice = "建议仓位 30-40%，策略表现较弱，注意风控"
 
-        backtest_tasks[task_id] = {
-            "status": "completed",
-            "progress": 100,
-            "result": BacktestResponse(
+        result = BacktestResponse(
                 task_id=task_id,
                 status="completed",
                 progress=100,
@@ -523,9 +517,8 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 attribution_curve=[AttributionPoint(**p) for p in attribution_result["curve"]] if attribution_result else None,
                 attribution_interpretation=attribution_result["interpretation"] if attribution_result else None,
                 cost_impact_estimate=cost_impact_estimate,
-            ),
-            "error": None
-        }
+            )
+        task_store.set_completed(task_id, result.model_dump_json())
 
         logger.info(f"回测任务 {task_id} 完成: 年化={ann_r:.2%}, 夏普={sharpe:.2f}, 回撤={max_dd:.2%}")
 
@@ -533,12 +526,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         logger.error(f"回测任务 {task_id} 失败: {e}")
         import traceback
         traceback.print_exc()
-        backtest_tasks[task_id] = {
-            "status": "failed",
-            "progress": 0,
-            "result": None,
-            "error": str(e)
-        }
+        task_store.set_failed(task_id, str(e))
 
 
 def _compute_brinson_attribution(
@@ -777,6 +765,8 @@ def _compute_brinson_attribution(
             },
             "curve": curve,
             "interpretation": interp,
+            "industry_map": industry_map,
+            "main_driver": main_type,
         }
 
     except Exception as e:
@@ -784,24 +774,58 @@ def _compute_brinson_attribution(
         return None
 
 
-def _generate_buy_reason(score: float, name: str) -> str:
-    """生成买入推荐理由"""
+def _generate_buy_reason(score: float, name: str, code: str = "",
+                          industry_map: dict = None, industry_contrib: dict = None,
+                          main_driver: str = "") -> str:
+    """生成买入推荐理由（含 Brinson 归因上下文）"""
+    base = ""
     if score > 0.05:
-        return f"{name} Alpha158 综合评分领先，模型预测收益显著为正"
+        base = f"{name} Alpha158 综合评分领先，模型预测收益显著为正"
     elif score > 0.02:
-        return f"{name} 因子信号偏强，多因子模型看好"
+        base = f"{name} 因子信号偏强，多因子模型看好"
     else:
-        return f"{name} 评分排名靠前，建议关注"
+        base = f"{name} 评分排名靠前，建议关注"
+
+    # 加入归因上下文
+    if industry_map and code in industry_map:
+        industry = industry_map[code]
+        if industry_contrib and industry in industry_contrib:
+            contrib = industry_contrib[industry]
+            selec = contrib.get("selection", 0)
+            alloc = contrib.get("allocation", 0)
+            if selec > 0.5:
+                base += f"，所在行业「{industry}」选股贡献 +{selec:.1f}%"
+            elif selec < -0.5:
+                base += f"，所在行业「{industry}」选股贡献 {selec:.1f}%"
+            if alloc < -0.5:
+                base += f"（配置效应 {alloc:.1f}%，建议控制仓位）"
+        elif main_driver == "行业配置":
+            base += f"，本期超额收益主要来自行业配置效应"
+
+    return base
 
 
-def _generate_sell_reason(score: float, name: str) -> str:
-    """生成卖出推荐理由"""
+def _generate_sell_reason(score: float, name: str, code: str = "",
+                           industry_map: dict = None, industry_contrib: dict = None,
+                           main_driver: str = "") -> str:
+    """生成卖出推荐理由（含 Brinson 归因上下文）"""
+    base = ""
     if score < -0.05:
-        return f"{name} 模型预测收益显著为负，建议回避"
+        base = f"{name} 模型预测收益显著为负，建议回避"
     elif score < -0.02:
-        return f"{name} 因子信号偏弱，预测收益下行"
+        base = f"{name} 因子信号偏弱，预测收益下行"
     else:
-        return f"{name} 评分排名靠后，建议减仓"
+        base = f"{name} 评分排名靠后，建议减仓"
+
+    if industry_map and code in industry_map:
+        industry = industry_map[code]
+        if industry_contrib and industry in industry_contrib:
+            contrib = industry_contrib[industry]
+            selec = contrib.get("selection", 0)
+            if selec < -0.5:
+                base += f"，所在行业「{industry}」选股效应为负（{selec:.1f}%）"
+
+    return base
 
 
 @router.post("/run")
@@ -824,13 +848,13 @@ async def get_backtest_status(task_id: str):
     """
     获取回测任务状态
     """
-    if task_id not in backtest_tasks:
+    task = task_store.get_task(task_id)
+    if task is None:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    task = backtest_tasks[task_id]
-
-    if task["status"] == "completed" and task["result"]:
-        return task["result"]
+    if task["status"] == "completed" and task["result_json"]:
+        from models.schemas import BacktestResponse
+        return BacktestResponse.model_validate_json(task["result_json"])
     elif task["status"] == "failed":
         return BacktestResponse(
             task_id=task_id,
@@ -850,8 +874,12 @@ async def delete_backtest_task(task_id: str):
     """
     删除回测任务
     """
-    if task_id in backtest_tasks:
-        del backtest_tasks[task_id]
-        return {"message": "任务已删除"}
-    else:
-        raise HTTPException(status_code=404, detail="任务不存在")
+    task_store.delete_task(task_id)
+    return {"message": "任务已删除"}
+
+
+@router.get("/tasks")
+async def list_backtest_tasks(limit: int = 50):
+    """获取历史回测任务列表"""
+    tasks = task_store.list_tasks(limit)
+    return {"tasks": tasks, "total": len(tasks)}

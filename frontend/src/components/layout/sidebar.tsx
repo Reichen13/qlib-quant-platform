@@ -14,6 +14,11 @@ import {
   Shield,
   PieChart,
   Globe,
+  Newspaper,
+  Bot,
+  MessageSquare,
+  Brain,
+  Layers,
   ChevronLeft,
   ChevronRight,
   X,
@@ -35,6 +40,11 @@ const NAVIGATION_ITEMS = [
   { icon: Shield, label: "风险管理", path: "/risk" },
   { icon: PieChart, label: "组合优化", path: "/portfolio" },
   { icon: Globe, label: "宏观策略", path: "/macro-dashboard" },
+  { icon: Newspaper, label: "新闻分析", path: "/news-analysis" },
+  { icon: Bot, label: "AI 策略", path: "/ai-strategy" },
+  { icon: MessageSquare, label: "智能体辩论", path: "/agent-debate" },
+  { icon: Brain, label: "深度学习", path: "/dl-models" },
+  { icon: Layers, label: "智能股票池", path: "/stock-pool" },
 ]
 
 export function Sidebar() {

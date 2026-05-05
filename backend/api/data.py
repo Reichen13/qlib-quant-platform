@@ -187,3 +187,59 @@ async def data_health_check():
             "baostock_industry": baostock_check,
         },
     }
+
+
+@router.get("/logs")
+async def data_update_logs():
+    """
+    数据更新日志 — 返回实际数据源状态（非硬编码）
+
+    基于 Qlib 日历文件和 Baostock 服务可用性生成真实数据状态报告。
+    """
+    qlib_check = _check_qlib_data()
+    stocks_check = _check_stocks_data()
+    baostock_check = _check_baostock_industry()
+
+    now = datetime.now()
+
+    logs = []
+
+    # Qlib 数据源状态
+    qlib_status = qlib_check.get("status", "error")
+    if qlib_status == "normal":
+        logs.append({
+            "type": "success",
+            "title": "Qlib 数据源状态正常",
+            "detail": f"最后交易日: {qlib_check.get('last_date', 'N/A')}, 特征文件: {qlib_check.get('n_features', 0)} 个",
+            "time": now.strftime("%Y-%m-%d %H:%M"),
+        })
+    else:
+        logs.append({
+            "type": qlib_status,
+            "title": f"Qlib 数据源异常",
+            "detail": qlib_check.get("message", "未知"),
+            "time": now.strftime("%Y-%m-%d %H:%M"),
+        })
+
+    # 股票数据状态
+    stock_status = stocks_check.get("status", "error")
+    logs.append({
+        "type": stock_status if stock_status == "normal" else "warning",
+        "title": f"股票日线数据{'正常' if stock_status == 'normal' else '需关注'}",
+        "detail": f"成分股 {stocks_check.get('total', 0)} 只, 最后交易日: {stocks_check.get('last_date', 'N/A')}",
+        "time": now.strftime("%Y-%m-%d %H:%M"),
+    })
+
+    # Baostock 行业数据
+    bao_status = baostock_check.get("status", "error")
+    logs.append({
+        "type": bao_status if bao_status == "normal" else "warning",
+        "title": f"Baostock 行业数据{'可用' if bao_status == 'normal' else '不可用'}",
+        "detail": baostock_check.get("message", "未知"),
+        "time": now.strftime("%Y-%m-%d %H:%M"),
+    })
+
+    return {
+        "logs": logs,
+        "checked_at": now.isoformat(),
+    }
