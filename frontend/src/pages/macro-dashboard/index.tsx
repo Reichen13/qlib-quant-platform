@@ -112,7 +112,7 @@ function getRegimeBadge(regime: string, label: string) {
 }
 
 export function MacroDashboardPage() {
-  const { data: indicatorsData, isLoading: indicatorsLoading } = useQuery({
+  const { data: indicatorsData } = useQuery({
     queryKey: ["macro", "indicators"],
     queryFn: () => api.macro.indicators(),
     refetchInterval: 5 * 60 * 1000, // 5分钟刷新
@@ -135,8 +135,10 @@ export function MacroDashboardPage() {
     queryFn: () => api.macro.history(12),
   })
 
-  const indicators = indicatorsData?.indicators || []
-  const derived = indicatorsData?.derived || {}
+  const cnIndicators = indicatorsData?.china_indicators || []
+  const usIndicators = indicatorsData?.us_indicators || []
+  const cnDerived = indicatorsData?.china_derived || {}
+  const usDerived = indicatorsData?.us_derived || {}
   const regime = regimeData
   const allocation = allocationData?.allocation || []
 
@@ -161,57 +163,108 @@ export function MacroDashboardPage() {
         <p className="text-muted-foreground">Bridgewater 风格宏观仪表板 - 市场状态分类与全天候配置</p>
       </div>
 
-      {/* 指标概览卡片 */}
-      {indicatorsLoading ? (
-        <Card>
-          <CardContent className="py-8 flex items-center justify-center">
-            <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-          </CardContent>
-        </Card>
-      ) : (
-        <div className="grid gap-4 md:grid-cols-5">
-          {indicators.slice(0, 5).map((ind: any) => (
-            <Card key={ind.name}>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm font-medium flex items-center justify-between">
-                  {ind.name}
-                  {getTrendBadge(ind.change_pct)}
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">
-                  {ind.name === "10年美债收益率" || ind.name === "波动率指数"
-                    ? ind.value.toFixed(2)
-                    : ind.value > 1000
-                    ? ind.value.toFixed(0)
-                    : ind.value.toFixed(2)}
-                  {ind.name === "10年美债收益率" && "%"}
-                </div>
-                <p className={`text-xs ${ind.change_pct >= 0 ? "text-up" : "text-down"}`}>
-                  近20日: {ind.change_pct >= 0 ? "+" : ""}{ind.change_pct.toFixed(1)}%
-                </p>
-              </CardContent>
-            </Card>
-          ))}
+      {/* 中国宏观指标 */}
+      {cnIndicators.length > 0 && (
+        <>
+          <h3 className="text-sm font-medium text-muted-foreground mt-2">中国宏观指标</h3>
+          <div className="grid gap-4 md:grid-cols-5">
+            {cnIndicators.map((ind: any) => (
+              <Card key={ind.name}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium flex items-center justify-between">
+                    {ind.name}
+                    {getTrendBadge(ind.change_pct)}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">
+                    {ind.name.includes("SHIBOR") || ind.name.includes("收益率") || ind.name.includes("PMI")
+                      ? ind.value.toFixed(3)
+                      : ind.value > 1000
+                      ? ind.value.toFixed(0)
+                      : ind.value.toFixed(2)}
+                    {(ind.name.includes("SHIBOR") || ind.name.includes("收益率") || ind.name.includes("M2")) && "%"}
+                    {ind.name === "北向资金净流入" && "亿"}
+                  </div>
+                  <p className={`text-xs ${ind.change_pct >= 0 ? "text-up" : "text-down"}`}>
+                    {ind.change_pct >= 0 ? "+" : ""}{ind.change_pct.toFixed(1)}%
+                  </p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* 中国衍生指标 */}
+      {Object.keys(cnDerived).length > 0 && (
+        <div className="flex gap-2 flex-wrap mt-2">
+          {cnDerived.pmi_level && (
+            <Badge variant={cnDerived.pmi_level === "扩张" ? "default" : "secondary"}>
+              PMI: {cnDerived.pmi_level}
+            </Badge>
+          )}
+          {cnDerived.liquidity && (
+            <Badge variant={cnDerived.liquidity === "宽松" ? "default" : "outline"}>
+              流动性: {cnDerived.liquidity}
+            </Badge>
+          )}
+          {cnDerived.north_flow_trend && (
+            <Badge variant={cnDerived.north_flow_trend === "持续流入" ? "default" : "destructive"}>
+              北向资金: {cnDerived.north_flow_trend}
+            </Badge>
+          )}
         </div>
       )}
 
-      {/* 衍生指标快捷标签 */}
-      {Object.keys(derived).length > 0 && (
-        <div className="flex gap-2 flex-wrap">
-          {derived.fear_level && (
-            <Badge variant={derived.fear_level === "恐慌" ? "destructive" : derived.fear_level === "担忧" ? "secondary" : "default"}>
-              恐惧指数: {derived.fear_level}
+      {/* 美国宏观指标 */}
+      {usIndicators.length > 0 && (
+        <>
+          <h3 className="text-sm font-medium text-muted-foreground mt-4">美国宏观指标</h3>
+          <div className="grid gap-4 md:grid-cols-5">
+            {usIndicators.slice(0, 5).map((ind: any) => (
+              <Card key={ind.name}>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm font-medium flex items-center justify-between">
+                    {ind.name}
+                    {getTrendBadge(ind.change_pct)}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">
+                    {ind.name === "10年美债收益率" || ind.name === "波动率指数"
+                      ? ind.value.toFixed(2)
+                      : ind.value > 1000
+                      ? ind.value.toFixed(0)
+                      : ind.value.toFixed(2)}
+                    {ind.name === "10年美债收益率" && "%"}
+                  </div>
+                  <p className={`text-xs ${ind.change_pct >= 0 ? "text-up" : "text-down"}`}>
+                    近20日: {ind.change_pct >= 0 ? "+" : ""}{ind.change_pct.toFixed(1)}%
+                  </p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* 美国衍生指标 */}
+      {Object.keys(usDerived).length > 0 && (
+        <div className="flex gap-2 flex-wrap mt-2">
+          {usDerived.fear_level && (
+            <Badge variant={usDerived.fear_level === "恐慌" ? "destructive" : usDerived.fear_level === "担忧" ? "secondary" : "default"}>
+              恐惧指数: {usDerived.fear_level}
             </Badge>
           )}
-          {derived.yield_level && (
+          {usDerived.yield_level && (
             <Badge variant="outline">
-              利率水平: {derived.yield_level}
+              利率水平: {usDerived.yield_level}
             </Badge>
           )}
-          {derived.risk_on_ratio && (
+          {usDerived.risk_on_ratio && (
             <Badge variant="outline">
-              股/金比: {derived.risk_on_ratio}
+              股/金比: {usDerived.risk_on_ratio}
             </Badge>
           )}
         </div>
@@ -350,9 +403,9 @@ export function MacroDashboardPage() {
           <CardDescription>所有宏观指标详细数据</CardDescription>
         </CardHeader>
         <CardContent>
-          {indicators.length > 0 ? (
+          {cnIndicators.length > 0 ? (
             <div className="grid gap-4 md:grid-cols-4">
-              {indicators.map((ind: any) => (
+              {cnIndicators.map((ind: any) => (
                 <div key={ind.name} className="p-3 bg-muted/50 rounded-lg space-y-1">
                   <p className="text-sm font-medium">{ind.name}</p>
                   <p className="text-xl font-bold">{ind.value.toFixed(2)}</p>
