@@ -70,7 +70,7 @@ export function FactorAnalysisPage() {
   const predictPeriod = String(factorParams.predictPeriod)
   const startDate = factorParams.startDate
   const endDate = factorParams.endDate
-  const neutralize = factorParams.neutralize || ""
+  const neutralize = factorParams.neutralize || "none"
 
   const [selectedFactor, setSelectedFactor] = useState<string | null>(null)
   const [detailTab, setDetailTab] = useState<"ic_stability" | "factor_series" | "industry_contrib">("ic_stability")
@@ -85,7 +85,7 @@ export function FactorAnalysisPage() {
       end_date: endDate,
       predict_period: parseInt(predictPeriod),
       top_k: 158,
-      neutralize: neutralize || undefined,
+      neutralize: neutralize === "industry" ? "industry" : undefined,
     }),
     enabled: true,
     retry: false,
@@ -264,7 +264,7 @@ export function FactorAnalysisPage() {
                   <SelectValue placeholder="无" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="">无中性化</SelectItem>
+                  <SelectItem value="none">无中性化</SelectItem>
                   <SelectItem value="industry">行业中性化 (OLS)</SelectItem>
                 </SelectContent>
               </Select>

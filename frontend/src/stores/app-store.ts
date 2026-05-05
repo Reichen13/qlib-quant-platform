@@ -82,7 +82,7 @@ const DEFAULT_FACTOR_PARAMS: FactorParams = {
   endDate: "2026-04-30",
   predictPeriod: 5,
   topK: 20,
-  neutralize: "",
+  neutralize: "none",
   selectedFactors: [],
   activeTab: "overview",
 }
