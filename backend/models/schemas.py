@@ -207,6 +207,8 @@ class BacktestResponse(BaseModel):
     top_buys: Optional[List[StockRecommendation]] = None
     top_sells: Optional[List[StockRecommendation]] = None
     position_advice: Optional[str] = None
+    # A 股约束分析
+    constraint_analysis: Optional[dict] = None
     # 错误信息
     error: Optional[str] = None
 

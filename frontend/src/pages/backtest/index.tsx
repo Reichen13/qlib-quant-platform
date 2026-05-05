@@ -1,6 +1,7 @@
 // 模型回测页面 - LightGBM 策略回测
 import { useState, useEffect, useCallback } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -556,6 +557,57 @@ export function BacktestPage() {
                 riskLevel="medium"
                 lastUpdate={new Date().toLocaleDateString()}
               />
+              {/* A 股约束分析 */}
+              {result.constraint_analysis?.constraints_active && (
+                <Card className="mt-4 border-blue-600/30 bg-blue-600/5">
+                  <CardHeader>
+                    <CardTitle className="text-base">A 股交易约束</CardTitle>
+                    <CardDescription>回测已启用的 A 股特有约束</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2 text-sm">
+                      {result.constraint_analysis.constraints_active.map((c: string, i: number) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <Badge variant="outline" className="shrink-0">✓</Badge>
+                          <span className="text-muted-foreground">{c}</span>
+                        </div>
+                      ))}
+                    </div>
+                    {result.constraint_analysis.original_universe != null && (
+                      <div className="mt-4 grid gap-2 md:grid-cols-3 text-sm">
+                        <div className="p-3 bg-muted/50 rounded">
+                          <p className="text-muted-foreground text-xs">原始成分股</p>
+                          <p className="font-bold">{result.constraint_analysis.original_universe}</p>
+                        </div>
+                        <div className="p-3 bg-muted/50 rounded">
+                          <p className="text-muted-foreground text-xs">有效成分股</p>
+                          <p className="font-bold">{result.constraint_analysis.valid_universe}</p>
+                        </div>
+                        <div className="p-3 bg-muted/50 rounded">
+                          <p className="text-muted-foreground text-xs">已排除(科创/创业)</p>
+                          <p className="font-bold text-down">{result.constraint_analysis.excluded_chi_next_star}</p>
+                        </div>
+                      </div>
+                    )}
+                    {(result.constraint_analysis.limit_up_hits_estimated != null || result.constraint_analysis.suspended_stocks_estimated != null) && (
+                      <div className="mt-3 grid gap-2 md:grid-cols-3 text-sm">
+                        <div className="p-3 bg-muted/50 rounded">
+                          <p className="text-muted-foreground text-xs">涨停触及次数(估)</p>
+                          <p className="font-bold text-up">{result.constraint_analysis.limit_up_hits_estimated ?? "--"}</p>
+                        </div>
+                        <div className="p-3 bg-muted/50 rounded">
+                          <p className="text-muted-foreground text-xs">跌停触及次数(估)</p>
+                          <p className="font-bold text-down">{result.constraint_analysis.limit_down_hits_estimated ?? "--"}</p>
+                        </div>
+                        <div className="p-3 bg-muted/50 rounded">
+                          <p className="text-muted-foreground text-xs">停牌股票(估)</p>
+                          <p className="font-bold">{result.constraint_analysis.suspended_stocks_estimated ?? "--"}</p>
+                        </div>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
               <InstructionsPanel
                 title="回测策略说明"
                 description="LightGBM 机器学习模型回测参数说明"

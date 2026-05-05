@@ -192,6 +192,18 @@ export type BacktestResult = {
   top_buys?: Array<{ code: string; name: string; score: number; reason: string }>
   top_sells?: Array<{ code: string; name: string; score: number; reason: string }>
   position_advice?: string
+  constraint_analysis?: {
+    original_universe?: number
+    valid_universe?: number
+    excluded_chi_next_star?: number
+    excluded_codes_sample?: string[]
+    limit_up_hits_estimated?: number
+    limit_down_hits_estimated?: number
+    suspension_days_estimated?: number
+    suspended_stocks_estimated?: number
+    constraints_active?: string[]
+    warning?: string
+  }
   error?: string
 }
 
