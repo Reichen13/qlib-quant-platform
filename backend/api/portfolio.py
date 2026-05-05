@@ -71,6 +71,58 @@ def _compute_returns(prices: pd.DataFrame) -> pd.DataFrame:
     return prices.pct_change().dropna()
 
 
+def _shrink_covariance(returns: pd.DataFrame) -> np.ndarray:
+    """Ledoit-Wolf 收缩协方差估计 (年化)
+
+    样本协方差在 N 接近 T 时极不稳定，收缩估计将样本协方差
+    向结构化目标（单因子模型/等相关系数）收缩，可将波动率
+    预测误差降低 30-60% (Ledoit & Wolf 2004)。
+    """
+    try:
+        from sklearn.covariance import LedoitWolf
+        lw = LedoitWolf().fit(returns.values)
+        cov = lw.covariance_ * 252
+        shrinkage = lw.shrinkage_
+        logger.info(f"Ledoit-Wolf 收缩: shrinkage={shrinkage:.3f}")
+        return cov
+    except ImportError:
+        logger.warning("sklearn 不可用，回退到样本协方差")
+        return returns.cov().values * 252
+
+
+def _shrink_returns(returns: pd.DataFrame) -> np.ndarray:
+    """James-Stein 收缩预期收益估计 (年化)
+
+    样本均值是最差的预期收益估计量 (Michaud 1989)，会导致
+    "误差最大化"——权重向估计误差最大的股票集中。
+    JS 收缩将个股均值向 grand mean 收缩，降低估计误差。
+
+    收缩因子: λ = (N - 3) / Σ ((x_i - μ_grand)² / σ²_mean)
+    """
+    n_assets = len(returns.columns)
+    if n_assets < 4:
+        return returns.mean().values * 252
+
+    sample_means = returns.mean().values  # 日度样本均值
+    n_obs = len(returns)
+
+    grand_mean = sample_means.mean()
+    ssq = np.sum((sample_means - grand_mean) ** 2)
+
+    if ssq < 1e-15:
+        return sample_means * 252
+
+    sigma_sq = np.var(returns.values, axis=0, ddof=1)  # 每只股票的方差
+    mean_var = np.mean(sigma_sq) / n_obs  # 样本均值方差 (CLT)
+
+    js_factor = max(0.0, min(1.0, (n_assets - 3) * mean_var / ssq))
+
+    shrunk_means = grand_mean + (1 - js_factor) * (sample_means - grand_mean)
+    logger.info(f"James-Stein 收缩: λ={js_factor:.3f}, grand_mean={grand_mean:.6f}")
+
+    return shrunk_means * 252
+
+
 def _mean_variance_optimization(
     returns: pd.DataFrame,
     target_return: Optional[float] = None,
@@ -80,8 +132,8 @@ def _mean_variance_optimization(
 ) -> dict:
     """均值-方差优化"""
     n = len(returns.columns)
-    mu = returns.mean().values * 252
-    sigma = returns.cov().values * 252
+    mu = _shrink_returns(returns)
+    sigma = _shrink_covariance(returns)
 
     if target_return is not None:
         # 给定目标收益，最小化风险
@@ -145,7 +197,7 @@ def _mean_variance_optimization(
 def _risk_parity(returns: pd.DataFrame, max_weight: float = 0.3) -> dict:
     """风险平价优化"""
     n = len(returns.columns)
-    sigma = returns.cov().values * 252
+    sigma = _shrink_covariance(returns)
 
     def risk_budget_objective(w):
         portfolio_vol = np.sqrt(w.T @ sigma @ w)
@@ -164,7 +216,7 @@ def _risk_parity(returns: pd.DataFrame, max_weight: float = 0.3) -> dict:
         result = minimize(risk_budget_objective, x0, method="SLSQP", constraints=constraints, bounds=bounds)
         weights = result.x
 
-        mu = returns.mean().values * 252
+        mu = _shrink_returns(returns)
         opt_return = weights @ mu
         opt_vol = np.sqrt(weights.T @ sigma @ weights)
         opt_sharpe = opt_return / opt_vol if opt_vol > 0 else 0
@@ -185,7 +237,7 @@ def _risk_parity(returns: pd.DataFrame, max_weight: float = 0.3) -> dict:
 def _min_variance(returns: pd.DataFrame, max_weight: float = 0.3) -> dict:
     """最小方差优化"""
     n = len(returns.columns)
-    sigma = returns.cov().values * 252
+    sigma = _shrink_covariance(returns)
 
     try:
         from scipy.optimize import minimize
@@ -200,7 +252,7 @@ def _min_variance(returns: pd.DataFrame, max_weight: float = 0.3) -> dict:
         result = minimize(objective, x0, method="SLSQP", constraints=constraints, bounds=bounds)
         weights = result.x
 
-        mu = returns.mean().values * 252
+        mu = _shrink_returns(returns)
         opt_return = weights @ mu
         opt_vol = np.sqrt(weights.T @ sigma @ weights)
         opt_sharpe = opt_return / opt_vol if opt_vol > 0 else 0
@@ -222,8 +274,8 @@ def _equal_weight(returns: pd.DataFrame) -> dict:
     """等权配置（基准）"""
     n = len(returns.columns)
     w = 1.0 / n
-    mu = returns.mean().values * 252
-    sigma = returns.cov().values * 252
+    mu = _shrink_returns(returns)
+    sigma = _shrink_covariance(returns)
     weights = np.ones(n) / n
 
     opt_return = weights @ mu
@@ -248,8 +300,8 @@ def _compute_efficient_frontier(
 ) -> List[dict]:
     """计算有效前沿"""
     n = len(returns.columns)
-    mu = returns.mean().values * 252
-    sigma = returns.cov().values * 252
+    mu = _shrink_returns(returns)
+    sigma = _shrink_covariance(returns)
 
     # 等权和最小方差确定收益范围
     eq_w = np.ones(n) / n
