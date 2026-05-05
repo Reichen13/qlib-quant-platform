@@ -389,6 +389,29 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         monthly_r = r.resample("ME").apply(lambda x: (1 + x).prod() - 1)
         monthly_win_rate = (monthly_r > 0).mean()
 
+        # ── 交易成本影响估算 ──
+        try:
+            avg_daily_turnover = report["turnover"].mean() if "turnover" in report.columns else 0
+            daily_vol = r.std()
+            # 平方根冲击模型: impact ≈ σ * sqrt(turnover / ADV)
+            # 假设平均持仓股每笔交易占日成交量 5%
+            estimated_impact_per_trade = daily_vol * np.sqrt(max(avg_daily_turnover, 0.001) / 0.05)
+            annual_impact = estimated_impact_per_trade * 252 * 0.5  # 每次调仓半次换手（买卖各半）
+            fixed_cost_annual = (params.buy_cost + params.sell_cost) * 252 / max(int(params.turnover), 1)
+            if annual_impact > fixed_cost_annual * 1.5:
+                cost_impact_estimate = (
+                    f"市场冲击成本估计约 {annual_impact:.2%}/年，显著高于固定佣金模型 "
+                    f"({fixed_cost_annual:.2%}/年)。实际交易中小盘股冲击成本可达 0.5-1.0%，"
+                    f"建议将回测收益下调 {annual_impact - fixed_cost_annual:.1%} 作为保守估计。"
+                )
+            else:
+                cost_impact_estimate = (
+                    f"市场冲击成本估计约 {annual_impact:.2%}/年，与固定佣金模型 "
+                    f"({fixed_cost_annual:.2%}/年)接近。CSI300成分股流动性较好，冲击成本可控。"
+                )
+        except Exception:
+            cost_impact_estimate = None
+
         # ── Brinson 绩效归因 ──
         attribution_result = _compute_brinson_attribution(
             positions_dict=positions_dict,
@@ -499,6 +522,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 attribution=AttributionSummary(**attribution_result["summary"]) if attribution_result else None,
                 attribution_curve=[AttributionPoint(**p) for p in attribution_result["curve"]] if attribution_result else None,
                 attribution_interpretation=attribution_result["interpretation"] if attribution_result else None,
+                cost_impact_estimate=cost_impact_estimate,
             ),
             "error": None
         }

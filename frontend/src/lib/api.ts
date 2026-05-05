@@ -220,6 +220,7 @@ export type BacktestResult = {
     total_active: number
   }>
   attribution_interpretation?: string
+  cost_impact_estimate?: string
   error?: string
 }
 

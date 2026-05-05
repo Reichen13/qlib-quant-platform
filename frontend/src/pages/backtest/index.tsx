@@ -555,6 +555,15 @@ export function BacktestPage() {
                 </Card>
               </div>
 
+              {/* 交易成本影响估计 */}
+              {result.cost_impact_estimate && (
+                <Card className="border-yellow-600/30 bg-yellow-600/5">
+                  <CardContent className="py-3">
+                    <p className="text-sm text-muted-foreground">{result.cost_impact_estimate}</p>
+                  </CardContent>
+                </Card>
+              )}
+
               {/* 绩效归因 (Brinson) */}
               {result.attribution && result.attribution_curve && result.attribution_curve.length > 0 && (
                 <Card>

@@ -237,6 +237,8 @@ class BacktestResponse(BaseModel):
     attribution: Optional[AttributionSummary] = None
     attribution_curve: Optional[List[AttributionPoint]] = None
     attribution_interpretation: Optional[str] = None
+    # 交易成本估计
+    cost_impact_estimate: Optional[str] = None
     # 错误信息
     error: Optional[str] = None
 
