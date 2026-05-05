@@ -12,6 +12,12 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 
 from models.schemas import FactorAnalysisRequest, FactorAnalysisResponse, FactorIC
+from core.factor_utils import (
+    load_industry_mapping,
+    neutralize_factor,
+    compute_enhanced_ic_stats,
+    compute_industry_weighted_ic,
+)
 
 router = APIRouter()
 
@@ -156,7 +162,16 @@ async def analyze_factors(params: FactorAnalysisRequest):
         fr_series = pd.Series(future_returns, name="future_return")
         fr_series.index = pd.MultiIndex.from_tuples(fr_series.index, names=["instrument", "datetime"])
 
-        # ── 5. 计算每个因子的 Spearman Rank IC ──
+        # ── 5. 可选中性化 ──
+        industry_map = {}
+        if params.neutralize == "industry":
+            logger.info("启用行业中性化，加载行业映射...")
+            all_codes = df_features.index.get_level_values("instrument").unique().tolist()
+            industry_map = load_industry_mapping(all_codes)
+            valid_count = sum(1 for v in industry_map.values() if v != "未知")
+            logger.info(f"行业映射: {valid_count}/{len(industry_map)} 只有效行业")
+
+        # ── 6. 计算每个因子的 Spearman Rank IC ──
         from scipy.stats import spearmanr
 
         factors_ics = []
@@ -166,13 +181,19 @@ async def analyze_factors(params: FactorAnalysisRequest):
             try:
                 feat_col = df_features[feat_name] if feat_name in df_features.columns else df_features.iloc[:, feature_names.index(feat_name)]
 
+                # ── 可选中性化 ──
+                feat_for_ic = feat_col
+                if params.neutralize == "industry" and industry_map:
+                    logger.debug(f"中性化因子: {feat_name}")
+                    feat_for_ic = neutralize_factor(feat_col, industry_map)
+
                 # 按日期计算 daily IC
                 daily_ics = []
                 test_dates = df_features.index.get_level_values("datetime").unique()
 
                 for dt in test_dates:
                     try:
-                        fv = feat_col.xs(dt, level="datetime").dropna()
+                        fv = feat_for_ic.xs(dt, level="datetime").dropna()
                         fr = fr_series.xs(dt, level="datetime").dropna()
                         common = fv.index.intersection(fr.index)
 
@@ -200,12 +221,29 @@ async def analyze_factors(params: FactorAnalysisRequest):
                     std_ic = np.std(daily_ics)
                     icir = mean_ic / std_ic if std_ic > 0 else 0
 
+                    # ── 增强 IC 统计 ──
+                    enhanced = compute_enhanced_ic_stats(daily_ics)
+
+                    # ── 行业加权 IC ──
+                    ind_contrib = {}
+                    if params.neutralize == "industry" and industry_map:
+                        ind_contrib = compute_industry_weighted_ic(
+                            feat_for_ic, fr_series, industry_map
+                        )
+
                     factors_ics.append(FactorIC(
                         factor=feat_name,
                         ic=round(float(mean_ic), 4),
                         rank_ic=round(float(mean_ic), 4),
                         icir=round(float(icir), 2),
                         category=_get_factor_category(feat_name),
+                        skewness=enhanced.get("skewness"),
+                        kurtosis=enhanced.get("kurtosis"),
+                        t_statistic=enhanced.get("t_statistic"),
+                        p_value=enhanced.get("p_value"),
+                        information_ratio=enhanced.get("information_ratio"),
+                        ic_autocorr=enhanced.get("ic_autocorr"),
+                        industry_contribution=ind_contrib if ind_contrib else None,
                     ))
 
             except Exception as e:
@@ -228,6 +266,8 @@ async def analyze_factors(params: FactorAnalysisRequest):
                 "positive_factors": sum(1 for f in factors_ics if f.ic > 0),
                 "negative_factors": sum(1 for f in factors_ics if f.ic < 0),
                 "best_factor": factors_ics[0].factor if factors_ics else None,
+                "neutralized": params.neutralize is not None,
+                "neutralize_method": params.neutralize,
             }
         )
 

@@ -101,12 +101,20 @@ class HotSectorsResponse(BaseModel):
 
 # ── 因子分析模型 ──
 class FactorIC(BaseModel):
-    """因子 IC 值"""
+    """因子 IC 值（增强统计面板）"""
     factor: str
     ic: float
     rank_ic: float
     icir: float
     category: str = Field(default="未分类", description="因子类别")
+    # 增强统计（向后兼容，全部 optional）
+    skewness: Optional[float] = Field(default=None, description="IC 偏度")
+    kurtosis: Optional[float] = Field(default=None, description="IC 超额峰度")
+    t_statistic: Optional[float] = Field(default=None, description="t 统计量")
+    p_value: Optional[float] = Field(default=None, description="p 值")
+    information_ratio: Optional[float] = Field(default=None, description="信息比率")
+    ic_autocorr: Optional[float] = Field(default=None, description="IC lag-1 自相关")
+    industry_contribution: Optional[dict] = Field(default=None, description="行业加权 IC 贡献")
 
 
 class FactorAnalysisRequest(BaseModel):
@@ -115,6 +123,7 @@ class FactorAnalysisRequest(BaseModel):
     end_date: date
     predict_period: int = Field(default=5, ge=1, le=20, description="预测周期（天）")
     top_k: int = Field(default=20, ge=5, le=158, description="显示前 K 个因子（Alpha158 最多 158）")
+    neutralize: Optional[str] = Field(default=None, description="中性化方法: 'industry' 行业中性化, None 不中性化")
 
 
 class FactorAnalysisResponse(BaseModel):

@@ -1,0 +1,304 @@
+"""
+因子分析工具模块
+提供因子中性化、增强 IC 统计、行业加权 IC 分解等功能
+从 AlphaPurify 方法论提炼，基于 pandas/numpy/scipy 实现
+"""
+
+import pandas as pd
+import numpy as np
+from scipy.stats import spearmanr, skew, kurtosis
+from scipy import stats as scipy_stats
+from loguru import logger
+
+# 模块级行业映射缓存
+_industry_cache: dict = {}
+
+
+def load_industry_mapping(instruments: list[str]) -> dict[str, str]:
+    """
+    用 Baostock 获取 Qlib 格式股票的行业分类。
+
+    Qlib 格式 SH600000 -> Baostock 格式 sh.600000
+    返回 {qlib_code: industry_name}，未找到的返回 "未知"
+    """
+    global _industry_cache
+
+    # 生成缓存键（排序后拼接，确保相同列表命中缓存）
+    cache_key = ",".join(sorted(instruments))
+    if cache_key in _industry_cache:
+        logger.info(f"行业映射缓存命中: {len(_industry_cache[cache_key])} 条")
+        return _industry_cache[cache_key]
+
+    logger.info(f"加载行业映射: {len(instruments)} 只股票")
+    result = {}
+
+    try:
+        import baostock as bs
+
+        lg = bs.login()
+        if lg.error_code != "0":
+            logger.warning(f"Baostock 登录失败: {lg.error_msg}，行业中性化不可用")
+            for inst in instruments:
+                result[inst] = "未知"
+            return result
+
+        for qlib_code in instruments:
+            try:
+                # SH600000 -> sh.600000
+                market = qlib_code[:2].lower()
+                code_num = qlib_code[2:]
+                bs_code = f"{market}.{code_num}"
+
+                rs = bs.query_stock_industry(bs_code)
+                if rs.error_code == "0" and rs.next():
+                    row = rs.get_row_data()
+                    # row[3] 是申万行业分类，row[2] 是证监会行业分类
+                    industry = row[3] if row[3] else row[2]
+                    result[qlib_code] = industry if industry else "未知"
+                else:
+                    result[qlib_code] = "未知"
+            except Exception:
+                result[qlib_code] = "未知"
+
+        bs.logout()
+        logger.info(f"行业映射完成: {sum(1 for v in result.values() if v != '未知')}/{len(instruments)} 只有效行业")
+
+    except ImportError:
+        logger.warning("baostock 未安装，行业中性化不可用")
+        for inst in instruments:
+            result[inst] = "未知"
+    except Exception as e:
+        logger.warning(f"行业映射加载失败: {e}")
+        for inst in instruments:
+            result[inst] = "未知"
+
+    _industry_cache[cache_key] = result
+    return result
+
+
+def neutralize_factor(
+    factor_values: pd.Series,
+    industry_map: dict[str, str],
+) -> pd.Series:
+    """
+    截面 OLS 行业中性化。
+
+    逐日期对因子值做：factor = X @ beta + residual
+    X = 行业 one-hot dummies (drop_first=True) + 常数项
+    返回 residual（中性化后的因子值）
+
+    参数:
+        factor_values: MultiIndex (instrument, datetime) 的 Series
+        industry_map: {instrument: industry_name}
+    返回:
+        同 index 的中性化 Series
+    """
+    if factor_values.empty:
+        return factor_values
+
+    # 确保 index 有名称
+    if factor_values.index.names[0] is None:
+        factor_values.index.names = ["instrument", "datetime"]
+
+    dates = factor_values.index.get_level_values("datetime").unique()
+    neutralized_parts = []
+
+    skipped_dates = 0
+    processed_dates = 0
+
+    for dt in dates:
+        try:
+            cross = factor_values.xs(dt, level="datetime").dropna()
+            if len(cross) < 10:
+                skipped_dates += 1
+                continue
+
+            # 为每只股票获取行业
+            industries = pd.Series(
+                {code: industry_map.get(code, "未知") for code in cross.index},
+                name="industry",
+            )
+
+            # 去掉未知行业的股票
+            valid_mask = industries != "未知"
+            if valid_mask.sum() < 10:
+                skipped_dates += 1
+                continue
+
+            cross_valid = cross[valid_mask]
+            ind_valid = industries[valid_mask]
+
+            # 检查是否只有单一行业
+            unique_inds = ind_valid.unique()
+            if len(unique_inds) < 2:
+                # 只有一个行业，无法中性化，返回 demean 后的值
+                neutralized = cross_valid - cross_valid.mean()
+                neutralized_parts.append(neutralized)
+                processed_dates += 1
+                continue
+
+            # 构建设计矩阵: one-hot industry dummies + constant
+            X = pd.get_dummies(ind_valid, drop_first=True, dtype=float)
+            X["const"] = 1.0
+            y = cross_valid.values
+
+            # OLS via np.linalg.lstsq
+            beta, residuals, rank, _ = np.linalg.lstsq(X.values, y, rcond=None)
+
+            # 计算残差 = y - X @ beta
+            y_pred = X.values @ beta
+            residual_values = y - y_pred
+
+            neutralized = pd.Series(residual_values, index=cross_valid.index, name=factor_values.name)
+            neutralized_parts.append(neutralized)
+            processed_dates += 1
+
+        except Exception as e:
+            logger.debug(f"中性化日期 {dt} 失败: {e}")
+            skipped_dates += 1
+            continue
+
+    if not neutralized_parts:
+        logger.warning("中性化: 所有日期都失败，返回原始因子值")
+        return factor_values
+
+    result = pd.concat(neutralized_parts)
+    result.index = pd.MultiIndex.from_tuples(
+        [(code, dt) for code, dt in result.index],
+        names=["instrument", "datetime"],
+    )
+
+    logger.info(
+        f"中性化完成: {processed_dates} 日期成功, {skipped_dates} 日期跳过, "
+        f"输出 {len(result)} 条记录"
+    )
+    return result
+
+
+def compute_enhanced_ic_stats(daily_ics: list[float]) -> dict:
+    """
+    从每日 IC 序列计算增强统计指标。
+
+    返回:
+        skewness: IC 偏度
+        kurtosis: IC 超额峰度 (fisher=True)
+        t_statistic: 单样本 t 检验统计量 (H0: mean=0)
+        p_value: t 检验 p 值
+        information_ratio: mean_ic / std_ic
+        ic_autocorr: lag-1 IC 自相关 (Spearman)
+    """
+    result = {
+        "skewness": None,
+        "kurtosis": None,
+        "t_statistic": None,
+        "p_value": None,
+        "information_ratio": None,
+        "ic_autocorr": None,
+    }
+
+    if not daily_ics or len(daily_ics) < 3:
+        return result
+
+    arr = np.array(daily_ics, dtype=float)
+    arr = arr[np.isfinite(arr)]
+
+    if len(arr) < 3:
+        return result
+
+    try:
+        result["skewness"] = round(float(skew(arr)), 4)
+        result["kurtosis"] = round(float(kurtosis(arr, fisher=True)), 4)
+
+        t_stat, p_val = scipy_stats.ttest_1samp(arr, 0.0)
+        result["t_statistic"] = round(float(t_stat), 4)
+        result["p_value"] = round(float(p_val), 4)
+
+        mean_ic = np.mean(arr)
+        std_ic = np.std(arr, ddof=1)
+        result["information_ratio"] = round(float(mean_ic / std_ic), 4) if std_ic > 0 else 0.0
+
+        # lag-1 IC 自相关 (Spearman)
+        if len(arr) >= 5:
+            ac, _ = spearmanr(arr[:-1], arr[1:])
+            result["ic_autocorr"] = round(float(ac), 4) if not np.isnan(ac) else None
+    except Exception as e:
+        logger.debug(f"增强统计计算失败: {e}")
+
+    return result
+
+
+def compute_industry_weighted_ic(
+    factor_values: pd.Series,
+    future_returns: pd.Series,
+    industry_map: dict[str, str],
+) -> dict[str, float]:
+    """
+    行业加权 IC 分解。
+
+    对每个 (date, industry) 子组计算 Spearman IC，
+    按组内股票数加权，返回时间序列均值的加权贡献。
+
+    返回:
+        {industry_name: weighted_contribution}，按 |贡献| 降序
+    """
+    if factor_values.empty or future_returns.empty:
+        return {}
+
+    # 对齐 index
+    if factor_values.index.names[0] is None:
+        factor_values.index.names = ["instrument", "datetime"]
+    if future_returns.index.names[0] is None:
+        future_returns.index.names = ["instrument", "datetime"]
+
+    dates = sorted(factor_values.index.get_level_values("datetime").unique())
+    industry_contribs: dict[str, list[float]] = {}
+
+    for dt in dates:
+        try:
+            fv = factor_values.xs(dt, level="datetime").dropna()
+            fr = future_returns.xs(dt, level="datetime").dropna()
+            common = fv.index.intersection(fr.index)
+            if len(common) < 15:
+                continue
+
+            # 给每个股票分配行业
+            industries = pd.Series({c: industry_map.get(c, "未知") for c in common})
+            valid = industries != "未知"
+            if valid.sum() < 15:
+                continue
+
+            common_valid = common[valid]
+
+            # 按行业分组计算 IC
+            for ind in industries[valid].unique():
+                ind_stocks = common_valid[industries[valid] == ind]
+                if len(ind_stocks) < 5:
+                    continue
+
+                fv_ind = fv[ind_stocks].values
+                fr_ind = fr[ind_stocks].values
+                valid_vals = np.isfinite(fv_ind) & np.isfinite(fr_ind)
+                if valid_vals.sum() < 5:
+                    continue
+
+                ic, _ = spearmanr(fv_ind[valid_vals], fr_ind[valid_vals])
+                if not np.isnan(ic):
+                    # 权重 = 行业股票数 / 总股票数
+                    weight = len(ind_stocks) / len(common_valid)
+                    contrib = ic * weight
+
+                    if ind not in industry_contribs:
+                        industry_contribs[ind] = []
+                    industry_contribs[ind].append(contrib)
+
+        except Exception:
+            continue
+
+    # 时间序列均值
+    result = {}
+    for ind, contribs in industry_contribs.items():
+        if contribs:
+            result[ind] = round(float(np.mean(contribs)), 4)
+
+    # 按绝对值排序
+    return dict(sorted(result.items(), key=lambda x: abs(x[1]), reverse=True))

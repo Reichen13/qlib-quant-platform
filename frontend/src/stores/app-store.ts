@@ -22,6 +22,7 @@ export interface FactorParams {
   endDate: string
   predictPeriod: number
   topK: number
+  neutralize: string
   selectedFactors: string[]
   activeTab: string
 }
@@ -81,6 +82,7 @@ const DEFAULT_FACTOR_PARAMS: FactorParams = {
   endDate: "2026-04-30",
   predictPeriod: 5,
   topK: 20,
+  neutralize: "",
   selectedFactors: [],
   activeTab: "overview",
 }

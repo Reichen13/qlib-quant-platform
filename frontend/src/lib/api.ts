@@ -131,6 +131,14 @@ export interface FactorIC {
   ic: number
   rank_ic: number
   icir: number
+  category?: string
+  skewness?: number | null
+  kurtosis?: number | null
+  t_statistic?: number | null
+  p_value?: number | null
+  information_ratio?: number | null
+  ic_autocorr?: number | null
+  industry_contribution?: Record<string, number> | null
 }
 
 // 数据状态类型
@@ -397,7 +405,7 @@ export const api = {
 
   // 因子分析（需要较长超时，Alpha158 计算可能需要 3-5 分钟）
   factors: {
-    analyze: (params: { start_date: string; end_date: string; predict_period: number; top_k: number }) =>
+    analyze: (params: { start_date: string; end_date: string; predict_period: number; top_k: number; neutralize?: string }) =>
       fetch(`${API_BASE}/api/factors/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

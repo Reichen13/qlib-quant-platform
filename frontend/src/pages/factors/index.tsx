@@ -53,6 +53,13 @@ interface FactorItem {
   icir: number
   type: string
   category: string
+  skewness?: number | null
+  kurtosis?: number | null
+  tStatistic?: number | null
+  pValue?: number | null
+  informationRatio?: number | null
+  icAutocorr?: number | null
+  industryContribution?: Record<string, number> | null
 }
 
 export function FactorAnalysisPage() {
@@ -63,19 +70,22 @@ export function FactorAnalysisPage() {
   const predictPeriod = String(factorParams.predictPeriod)
   const startDate = factorParams.startDate
   const endDate = factorParams.endDate
+  const neutralize = factorParams.neutralize || ""
 
   const [selectedFactor, setSelectedFactor] = useState<string | null>(null)
-  const [detailTab, setDetailTab] = useState<"ic_stability" | "factor_series">("ic_stability")
+  const [detailTab, setDetailTab] = useState<"ic_stability" | "factor_series" | "industry_contrib">("ic_stability")
   const [showDecay, setShowDecay] = useState(false)
   const [showCombination, setShowCombination] = useState(false)
+  const [showAdvancedStats, setShowAdvancedStats] = useState(false)
 
   const { data: analyzeData, isLoading, isFetching, error, refetch } = useQuery({
-    queryKey: ["factors", "analyze", predictPeriod, startDate, endDate],
+    queryKey: ["factors", "analyze", predictPeriod, startDate, endDate, neutralize],
     queryFn: () => api.factors.analyze({
       start_date: startDate,
       end_date: endDate,
       predict_period: parseInt(predictPeriod),
       top_k: 158,
+      neutralize: neutralize || undefined,
     }),
     enabled: true,
     retry: false,
@@ -139,7 +149,6 @@ export function FactorAnalysisPage() {
     enabled: showCombination && !!analyzeData,
   })
 
-  // IC 衰减图表数据
   const decayChartData = useMemo(() => {
     if (!decayData?.periods || !decayData?.decay_data) return []
     return decayData.periods.map((period: number, idx: number) => {
@@ -169,6 +178,13 @@ export function FactorAnalysisPage() {
       icir: f.icir || 0,
       type: f.ic > 0 ? "动量" : "反转",
       category: f.category || "未分类",
+      skewness: f.skewness,
+      kurtosis: f.kurtosis,
+      tStatistic: f.t_statistic,
+      pValue: f.p_value,
+      informationRatio: f.information_ratio,
+      icAutocorr: f.ic_autocorr,
+      industryContribution: f.industry_contribution,
     }))
   }
 
@@ -176,6 +192,8 @@ export function FactorAnalysisPage() {
   const filteredFactors = factors
     .filter((f) => selectedCategory === "全部" || f.category === selectedCategory)
     .sort((a, b) => Math.abs(b[sortBy]) - Math.abs(a[sortBy]))
+
+  const selectedFactorObj = filteredFactors.find((f) => f.name === selectedFactor) || null
 
   const avgIC = factors.length > 0 ? factors.reduce((sum, f) => sum + Math.abs(f.ic), 0) / factors.length : 0
   const maxIC = factors.length > 0 ? Math.max(...factors.map((f) => Math.abs(f.ic))) : 0
@@ -206,7 +224,7 @@ export function FactorAnalysisPage() {
           <CardTitle className="text-base">分析参数</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 md:grid-cols-5">
+          <div className="grid gap-4 md:grid-cols-6">
             <div className="space-y-2">
               <Label>预测周期</Label>
               <Select value={predictPeriod} onValueChange={(v) => setFactorParams({ predictPeriod: Number(v) })}>
@@ -235,6 +253,19 @@ export function FactorAnalysisPage() {
                       {range.label}
                     </SelectItem>
                   ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>行业中性化</Label>
+              <Select value={neutralize} onValueChange={(v) => setFactorParams({ neutralize: v })}>
+                <SelectTrigger>
+                  <SelectValue placeholder="无" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="">无中性化</SelectItem>
+                  <SelectItem value="industry">行业中性化 (OLS)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -284,6 +315,9 @@ export function FactorAnalysisPage() {
               数据范围: {startDate} ~ {endDate}
             </Badge>
             <Badge variant="secondary">因子总数: {factors.length}</Badge>
+            {neutralize === "industry" && (
+              <Badge variant="default" className="bg-purple-600">行业中性化</Badge>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -451,12 +485,22 @@ export function FactorAnalysisPage() {
                     因子与收益率的相关系数分析
                   </CardDescription>
                 </div>
-                <Tabs value={sortBy} onValueChange={(v) => setSortBy(v as any)}>
-                  <TabsList>
-                    <TabsTrigger value="ic">IC</TabsTrigger>
-                    <TabsTrigger value="rankIC">Rank IC</TabsTrigger>
-                  </TabsList>
-                </Tabs>
+                <div className="flex items-center gap-3">
+                  <Button
+                    variant={showAdvancedStats ? "secondary" : "ghost"}
+                    size="sm"
+                    onClick={() => setShowAdvancedStats(!showAdvancedStats)}
+                  >
+                    <BarChart3 className="mr-1 h-3 w-3" />
+                    {showAdvancedStats ? "隐藏高级统计" : "高级统计"}
+                  </Button>
+                  <Tabs value={sortBy} onValueChange={(v) => setSortBy(v as any)}>
+                    <TabsList>
+                      <TabsTrigger value="ic">IC</TabsTrigger>
+                      <TabsTrigger value="rankIC">Rank IC</TabsTrigger>
+                    </TabsList>
+                  </Tabs>
+                </div>
               </div>
             </CardHeader>
             <CardContent>
@@ -488,6 +532,14 @@ export function FactorAnalysisPage() {
                       <TableHead className="text-right">IC</TableHead>
                       <TableHead className="text-right">Rank IC</TableHead>
                       <TableHead className="text-right">ICIR</TableHead>
+                      {showAdvancedStats && (
+                        <>
+                          <TableHead className="text-right">t 值</TableHead>
+                          <TableHead className="text-right">p 值</TableHead>
+                          <TableHead className="text-right">IR</TableHead>
+                          <TableHead className="text-right">IC 自相关</TableHead>
+                        </>
+                      )}
                       <TableHead className="text-right">操作</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -524,6 +576,26 @@ export function FactorAnalysisPage() {
                         <TableCell className="text-right text-muted-foreground">
                           {factor.icir ? factor.icir.toFixed(2) : "-"}
                         </TableCell>
+                        {showAdvancedStats && (
+                          <>
+                            <TableCell className="text-right">
+                              <span className={factor.tStatistic != null ? (Math.abs(factor.tStatistic) >= 1.96 ? "text-up font-medium" : "text-muted-foreground") : "text-muted-foreground"}>
+                                {factor.tStatistic != null ? factor.tStatistic.toFixed(2) : "-"}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <span className={factor.pValue != null ? (factor.pValue < 0.05 ? "text-up font-medium" : "text-muted-foreground") : "text-muted-foreground"}>
+                                {factor.pValue != null ? factor.pValue.toFixed(4) : "-"}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right text-muted-foreground">
+                              {factor.informationRatio != null ? factor.informationRatio.toFixed(2) : "-"}
+                            </TableCell>
+                            <TableCell className="text-right text-muted-foreground">
+                              {factor.icAutocorr != null ? factor.icAutocorr.toFixed(2) : "-"}
+                            </TableCell>
+                          </>
+                        )}
                         <TableCell className="text-right">
                           <button
                             className="text-sm text-primary hover:underline"
@@ -670,6 +742,7 @@ export function FactorAnalysisPage() {
                 <TabsList>
                   <TabsTrigger value="ic_stability">IC 稳定性</TabsTrigger>
                   <TabsTrigger value="factor_series">因子时序</TabsTrigger>
+                  <TabsTrigger value="industry_contrib">行业贡献</TabsTrigger>
                 </TabsList>
                 <TabsContent value="ic_stability" className="mt-4">
                   <LineChartComponent
@@ -692,6 +765,25 @@ export function FactorAnalysisPage() {
                     xKey="date"
                     height={280}
                   />
+                </TabsContent>
+                <TabsContent value="industry_contrib" className="mt-4">
+                  {selectedFactorObj?.industryContribution && Object.keys(selectedFactorObj.industryContribution).length > 0 ? (
+                    <BarChart
+                      data={Object.entries(selectedFactorObj.industryContribution)
+                        .sort((a, b) => a[1] - b[1])
+                        .slice(-15)
+                        .map(([ind, val]) => ({ name: ind, 贡献: val }))}
+                      bars={[{ dataKey: "贡献", name: "行业贡献", color: "var(--color-primary)" }]}
+                      xKey="name"
+                      height={350}
+                      title="行业加权 IC 贡献"
+                      description="正值表示该行业内因子预测能力更强"
+                    />
+                  ) : (
+                    <p className="text-center py-12 text-muted-foreground">
+                      {neutralize ? "该因子暂无行业贡献数据" : "需先启用行业中性化后才能查看行业贡献"}
+                    </p>
+                  )}
                 </TabsContent>
               </Tabs>
             ) : (
