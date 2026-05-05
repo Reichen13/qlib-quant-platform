@@ -830,6 +830,66 @@ export function FactorAnalysisPage() {
                 <p className="text-xs text-muted-foreground mt-2">
                   X 轴为预测周期（1/3/5/10/20日），Y 轴为 IC 值。IC 衰减越快说明信号持续性越弱。
                 </p>
+                {decayData?.decay_data && decayData.decay_data.length > 0 && (() => {
+                  const periods = decayData.periods as number[]
+                  // 计算每个因子的半衰期（IC跌到初始值50%的周期）
+                  const halfLives: { factor: string; halfLife: number; fast: boolean }[] = []
+                  for (const d of decayData.decay_data) {
+                    const initialIC = Math.abs(d.ic_values[0])
+                    if (initialIC < 0.01) continue
+                    let halfPeriod = periods[periods.length - 1]
+                    for (let i = 0; i < d.ic_values.length; i++) {
+                      if (Math.abs(d.ic_values[i]) < initialIC * 0.5) {
+                        halfPeriod = periods[i]
+                        break
+                      }
+                    }
+                    halfLives.push({ factor: d.factor, halfLife: halfPeriod, fast: halfPeriod <= 5 })
+                  }
+                  halfLives.sort((a, b) => a.halfLife - b.halfLife)
+                  const fastSignals = halfLives.filter(h => h.fast).slice(0, 3)
+                  const slowSignals = halfLives.filter(h => !h.fast).slice(-3).reverse()
+                  const avgHalfLife = halfLives.length > 0
+                    ? Math.round(halfLives.reduce((s, h) => s + h.halfLife, 0) / halfLives.length)
+                    : null
+                  return (
+                    <div className="mt-4 grid gap-3 md:grid-cols-3 text-sm">
+                      <div className="p-3 bg-muted/50 rounded-lg">
+                        <p className="text-muted-foreground text-xs">建议调仓周期</p>
+                        <p className="font-bold text-lg">
+                          {avgHalfLife ? `≤ ${avgHalfLife} 天` : "--"}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-0.5">基于因子 IC 平均半衰期</p>
+                      </div>
+                      <div className="p-3 bg-muted/50 rounded-lg">
+                        <p className="text-muted-foreground text-xs">短周期信号</p>
+                        {fastSignals.length > 0 ? (
+                          <div className="mt-1 space-y-0.5">
+                            {fastSignals.map(f => (
+                              <Badge key={f.factor} variant="outline" className="text-xs mr-1">
+                                {f.factor} (T&lt;{f.halfLife}d)
+                              </Badge>
+                            ))}
+                          </div>
+                        ) : <p className="text-muted-foreground text-xs mt-1">--</p>}
+                        <p className="text-xs text-muted-foreground mt-1">需高频调仓，适合短周期策略</p>
+                      </div>
+                      <div className="p-3 bg-muted/50 rounded-lg">
+                        <p className="text-muted-foreground text-xs">长周期信号</p>
+                        {slowSignals.length > 0 ? (
+                          <div className="mt-1 space-y-0.5">
+                            {slowSignals.map(f => (
+                              <Badge key={f.factor} variant="secondary" className="text-xs mr-1">
+                                {f.factor} (T~{f.halfLife}d)
+                              </Badge>
+                            ))}
+                          </div>
+                        ) : <p className="text-muted-foreground text-xs mt-1">--</p>}
+                        <p className="text-xs text-muted-foreground mt-1">信号衰减慢，适合中长期持股</p>
+                      </div>
+                    </div>
+                  )
+                })()}
               </>
             ) : (
               <div className="text-center py-8 text-muted-foreground">暂无衰减数据</div>
