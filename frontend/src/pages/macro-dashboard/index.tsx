@@ -352,6 +352,10 @@ export function MacroDashboardPage() {
                     <p className="text-muted-foreground">{allocationData.summary}</p>
                   </div>
                 )}
+                <div className="p-3 bg-yellow-600/10 border border-yellow-600/20 rounded-lg text-xs text-muted-foreground">
+                  <span className="font-medium text-yellow-600">注意：</span>
+                  此配置基于桥水全天候框架的教科书映射，尚未经 A 股历史数据回测验证。不同市场状态下的最优配置可能与理论值存在偏差，请结合其他分析模块综合判断。
+                </div>
               </div>
             ) : (
               <div className="text-center py-8 text-muted-foreground">暂无配置数据</div>
