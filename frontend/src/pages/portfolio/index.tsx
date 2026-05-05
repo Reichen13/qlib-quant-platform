@@ -36,14 +36,16 @@ export function PortfolioPage() {
   const codes = portfolioCodesStr.split(/[\s,]+/).filter(Boolean)
   const [method, setMethod] = useState("max_sharpe")
   const [maxWeight, setMaxWeight] = useState(30)
+  const [turnoverLambda, setTurnoverLambda] = useState(0)
   const [optimizeEnabled, setOptimizeEnabled] = useState(false)
 
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ["portfolio", "optimize", codes, method, maxWeight],
+    queryKey: ["portfolio", "optimize", codes, method, maxWeight, turnoverLambda],
     queryFn: () => api.portfolio.optimize({
       codes,
       method,
       max_weight: maxWeight / 100,
+      turnover_lambda: turnoverLambda / 100,
     }),
     enabled: optimizeEnabled && codes.length >= 2,
     retry: 1,
@@ -179,6 +181,23 @@ export function PortfolioPage() {
                   step={5}
                 />
               </div>
+
+              <div className="space-y-1.5">
+                <div className="flex justify-between">
+                  <Label className="text-xs">换手率惩罚 λ</Label>
+                  <span className="text-xs font-medium">{turnoverLambda === 0 ? "关闭" : `${turnoverLambda}%`}</span>
+                </div>
+                <Slider
+                  value={[turnoverLambda]}
+                  onValueChange={([v]) => setTurnoverLambda(v)}
+                  min={0}
+                  max={100}
+                  step={5}
+                />
+                <p className="text-xs text-muted-foreground">
+                  λ &gt; 0 时惩罚偏离等权基准，降低换手成本
+                </p>
+              </div>
             </div>
           </div>
         </CardContent>
@@ -211,7 +230,7 @@ export function PortfolioPage() {
       {data && !isLoading && (
         <>
           {/* 核心指标 */}
-          <div className="grid gap-4 grid-cols-2 md:grid-cols-4">
+          <div className="grid gap-4 grid-cols-2 md:grid-cols-5">
             <Card>
               <CardHeader className="pb-2">
                 <CardTitle className="text-xs font-medium text-muted-foreground">预期年化收益</CardTitle>
@@ -247,6 +266,16 @@ export function PortfolioPage() {
               <CardContent>
                 <div className="text-xl font-bold">
                   {data.diversification_ratio?.toFixed(2)}
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-xs font-medium text-muted-foreground">换手率 (vs 等权)</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className={`text-xl font-bold ${(data.turnover ?? 0) > 1 ? "text-down" : ""}`}>
+                  {data.turnover != null ? `${(data.turnover * 100).toFixed(1)}%` : "--"}
                 </div>
               </CardContent>
             </Card>

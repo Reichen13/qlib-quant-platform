@@ -628,7 +628,7 @@ export const api = {
 
   // 投资组合优化
   portfolio: {
-    optimize: (params: { codes: string[]; start_date?: string; end_date?: string; method: string; max_weight: number }) =>
+    optimize: (params: { codes: string[]; start_date?: string; end_date?: string; method: string; max_weight: number; turnover_lambda?: number }) =>
       fetch(`${API_BASE}/api/portfolio/optimize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

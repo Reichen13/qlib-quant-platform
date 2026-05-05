@@ -342,6 +342,7 @@ class PortfolioOptimizeRequest(BaseModel):
     end_date: Optional[str] = Field(default=None, description="结束日期")
     method: str = Field(default="max_sharpe", description="优化方法: max_sharpe, min_variance, risk_parity, equal_weight")
     max_weight: float = Field(default=0.3, ge=0.01, le=1.0, description="单票最大权重")
+    turnover_lambda: float = Field(default=0.0, ge=0.0, le=10.0, description="换手率惩罚系数，0=无约束")
 
 
 class PortfolioWeight(BaseModel):
@@ -368,6 +369,7 @@ class PortfolioOptimizeResponse(BaseModel):
     expected_volatility: float
     sharpe_ratio: float
     diversification_ratio: float
+    turnover: Optional[float] = None
     efficient_frontier: List[EfficientFrontierPoint]
     benchmark: dict
 

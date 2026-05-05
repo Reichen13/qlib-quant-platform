@@ -129,11 +129,13 @@ def _mean_variance_optimization(
     risk_aversion: float = 1.0,
     short_sell: bool = False,
     max_weight: float = 0.3,
+    turnover_lambda: float = 0.0,
 ) -> dict:
     """均值-方差优化"""
     n = len(returns.columns)
     mu = _shrink_returns(returns)
     sigma = _shrink_covariance(returns)
+    w_prev = np.ones(n) / n  # 等权参考基准
 
     if target_return is not None:
         # 给定目标收益，最小化风险
@@ -141,7 +143,9 @@ def _mean_variance_optimization(
             from scipy.optimize import minimize
 
             def objective(w):
-                return np.sqrt(w.T @ sigma @ w)
+                risk = np.sqrt(w.T @ sigma @ w)
+                turnover = np.sum(np.abs(w - w_prev))
+                return risk + turnover_lambda * turnover
 
             constraints = [
                 {"type": "eq", "fun": lambda w: np.sum(w) - 1},
@@ -167,7 +171,8 @@ def _mean_variance_optimization(
             def neg_sharpe(w):
                 port_return = w @ mu
                 port_vol = np.sqrt(w.T @ sigma @ w)
-                return -port_return / port_vol if port_vol > 0 else 1e9
+                turnover = np.sum(np.abs(w - w_prev))
+                return -port_return / port_vol + turnover_lambda * turnover if port_vol > 0 else 1e9
 
             constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
             bounds = [(0, max_weight) for _ in range(n)] if not short_sell else [(-1, 1) for _ in range(n)]
@@ -180,9 +185,12 @@ def _mean_variance_optimization(
             opt_return = weights @ mu
             opt_vol = np.sqrt(weights.T @ sigma @ weights)
             opt_sharpe = -neg_sharpe(weights)
+            # recalculate pure sharpe (without turnover penalty)
+            opt_sharpe = opt_return / opt_vol if opt_vol > 0 else 0
         except ImportError:
             raise HTTPException(status_code=500, detail="需要安装 scipy 进行均值方差优化")
 
+    turnover = float(np.sum(np.abs(weights - w_prev)))
     codes = returns.columns.tolist()
     return {
         "method": "mean_variance",
@@ -191,20 +199,23 @@ def _mean_variance_optimization(
         "expected_volatility": round(float(opt_vol), 4),
         "sharpe_ratio": round(float(opt_sharpe), 2),
         "diversification_ratio": round(float(1 / np.sqrt(np.sum(weights ** 2) * n) if n > 1 else 1), 4),
+        "turnover": round(turnover, 4),
     }
 
 
-def _risk_parity(returns: pd.DataFrame, max_weight: float = 0.3) -> dict:
+def _risk_parity(returns: pd.DataFrame, max_weight: float = 0.3, turnover_lambda: float = 0.0) -> dict:
     """风险平价优化"""
     n = len(returns.columns)
     sigma = _shrink_covariance(returns)
+    w_prev = np.ones(n) / n
 
     def risk_budget_objective(w):
         portfolio_vol = np.sqrt(w.T @ sigma @ w)
         marginal_risk = sigma @ w
         risk_contrib = w * marginal_risk / portfolio_vol
         target_risk = portfolio_vol / n
-        return np.sum((risk_contrib - target_risk) ** 2)
+        turnover = np.sum(np.abs(w - w_prev))
+        return np.sum((risk_contrib - target_risk) ** 2) + turnover_lambda * turnover
 
     try:
         from scipy.optimize import minimize
@@ -222,6 +233,7 @@ def _risk_parity(returns: pd.DataFrame, max_weight: float = 0.3) -> dict:
         opt_sharpe = opt_return / opt_vol if opt_vol > 0 else 0
 
         codes = returns.columns.tolist()
+        turnover = float(np.sum(np.abs(weights - w_prev)))
         return {
             "method": "risk_parity",
             "weights": [{"code": codes[i], "weight": round(float(weights[i]), 4)} for i in range(n)],
@@ -229,21 +241,25 @@ def _risk_parity(returns: pd.DataFrame, max_weight: float = 0.3) -> dict:
             "expected_volatility": round(float(opt_vol), 4),
             "sharpe_ratio": round(float(opt_sharpe), 2),
             "diversification_ratio": round(float(1 / np.sqrt(np.sum(weights ** 2) * n) if n > 1 else 1), 4),
+            "turnover": round(turnover, 4),
         }
     except ImportError:
         raise HTTPException(status_code=500, detail="需要安装 scipy 进行风险平价优化")
 
 
-def _min_variance(returns: pd.DataFrame, max_weight: float = 0.3) -> dict:
+def _min_variance(returns: pd.DataFrame, max_weight: float = 0.3, turnover_lambda: float = 0.0) -> dict:
     """最小方差优化"""
     n = len(returns.columns)
     sigma = _shrink_covariance(returns)
+    w_prev = np.ones(n) / n
 
     try:
         from scipy.optimize import minimize
 
         def objective(w):
-            return np.sqrt(w.T @ sigma @ w)
+            risk = np.sqrt(w.T @ sigma @ w)
+            turnover = np.sum(np.abs(w - w_prev))
+            return risk + turnover_lambda * turnover
 
         constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
         bounds = [(0.001, max_weight) for _ in range(n)]
@@ -258,6 +274,7 @@ def _min_variance(returns: pd.DataFrame, max_weight: float = 0.3) -> dict:
         opt_sharpe = opt_return / opt_vol if opt_vol > 0 else 0
 
         codes = returns.columns.tolist()
+        turnover = float(np.sum(np.abs(weights - w_prev)))
         return {
             "method": "min_variance",
             "weights": [{"code": codes[i], "weight": round(float(weights[i]), 4)} for i in range(n)],
@@ -265,6 +282,7 @@ def _min_variance(returns: pd.DataFrame, max_weight: float = 0.3) -> dict:
             "expected_volatility": round(float(opt_vol), 4),
             "sharpe_ratio": round(float(opt_sharpe), 2),
             "diversification_ratio": round(float(1 / np.sqrt(np.sum(weights ** 2) * n) if n > 1 else 1), 4),
+            "turnover": round(turnover, 4),
         }
     except ImportError:
         raise HTTPException(status_code=500, detail="需要安装 scipy 进行最小方差优化")
@@ -378,9 +396,9 @@ async def optimize_portfolio(request: PortfolioOptimizeRequest):
 
         # 执行优化
         if request.method == "risk_parity":
-            result = _risk_parity(returns, request.max_weight)
+            result = _risk_parity(returns, request.max_weight, request.turnover_lambda)
         elif request.method == "min_variance":
-            result = _min_variance(returns, request.max_weight)
+            result = _min_variance(returns, request.max_weight, request.turnover_lambda)
         elif request.method == "equal_weight":
             result = _equal_weight(returns)
         else:
@@ -389,6 +407,7 @@ async def optimize_portfolio(request: PortfolioOptimizeRequest):
                 returns,
                 target_return=None,
                 max_weight=request.max_weight,
+                turnover_lambda=request.turnover_lambda,
             )
 
         # 有效前沿
@@ -407,6 +426,7 @@ async def optimize_portfolio(request: PortfolioOptimizeRequest):
             expected_volatility=result["expected_volatility"],
             sharpe_ratio=result["sharpe_ratio"],
             diversification_ratio=result["diversification_ratio"],
+            turnover=result.get("turnover"),
             efficient_frontier=[EfficientFrontierPoint(**p) for p in frontier],
             benchmark=bench,
         )
