@@ -204,6 +204,7 @@ export type BacktestResult = {
     constraints_active?: string[]
     warning?: string
   }
+  factor_source?: string
   error?: string
 }
 

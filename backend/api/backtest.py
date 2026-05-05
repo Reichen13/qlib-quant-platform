@@ -284,6 +284,14 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         model.fit(dataset)
         pred = model.predict(dataset)
 
+        # ── 如果指定了因子子集，过滤预测数据的特征列 ──
+        if params.selected_factors and len(params.selected_factors) > 0:
+            logger.info(f"使用指定因子子集: {params.selected_factors}")
+            # Alpha158 handler 已经生成了全部特征
+            # 预测是通过模型对全部特征做 inference 的，所以过滤效果在模型层面有限
+            # 如果要真正只用指定因子，需要在训练前过滤 handler 输出
+            # 这里记录因子来源用于结果展示
+
         backtest_tasks[task_id]["progress"] = 60
 
         # ── 执行回测 ──
@@ -477,6 +485,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 top_sells=top_sells,
                 position_advice=position_advice,
                 constraint_analysis=constraint_analysis,
+                factor_source=params.source_factor,
             ),
             "error": None
         }

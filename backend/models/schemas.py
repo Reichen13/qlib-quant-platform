@@ -159,6 +159,10 @@ class BacktestParams(BaseModel):
     buy_cost: float = Field(default=0.0003, ge=0, le=0.01, description="买入佣金")
     sell_cost: float = Field(default=0.0003, ge=0, le=0.01, description="卖出佣金")
 
+    # 因子选择（从因子分析页面跳转时带入）
+    selected_factors: Optional[List[str]] = Field(default=None, description="指定使用哪些因子（None=全部158个）")
+    source_factor: Optional[str] = Field(default=None, description="跳转来源因子名（用于展示）")
+
 
 class EquityPoint(BaseModel):
     """净值曲线数据点"""
@@ -209,6 +213,8 @@ class BacktestResponse(BaseModel):
     position_advice: Optional[str] = None
     # A 股约束分析
     constraint_analysis: Optional[dict] = None
+    # 因子来源（从因子分析跳转时带入）
+    factor_source: Optional[str] = None
     # 错误信息
     error: Optional[str] = None
 

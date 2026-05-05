@@ -22,7 +22,8 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Microscope, Loader2, BarChart3, RefreshCw, X, Layers } from "lucide-react"
+import { useNavigate } from "react-router-dom"
+import { Microscope, Loader2, BarChart3, RefreshCw, X, Layers, Play } from "lucide-react"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { BarChart } from "@/components/charts/bar-chart"
@@ -67,6 +68,9 @@ export function FactorAnalysisPage() {
   const [sortBy, setSortBy] = useState<"ic" | "rankIC">("ic")
   const factorParams = useAppStore((s) => s.factorParams)
   const setFactorParams = useAppStore((s) => s.setFactorParams)
+  const setBacktestParams = useAppStore((s) => s.setBacktestParams)
+  const setBacktestActiveTab = useAppStore((s) => s.setBacktestActiveTab)
+  const navigate = useNavigate()
   const predictPeriod = String(factorParams.predictPeriod)
   const startDate = factorParams.startDate
   const endDate = factorParams.endDate
@@ -729,9 +733,36 @@ export function FactorAnalysisPage() {
                   <Badge variant="outline" className="ml-2">{factorDetail.category}</Badge>
                 )}
               </CardTitle>
-              <Button variant="ghost" size="icon" onClick={() => setSelectedFactor(null)}>
-                <X className="h-4 w-4" />
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={() => {
+                    setBacktestParams({
+                      model: "lightgbm",
+                      trainStart: startDate,
+                      trainEnd: endDate,
+                      testStart: endDate,
+                      testEnd: endDate,
+                      topK: "30",
+                      rebalance: "5",
+                      commission: "0.0003",
+                      slippage: "0.0003",
+                      singlePosition: "0.05",
+                      stopLoss: "-0.08",
+                      sourceFactor: selectedFactor,
+                    })
+                    setBacktestActiveTab("config")
+                    navigate("/backtest")
+                  }}
+                >
+                  <Play className="mr-1 h-3 w-3" />
+                  回测此因子
+                </Button>
+                <Button variant="ghost" size="icon" onClick={() => setSelectedFactor(null)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
             {factorDetail && (
               <CardDescription>

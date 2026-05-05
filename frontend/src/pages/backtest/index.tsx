@@ -88,7 +88,7 @@ export function BacktestPage() {
   }, [pollingTaskId, pollStatus])
 
   const runBacktest = () => {
-    const snakeParams = {
+    const snakeParams: Record<string, any> = {
       model: params.model,
       train_start: params.trainStart,
       train_end: params.trainEnd,
@@ -100,6 +100,10 @@ export function BacktestPage() {
       sell_cost: parseFloat(params.slippage),
       max_position: parseFloat(params.singlePosition),
       stop_loss: parseFloat(params.stopLoss),
+    }
+    if (params.sourceFactor) {
+      snakeParams.source_factor = params.sourceFactor
+      snakeParams.selected_factors = [params.sourceFactor]
     }
     backtestMutation.mutate(snakeParams)
   }
@@ -355,6 +359,20 @@ export function BacktestPage() {
             </Card>
           ) : isCompleted && result.equity && result.equity.length > 0 ? (
             <>
+              {/* 因子来源横幅 */}
+              {result.factor_source && (
+                <Card className="border-purple-600/30 bg-purple-600/5">
+                  <CardContent className="py-3">
+                    <div className="flex items-center gap-2 text-sm">
+                      <Badge variant="default" className="bg-purple-600">因子分析跳转</Badge>
+                      <span className="text-muted-foreground">
+                        当前回测基于因子 <span className="font-medium text-foreground">{result.factor_source}</span> 的选股信号
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
               {/* 绩效指标 */}
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                 <Card>

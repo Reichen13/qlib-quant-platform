@@ -15,6 +15,7 @@ export interface BacktestParams {
   slippage: string
   singlePosition: string
   stopLoss: string
+  sourceFactor: string
 }
 
 export interface FactorParams {
@@ -75,6 +76,7 @@ const DEFAULT_BACKTEST_PARAMS: BacktestParams = {
   slippage: "0.0003",
   singlePosition: "0.05",
   stopLoss: "-0.08",
+  sourceFactor: "",
 }
 
 const DEFAULT_FACTOR_PARAMS: FactorParams = {
