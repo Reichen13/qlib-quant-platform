@@ -241,7 +241,7 @@ export function RiskPage() {
                   {formatVar(metrics?.var_95)}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  CVaR: {formatVar(metrics?.cvar_95)}
+                  CVaR: {formatVar(metrics?.cvar_95)} · 历史模拟法
                 </p>
               </CardContent>
             </Card>
