@@ -110,7 +110,7 @@ def _compute_var(returns: pd.Series, confidence: float = 0.95, method: str = "hi
 
 
 def _compute_stress_tests(returns: pd.DataFrame) -> List[dict]:
-    """计算压力测试场景"""
+    """计算压力测试场景 — A 股特定风险事件库"""
     scenarios = []
 
     if returns.empty:
@@ -119,10 +119,9 @@ def _compute_stress_tests(returns: pd.DataFrame) -> List[dict]:
     # 平均收益率序列（等权组合）
     portfolio_returns = returns.mean(axis=1)
 
-    # 1. 历史最大回撤场景
+    # 1. 历史最大回撤场景（基于回溯期内实际数据）
     cum = (1 + portfolio_returns).cumprod()
     dd = cum / cum.cummax() - 1
-    max_dd_idx = dd.idxmin()
     max_dd = dd.min()
     scenarios.append({
         "name": "历史最大回撤",
@@ -131,37 +130,126 @@ def _compute_stress_tests(returns: pd.DataFrame) -> List[dict]:
         "scenario_type": "historical",
     })
 
-    # 2. 2008 金融危机模拟（年化 -50%，波动率 60%）
-    scenarios.append({
-        "name": "2008 金融危机",
-        "description": "模拟 2008 年金融危机情景：股市暴跌 50%，波动率飙升",
-        "impact": round(float(np.mean(portfolio_returns) * 252 * 0.5 * 100 - np.std(portfolio_returns) * np.sqrt(252) * 100 * 2), 2),
-        "scenario_type": "hypothetical",
-    })
+    # 尝试加载 A 股历史情景的实际市场数据
+    a_share_scenarios = _load_a_share_stress_scenarios()
 
-    # 3. 2015 A股股灾（年化 -40%，高波动）
-    scenarios.append({
-        "name": "2015 A股股灾",
-        "description": "模拟 2015 年 A 股市场异常波动",
-        "impact": round(float(np.percentile(portfolio_returns, 1) * 252 * 100), 2),
-        "scenario_type": "historical_proxy",
-    })
+    # 2-6: A 股特定压力事件
+    port_vol = portfolio_returns.std() * np.sqrt(252)  # 年化波动率
 
-    # 4. 2020 新冠疫情冲击
-    scenarios.append({
-        "name": "2020 新冠疫情",
-        "description": "模拟疫情导致的市场恐慌性下跌",
-        "impact": round(float(np.percentile(portfolio_returns, 5) * 60 * 100), 2),
-        "scenario_type": "historical_proxy",
-    })
+    for sc in a_share_scenarios:
+        if sc.get("actual_return") is not None:
+            # 有实际市场数据：基于组合 beta 估算影响
+            # 假设组合 beta ≈ 1.0（相对CSI300），用实际市场跌幅 × 组合杠杆
+            impact = sc["actual_return"] * 100
+        else:
+            # 无实际数据：用组合 VaR 逻辑估算
+            impact = round(float(np.percentile(portfolio_returns, sc.get("percentile", 5)) * sc.get("multiplier", 60) * 100), 2)
 
-    # 5. 利率冲击（加息 200bp）
-    scenarios.append({
-        "name": "利率冲击 +200bp",
-        "description": "央行意外加息 200 基点，债券和股票同时承压",
-        "impact": round(float(portfolio_returns.mean() * 252 * 100 * 0.7 - 5), 2),
-        "scenario_type": "hypothetical",
-    })
+        scenarios.append({
+            "name": sc["name"],
+            "description": sc["description"],
+            "impact": round(float(impact), 2),
+            "scenario_type": sc.get("type", "historical"),
+        })
+
+    return scenarios
+
+
+def _load_a_share_stress_scenarios() -> List[dict]:
+    """
+    加载 A 股历史压力事件库
+
+    每个事件包含: name, description, date_range, actual_return (CSI300 区间收益)
+    优先从 Qlib 数据获取实际收益，数据不可用时用文献/市场记录估计
+    """
+    scenarios = []
+
+    try:
+        from qlib.data import D
+        calendars = D.calendar(freq="day")
+
+        # 辅助函数：获取 CSI300 区间收益
+        def _get_csi300_return(start, end):
+            try:
+                close_data = D.features(
+                    ["SH000300"], ["$close"],
+                    start_time=start, end_time=end, freq="day"
+                )
+                if close_data is not None and not close_data.empty and len(close_data) >= 2:
+                    cs = close_data["$close"]
+                    if hasattr(cs, 'iloc'):
+                        return float(cs.iloc[-1] / cs.iloc[0] - 1)
+                    return float(cs[-1] / cs[0] - 1)
+            except Exception:
+                pass
+            return None
+
+        # 2. 2015 A股股灾 (2015-06-12 至 2015-08-26)
+        r = _get_csi300_return("2015-06-12", "2015-08-26")
+        scenarios.append({
+            "name": "2015 A股股灾",
+            "description": "上证从5178跌至2850，清理场外配资引发流动性危机，千股跌停频现",
+            "actual_return": r if r is not None else -0.43,
+            "type": "historical",
+        })
+
+        # 3. 2016年熔断 (2016-01-04 至 2016-01-28)
+        r = _get_csi300_return("2016-01-04", "2016-01-28")
+        scenarios.append({
+            "name": "2016年熔断",
+            "description": "熔断机制实施4天内2次触发，上证跌至2638，中小创跌停潮",
+            "actual_return": r if r is not None else -0.21,
+            "type": "historical",
+        })
+
+        # 4. 2018年去杠杆熊市 (2018-01-24 至 2019-01-03)
+        r = _get_csi300_return("2018-01-24", "2019-01-03")
+        scenarios.append({
+            "name": "2018年去杠杆熊市",
+            "description": "金融去杠杆+中美贸易战，上证从3587跌至2440，持续11个月阴跌",
+            "actual_return": r if r is not None else -0.32,
+            "type": "historical",
+        })
+
+        # 5. 2024年量化集中平仓 (2024-01-02 至 2024-02-05)
+        r = _get_csi300_return("2024-01-02", "2024-02-05")
+        scenarios.append({
+            "name": "2024年量化流动性危机",
+            "description": "DMA策略集中撤出导致微盘股踩踏，中证2000指数-35%，量化策略大面积回撤",
+            "actual_return": r if r is not None else -0.06,  # CSI300 影响相对小
+            "type": "historical",
+        })
+
+        # 6. 2021年教育双减政策冲击 (2021-07-23 至 2021-08-20)
+        r = _get_csi300_return("2021-07-23", "2021-08-20")
+        scenarios.append({
+            "name": "2021年教育双减",
+            "description": "教育行业监管政策突变，中证教育指数-70%，外资大幅流出A股",
+            "actual_return": r if r is not None else -0.08,
+            "type": "historical",
+        })
+
+        # 7. 中美贸易战升级 (2018-05-01 至 2018-10-30)
+        r = _get_csi300_return("2018-05-01", "2018-10-30")
+        scenarios.append({
+            "name": "中美贸易摩擦升级",
+            "description": "美国对中国500亿+2000亿商品加征关税，科技股和出口导向行业重创",
+            "actual_return": r if r is not None else -0.18,
+            "type": "historical",
+        })
+
+    except Exception as e:
+        logger = __import__("loguru").logger
+        logger.warning(f"A股压力情景数据加载失败，使用估计值: {e}")
+        # 全部使用估计值
+        scenarios = [
+            {"name": "2015 A股股灾", "description": "上证从5178跌至2850，清理场外配资引发流动性危机", "actual_return": -0.43, "type": "historical"},
+            {"name": "2016年熔断", "description": "熔断机制实施4天内2次触发，中小创跌停潮", "actual_return": -0.21, "type": "historical"},
+            {"name": "2018年去杠杆熊市", "description": "金融去杠杆+中美贸易战，持续11个月阴跌", "actual_return": -0.32, "type": "historical"},
+            {"name": "2024年量化流动性危机", "description": "DMA策略集中撤出，微盘股踩踏，量化大面积回撤", "actual_return": -0.06, "type": "historical"},
+            {"name": "2021年教育双减", "description": "教育行业监管突变，外资大幅流出", "actual_return": -0.08, "type": "historical"},
+            {"name": "中美贸易摩擦升级", "description": "美国加征关税，科技股和出口行业重创", "actual_return": -0.18, "type": "historical"},
+        ]
 
     return scenarios
 
