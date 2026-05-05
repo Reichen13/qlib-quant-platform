@@ -437,6 +437,9 @@ export const api = {
     detail: (factorName: string, startDate: string, endDate: string, predictPeriod: number = 5) =>
       fetch(`${API_BASE}/api/factors/${encodeURIComponent(factorName)}/detail?start_date=${startDate}&end_date=${endDate}&predict_period=${predictPeriod}`)
         .then(r => handleResponse<any>(r)),
+    quantileReturns: (factorName: string, startDate: string, endDate: string, predictPeriod: number = 5, numQuantiles: number = 5) =>
+      fetch(`${API_BASE}/api/factors/${encodeURIComponent(factorName)}/quantile-returns?start_date=${startDate}&end_date=${endDate}&predict_period=${predictPeriod}&num_quantiles=${numQuantiles}`)
+        .then(r => handleResponse<any>(r)),
   },
 
   // 回测（需要较长超时）

@@ -125,6 +125,13 @@ export function FactorAnalysisPage() {
     enabled: !!selectedFactor,
   })
 
+  // 因子分组收益 (Quantile Returns)
+  const { data: quantileReturns, isLoading: quantileLoading } = useQuery({
+    queryKey: ["factors", "quantile-returns", selectedFactor, startDate, endDate, predictPeriod],
+    queryFn: () => api.factors.quantileReturns(selectedFactor!, startDate, endDate, parseInt(predictPeriod)),
+    enabled: !!selectedFactor,
+  })
+
   // IC 衰减分析
   const { data: decayData, isLoading: decayLoading } = useQuery({
     queryKey: ["factors", "decay", predictPeriod, startDate, endDate],
@@ -742,6 +749,7 @@ export function FactorAnalysisPage() {
                 <TabsList>
                   <TabsTrigger value="ic_stability">IC 稳定性</TabsTrigger>
                   <TabsTrigger value="factor_series">因子时序</TabsTrigger>
+                  <TabsTrigger value="quantile_returns">分组收益</TabsTrigger>
                   <TabsTrigger value="industry_contrib">行业贡献</TabsTrigger>
                 </TabsList>
                 <TabsContent value="ic_stability" className="mt-4">
@@ -765,6 +773,55 @@ export function FactorAnalysisPage() {
                     xKey="date"
                     height={280}
                   />
+                </TabsContent>
+                <TabsContent value="quantile_returns" className="mt-4">
+                  {quantileLoading ? (
+                    <div className="flex items-center justify-center py-12">
+                      <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                    </div>
+                  ) : quantileReturns?.quantile_returns ? (
+                    <div className="space-y-4">
+                      <BarChart
+                        data={quantileReturns.quantile_returns.map((q: any) => ({
+                          group: q.quantile,
+                          平均收益: q.mean_return,
+                        }))}
+                        bars={[{
+                          dataKey: "平均收益",
+                          name: "平均前向收益",
+                          color: "var(--color-primary)",
+                        }]}
+                        xKey="group"
+                        height={280}
+                        title={`${quantileReturns.num_quantiles} 组分位收益 (T+${predictPeriod})`}
+                        description="按因子值从小到大分为5组，计算每组等权前向收益"
+                      />
+                      {quantileReturns.long_short_spread != null && (
+                        <div className="grid gap-3 md:grid-cols-3 text-sm">
+                          <div className="p-3 bg-muted/50 rounded-lg">
+                            <p className="text-muted-foreground text-xs">多空收益差 (Q5-Q1)</p>
+                            <p className={`font-bold text-lg ${quantileReturns.long_short_spread > 0 ? "text-up" : "text-down"}`}>
+                              {(quantileReturns.long_short_spread * 100).toFixed(3)}%
+                            </p>
+                          </div>
+                          <div className="p-3 bg-muted/50 rounded-lg">
+                            <p className="text-muted-foreground text-xs">单调性</p>
+                            <p className={`font-bold text-lg ${quantileReturns.is_monotonic ? "text-up" : "text-muted-foreground"}`}>
+                              {quantileReturns.is_monotonic ? "单调 ✓" : "非单调"}
+                            </p>
+                          </div>
+                          <div className="p-3 bg-muted/50 rounded-lg">
+                            <p className="text-muted-foreground text-xs">解读</p>
+                            <p className="text-sm mt-0.5">{quantileReturns.interpretation}</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-center py-12 text-muted-foreground">
+                      暂无分组收益数据
+                    </p>
+                  )}
                 </TabsContent>
                 <TabsContent value="industry_contrib" className="mt-4">
                   {selectedFactorObj?.industryContribution && Object.keys(selectedFactorObj.industryContribution).length > 0 ? (

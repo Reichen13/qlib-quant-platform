@@ -441,6 +441,153 @@ async def factor_correlation(request: FactorAnalysisRequest):
         raise HTTPException(status_code=500, detail=f"因子相关性分析失败: {str(e)}")
 
 
+@router.get("/{factor_name}/quantile-returns")
+async def factor_quantile_returns(
+    factor_name: str,
+    start_date: str,
+    end_date: str,
+    predict_period: int = 5,
+    num_quantiles: int = 5,
+):
+    """
+    因子分组收益分析 (Quantile Returns)
+
+    按因子值将股票分为 N 组，计算每组的等权前向收益。
+    WorldQuant 因子验收标准第一条：monotonic quantile returns。
+    """
+    try:
+        import qlib
+        from qlib.data import D
+        from qlib.utils import init_instance_by_config
+
+        qlib.config.N_PROC = 1
+        _fix_parallel()
+
+        logger.info(f"分组收益: {factor_name}, {start_date}~{end_date}, {num_quantiles}组")
+
+        dataset = init_instance_by_config({
+            "class": "DatasetH",
+            "module_path": "qlib.data.dataset",
+            "kwargs": {
+                "handler": {
+                    "class": "Alpha158",
+                    "module_path": "qlib.contrib.data.handler",
+                    "kwargs": {
+                        "start_time": start_date,
+                        "end_time": end_date,
+                        "fit_start_time": start_date,
+                        "fit_end_time": end_date,
+                        "instruments": "csi300",
+                    },
+                },
+                "segments": {"test": (start_date, end_date)},
+            },
+        })
+
+        df_features = dataset.prepare("test", col_set="feature")
+        if df_features is None or df_features.empty:
+            handler = dataset.handler
+            df_features = handler.fetch(col_set="feature")
+
+        if factor_name not in df_features.columns:
+            raise HTTPException(status_code=404, detail=f"因子 {factor_name} 不存在")
+
+        feat_col = df_features[factor_name]
+
+        # 获取收盘价计算前向收益
+        stock_codes = _sample_stocks(df_features.index.get_level_values("instrument").unique().tolist())
+        raw_df = D.features(stock_codes, ["$close"], start_time=start_date, end_time=end_date)
+
+        future_returns = {}
+        for code in stock_codes:
+            try:
+                prices = raw_df.xs(code, level="instrument")["$close"].sort_index()
+                ret = prices.pct_change(predict_period).shift(-predict_period)
+                for dt, val in ret.items():
+                    if not np.isnan(val):
+                        future_returns[(code, dt)] = val
+            except Exception:
+                continue
+
+        fr_series = pd.Series(future_returns)
+        fr_series.index = pd.MultiIndex.from_tuples(fr_series.index, names=["instrument", "datetime"])
+
+        # 逐日期分组计算收益
+        test_dates = sorted(df_features.index.get_level_values("datetime").unique())
+        quantile_labels = [f"Q{i+1}" for i in range(num_quantiles)]
+        daily_quantile_returns = {q: [] for q in quantile_labels}
+
+        for dt in test_dates:
+            try:
+                fv = feat_col.xs(dt, level="datetime").dropna()
+                fr = fr_series.xs(dt, level="datetime").dropna()
+                common = fv.index.intersection(fr.index)
+                if len(common) < num_quantiles * 3:
+                    continue
+
+                fv_common = fv[common]
+                fr_common = fr[common]
+
+                # 按因子值分 N 组
+                quantile_bins = pd.qcut(fv_common, num_quantiles, labels=False, duplicates="drop")
+                if quantile_bins.nunique() < num_quantiles:
+                    continue
+
+                for q_idx in range(num_quantiles):
+                    mask = quantile_bins == q_idx
+                    if mask.sum() > 0:
+                        avg_ret = fr_common[mask].mean()
+                        if not np.isnan(avg_ret):
+                            daily_quantile_returns[quantile_labels[q_idx]].append(avg_ret)
+            except Exception:
+                continue
+
+        # 计算各分组的平均收益
+        quantile_result = []
+        for q_label in quantile_labels:
+            returns = daily_quantile_returns[q_label]
+            mean_ret = float(np.mean(returns)) if returns else 0.0
+            std_ret = float(np.std(returns)) if returns else 0.0
+            n_dates = len(returns)
+            quantile_result.append({
+                "quantile": q_label,
+                "mean_return": round(mean_ret, 6),
+                "std_return": round(std_ret, 6),
+                "n_dates": n_dates,
+            })
+
+        # 计算多空收益差 (Q5 - Q1)
+        long_short = round(quantile_result[-1]["mean_return"] - quantile_result[0]["mean_return"], 6) if len(quantile_result) >= 2 else 0
+
+        # 检查单调性
+        returns_seq = [q["mean_return"] for q in quantile_result]
+        is_monotonic = all(x <= y for x, y in zip(returns_seq, returns_seq[1:])) or all(x >= y for x, y in zip(returns_seq, returns_seq[1:]))
+
+        logger.info(f"分组收益完成: {factor_name}, 多空收益差={long_short}, 单调性={'是' if is_monotonic else '否'}")
+
+        return {
+            "factor": factor_name,
+            "num_quantiles": num_quantiles,
+            "predict_period": predict_period,
+            "quantile_returns": quantile_result,
+            "long_short_spread": long_short,
+            "is_monotonic": is_monotonic,
+            "interpretation": (
+                "因子值越大的组收益越高，多空收益显著" if is_monotonic and long_short > 0
+                else "因子值越大的组收益越低，具有反转效应" if is_monotonic and long_short < 0
+                else "分组收益不单调，因子预测能力可能不稳定"
+            ),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"分组收益计算失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"分组收益计算失败: {str(e)}")
+
+
 @router.post("/decay")
 async def factor_decay(request: FactorAnalysisRequest):
     """
