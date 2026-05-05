@@ -425,9 +425,13 @@ export function FactorAnalysisPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {factors.filter((f) => Math.abs(f.ic) > 0.02).length}
+              {analyzeData?.summary?.effective_factors || factors.filter((f) => Math.abs(f.ic) > 0.02).length}
             </div>
-            <p className="text-xs text-muted-foreground">|IC| &gt; 0.02</p>
+            <p className="text-xs text-muted-foreground">
+              {analyzeData?.summary?.effective_factors
+                ? `层次聚类后 (阈值0.7, 缩减${analyzeData.summary.factor_reduction_pct}%)`
+                : "|IC| > 0.02"}
+            </p>
           </CardContent>
         </Card>
 
@@ -720,6 +724,28 @@ export function FactorAnalysisPage() {
                     })}
                   </div>
                 </div>
+
+                {analyzeData?.summary?.clusters && analyzeData.summary.clusters.length > 0 && (
+                  <div className="pt-4 border-t">
+                    <h4 className="text-sm font-medium mb-3">代表因子 (聚类降维)</h4>
+                    <div className="space-y-1.5 text-xs">
+                      {analyzeData.summary.clusters.slice(0, 10).map((c: any) => (
+                        <div key={c.representative} className="flex items-center justify-between py-1 px-2 bg-muted/30 rounded">
+                          <div>
+                            <span className="font-medium">{c.representative}</span>
+                            <span className="text-muted-foreground ml-1.5">
+                              ({c.members.length}个)
+                            </span>
+                          </div>
+                          <span className="text-muted-foreground">ICIR: {c.icir}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      基于 IC 相关性层次聚类（阈值 0.7），每簇保留 ICIR 最高因子。{analyzeData.summary.clusters.length} 个独立因子簇
+                    </p>
+                  </div>
+                )}
               </div>
             </CardContent>
           </Card>

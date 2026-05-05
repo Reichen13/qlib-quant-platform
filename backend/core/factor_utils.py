@@ -412,3 +412,86 @@ def compute_industry_weighted_ic(
 
     # 按绝对值排序
     return dict(sorted(result.items(), key=lambda x: abs(x[1]), reverse=True))
+
+
+def cluster_factors_by_ic(
+    daily_ics: dict[str, list[float]],
+    icir_map: dict[str, float],
+    threshold: float = 0.7,
+) -> dict:
+    """
+    基于 IC 相关性的层次聚类因子降维。
+
+    参数:
+        daily_ics: {factor_name: [daily_ic_values]}
+        icir_map: {factor_name: icir}
+        threshold: 相关性阈值 (默认 0.7)
+
+    返回:
+        {
+            "n_original": 158,
+            "n_effective": 42,
+            "reduction_pct": 73.4,
+            "clusters": [
+                {"representative": "KMID", "members": ["KMID", "KMID2"], "icir": 0.85},
+                ...
+            ]
+        }
+    """
+    from scipy.cluster.hierarchy import linkage, fcluster
+    from scipy.spatial.distance import squareform
+
+    factor_names = list(daily_ics.keys())
+    n = len(factor_names)
+    if n < 3:
+        return {"n_original": n, "n_effective": n, "reduction_pct": 0.0, "clusters": []}
+
+    # 构建 IC 相关性矩阵
+    ic_df = pd.DataFrame(daily_ics).dropna()
+    if ic_df.shape[0] < 20:
+        return {"n_original": n, "n_effective": n, "reduction_pct": 0.0, "clusters": []}
+
+    corr = ic_df.corr(method="spearman").fillna(0)
+
+    # 层次聚类 (average linkage, 基于 1-correlation 距离)
+    dist = 1 - corr.abs()
+    np.fill_diagonal(dist.values, 0)
+    condensed = squareform(dist.values)
+    Z = linkage(condensed, method="average")
+
+    # 在给定阈值处切分
+    labels = fcluster(Z, t=1 - threshold, criterion="distance")
+
+    # 每簇保留 ICIR 最高的因子
+    cluster_map = {}
+    for i, label in enumerate(labels):
+        fname = factor_names[i]
+        if label not in cluster_map:
+            cluster_map[label] = []
+        cluster_map[label].append(fname)
+
+    clusters = []
+    for label, members in cluster_map.items():
+        best = max(members, key=lambda f: abs(icir_map.get(f, 0)))
+        clusters.append({
+            "representative": best,
+            "members": sorted(members),
+            "icir": round(icir_map.get(best, 0), 2),
+        })
+
+    # 按 ICIR 降序
+    clusters.sort(key=lambda c: abs(c["icir"]), reverse=True)
+
+    n_effective = len(clusters)
+
+    logger.info(
+        f"因子聚类完成: {n} → {n_effective} 独立因子 "
+        f"(阈值={threshold}, 缩减率={(1 - n_effective/n)*100:.1f}%)"
+    )
+
+    return {
+        "n_original": n,
+        "n_effective": n_effective,
+        "reduction_pct": round((1 - n_effective / n) * 100, 1),
+        "clusters": clusters,
+    }

@@ -18,6 +18,7 @@ from core.factor_utils import (
     neutralize_factor,
     compute_enhanced_ic_stats,
     compute_industry_weighted_ic,
+    cluster_factors_by_ic,
 )
 
 router = APIRouter()
@@ -181,6 +182,7 @@ async def analyze_factors(params: FactorAnalysisRequest):
 
         factors_ics = []
         feature_names = [str(c) for c in df_features.columns]
+        all_daily_ics = {}  # 收集所有因子的 daily IC 用于聚类
 
         for feat_name in feature_names[:params.top_k]:
             try:
@@ -224,6 +226,7 @@ async def analyze_factors(params: FactorAnalysisRequest):
                         continue
 
                 if daily_ics:
+                    all_daily_ics[feat_name] = daily_ics  # 保存用于聚类
                     mean_ic = np.mean(daily_ics)
                     std_ic = np.std(daily_ics)
                     icir = mean_ic / std_ic if std_ic > 0 else 0
@@ -259,6 +262,10 @@ async def analyze_factors(params: FactorAnalysisRequest):
         # 按 |IC| 排序
         factors_ics.sort(key=lambda x: abs(x.ic), reverse=True)
 
+        # ── 因子层次聚类降维 ──
+        icir_map = {f.factor: f.icir for f in factors_ics}
+        cluster_result = cluster_factors_by_ic(all_daily_ics, icir_map, threshold=0.7)
+
         logger.info(f"Alpha158 因子分析完成: {len(factors_ics)}/{len(feature_names)} 个因子有有效 IC")
 
         return FactorAnalysisResponse(
@@ -274,6 +281,9 @@ async def analyze_factors(params: FactorAnalysisRequest):
                 "best_factor": factors_ics[0].factor if factors_ics else None,
                 "neutralized": bool(params.neutralize and params.neutralize != "none"),
                 "neutralize_method": params.neutralize if params.neutralize != "none" else None,
+                "effective_factors": cluster_result["n_effective"],
+                "factor_reduction_pct": cluster_result["reduction_pct"],
+                "clusters": cluster_result["clusters"],
             }
         )
 
