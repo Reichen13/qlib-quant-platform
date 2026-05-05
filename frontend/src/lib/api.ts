@@ -480,32 +480,12 @@ export const api = {
   // 数据管理 - 使用 stocks/etf 接口获取最新信息
   data: {
     status: async () => {
-      // 由于后端没有 /api/data/status 端点，我们通过 stocks 和 etf 接口获取状态
-      const [stocks, etf] = await Promise.all([
-        fetch(`${API_BASE}/api/stocks/list`).then(r => handleResponse<StockListResponse>(r)),
-        fetch(`${API_BASE}/api/etf/signals?days=1`).then(r => handleResponse<ETFSignalsResponse>(r)),
-      ])
-
-      const today = new Date().toISOString().split('T')[0]
+      const health = await fetch(`${API_BASE}/api/data/health`).then(r => handleResponse<any>(r))
+      const src = health.sources
       return {
-        stocks: {
-          total: stocks.total,
-          last_date: today,
-          lag_days: 0,
-          status: "normal" as const,
-        },
-        etf: {
-          total: etf.etfs.length,
-          last_date: etf.date,
-          lag_days: 0,
-          status: "normal" as const,
-        },
-        index: {
-          total: 12,
-          last_date: today,
-          lag_days: 0,
-          status: "normal" as const,
-        },
+        stocks: src.stocks,
+        etf: src.stocks.etf,
+        index: src.stocks.index,
       }
     },
     update: async (type: "stocks" | "etf" | "index" | "all") => {
