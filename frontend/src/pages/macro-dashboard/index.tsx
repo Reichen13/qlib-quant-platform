@@ -135,10 +135,12 @@ export function MacroDashboardPage() {
     queryFn: () => api.macro.history(12),
   })
 
+  // 兼容新旧 API 格式: 新格式有 china_indicators/us_indicators, 旧格式有 indicators
+  const hasNewFormat = !!(indicatorsData?.china_indicators || indicatorsData?.us_indicators)
   const cnIndicators = indicatorsData?.china_indicators || []
-  const usIndicators = indicatorsData?.us_indicators || []
+  const usIndicators = indicatorsData?.us_indicators || (hasNewFormat ? [] : (indicatorsData?.indicators || []))
   const cnDerived = indicatorsData?.china_derived || {}
-  const usDerived = indicatorsData?.us_derived || {}
+  const usDerived = indicatorsData?.us_derived || (hasNewFormat ? {} : (indicatorsData?.derived || {}))
   const regime = regimeData
   const allocation = allocationData?.allocation || []
 
