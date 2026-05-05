@@ -169,14 +169,12 @@ async def analyze_factors(params: FactorAnalysisRequest):
         fr_series = pd.Series(future_returns, name="future_return")
         fr_series.index = pd.MultiIndex.from_tuples(fr_series.index, names=["instrument", "datetime"])
 
-        # ── 5. 可选中性化 ──
-        industry_map = {}
+        # ── 5. 加载行业映射（始终加载，用于行业加权 IC 分解）──
+        all_codes = df_features.index.get_level_values("instrument").unique().tolist()
+        industry_map = load_industry_mapping(all_codes)
         if params.neutralize == "industry":
-            logger.info("启用行业中性化，加载行业映射...")
-            all_codes = df_features.index.get_level_values("instrument").unique().tolist()
-            industry_map = load_industry_mapping(all_codes)
             valid_count = sum(1 for v in industry_map.values() if v != "未知")
-            logger.info(f"行业映射: {valid_count}/{len(industry_map)} 只有效行业")
+            logger.info(f"启用行业中性化，行业映射: {valid_count}/{len(industry_map)} 只有效行业")
 
         # ── 6. 计算每个因子的 Spearman Rank IC ──
         from scipy.stats import spearmanr
@@ -231,12 +229,11 @@ async def analyze_factors(params: FactorAnalysisRequest):
                     # ── 增强 IC 统计 ──
                     enhanced = compute_enhanced_ic_stats(daily_ics)
 
-                    # ── 行业加权 IC ──
-                    ind_contrib = {}
-                    if params.neutralize == "industry" and industry_map:
-                        ind_contrib = compute_industry_weighted_ic(
-                            feat_for_ic, fr_series, industry_map
-                        )
+                    # ── 行业加权 IC（始终计算，用原始因子值评估行业集中度）──
+                    ind_contrib = compute_industry_weighted_ic(
+                        feat_col if params.neutralize != "industry" else feat_for_ic,
+                        fr_series, industry_map
+                    )
 
                     factors_ics.append(FactorIC(
                         factor=feat_name,

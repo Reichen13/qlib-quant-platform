@@ -781,7 +781,7 @@ export function FactorAnalysisPage() {
                     />
                   ) : (
                     <p className="text-center py-12 text-muted-foreground">
-                      {neutralize ? "该因子暂无行业贡献数据" : "需先启用行业中性化后才能查看行业贡献"}
+                      该因子暂无行业贡献数据
                     </p>
                   )}
                 </TabsContent>
