@@ -44,7 +44,8 @@ def init_qlib():
         from qlib.config import REG_CN
 
         # 修复 Qlib 0.9.6 与 joblib 1.5+ 的兼容性问题
-        _patch_parallel_ext()
+        from core.compat import fix_parallel_ext
+        fix_parallel_ext()
 
         data_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data"
         if not data_dir.exists():
@@ -60,25 +61,6 @@ def init_qlib():
         return False
 
 
-def _patch_parallel_ext():
-    """修复 Qlib 0.9.6 与 joblib 1.5+ 的兼容性问题
-    joblib 1.5+ 将 _backend_args 改名为 _backend_kwargs
-    """
-    try:
-        from qlib.utils.paral import ParallelExt
-        from joblib._parallel_backends import MultiprocessingBackend
-
-        def _new_init(self, *args, **kwargs):
-            maxtasksperchild = kwargs.pop("maxtasksperchild", None)
-            super(ParallelExt, self).__init__(*args, **kwargs)
-            backend_args = getattr(self, '_backend_kwargs', getattr(self, '_backend_args', None))
-            if backend_args is not None and isinstance(self._backend, MultiprocessingBackend):
-                backend_args["maxtasksperchild"] = maxtasksperchild
-
-        ParallelExt.__init__ = _new_init
-        logger.info("ParallelExt 兼容性补丁已应用")
-    except Exception as e:
-        logger.warning(f"ParallelExt 补丁失败: {e}")
 
 
 # ── 应用生命周期 ──
@@ -94,7 +76,7 @@ async def lifespan(app: FastAPI):
         stocks, hot, quote, factors, backtest, etf,
         pair, mean_reversion, financials, industry, index, sectors, risk, portfolio,
         macro, data, dashboard, news_analysis, ai_strategy, agent_debate,
-        dl_models, stock_pool,
+        dl_models, stock_pool, llm_config,
     )
 
     app.include_router(stocks.router, prefix="/api/stocks", tags=["stocks"])
@@ -119,6 +101,7 @@ async def lifespan(app: FastAPI):
     app.include_router(agent_debate.router, prefix="/api/agent", tags=["agent"])
     app.include_router(dl_models.router, prefix="/api/dl-models", tags=["dl-models"])
     app.include_router(stock_pool.router, prefix="/api/stock-pool", tags=["stock-pool"])
+    app.include_router(llm_config.router, tags=["llm"])
 
     logger.info("✅ 所有路由已注册")
 

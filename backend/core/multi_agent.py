@@ -80,18 +80,96 @@ class AgentReport(BaseModel):
 # ── 工具函数（封装后端 API 数据）──
 
 def _get_stock_info(code: str) -> dict:
-    """获取股票基本信息"""
-    return {"code": code, "source": "Qlib"}
+    """获取股票基本信息 — 连接真实数据"""
+    try:
+        from services.data_provider import DataProvider
+        provider = DataProvider()
+        summary = provider.get_financial_summary(code)
+        if summary:
+            return {
+                "code": code,
+                "source": "baostock",
+                "financials": {
+                    "profit": summary.get("profit"),
+                    "growth": summary.get("growth"),
+                    "operation": summary.get("operation"),
+                },
+            }
+    except Exception:
+        pass
+    return {"code": code, "source": "unavailable"}
 
 
 def _format_financials(code: str) -> str:
-    """获取财务数据摘要"""
-    return f"财务数据({code}): 需要 Qlib 数据源连接"
+    """获取财务数据摘要 — 连接真实数据"""
+    try:
+        from services.data_provider import DataProvider
+        provider = DataProvider()
+        summary = provider.get_financial_summary(code)
+        if summary:
+            profit = summary.get("profit") or {}
+            growth = summary.get("growth") or {}
+            operation = summary.get("operation") or {}
+            lines = [f"=== {code} 财务数据 ==="]
+            if profit:
+                lines.append(f"ROE: {profit.get('roe', 'N/A')}%")
+                lines.append(f"净利率: {profit.get('npMargin', 'N/A')}%")
+                lines.append(f"毛利率: {profit.get('gpMargin', 'N/A')}%")
+            if growth:
+                lines.append(f"净利润增长率: {growth.get('YOYNI', 'N/A')}%")
+            if operation:
+                lines.append(f"总资产周转率: {operation.get('TATurnRatio', 'N/A')}")
+            return "\n".join(lines)
+    except Exception:
+        pass
+    return f"财务数据({code}): 暂不可用"
 
 
 def _format_indicators(code: str) -> str:
-    """获取技术指标摘要"""
-    return f"技术指标({code}): 需要 Qlib 数据源连接"
+    """获取技术指标摘要 — 连接真实数据"""
+    try:
+        import qlib
+        from qlib.data import D
+        import numpy as np
+        import pandas as pd
+        from datetime import datetime
+
+        inst = f"SH{code.replace('.SS', '')}" if code.endswith(".SS") else f"SZ{code.replace('.SZ', '')}"
+        end = datetime.now().strftime("%Y-%m-%d")
+        start = (datetime.now() - pd.Timedelta(days=120)).strftime("%Y-%m-%d")
+
+        prices = D.features([inst], ["$close"], start, end)
+        if prices is not None and not prices.empty:
+            close = prices.xs(inst, level="instrument", axis=1)["$close"].dropna()
+            if len(close) >= 20:
+                # 计算指标
+                delta = close.diff()
+                gain = delta.clip(lower=0)
+                loss = -delta.clip(upper=0)
+                avg_gain = gain.rolling(14).mean()
+                avg_loss = loss.rolling(14).mean()
+                rs = avg_gain / avg_loss.replace(0, np.nan)
+                rsi = 100 - (100 / (1 + rs))
+                ma5 = close.rolling(5).mean()
+                ma20 = close.rolling(20).mean()
+
+                latest_close = float(close.iloc[-1])
+                latest_rsi = float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else None
+                latest_ma5 = float(ma5.iloc[-1]) if not np.isnan(ma5.iloc[-1]) else None
+                latest_ma20 = float(ma20.iloc[-1]) if not np.isnan(ma20.iloc[-1]) else None
+                ret_20d = float((close.iloc[-1] / close.iloc[-20] - 1) * 100) if len(close) >= 20 else None
+
+                lines = [f"=== {code} 技术指标 ==="]
+                lines.append(f"最新收盘价: {latest_close:.2f}")
+                lines.append(f"RSI(14): {latest_rsi:.1f}" if latest_rsi else "RSI(14): N/A")
+                lines.append(f"MA5: {latest_ma5:.2f}" if latest_ma5 else "MA5: N/A")
+                lines.append(f"MA20: {latest_ma20:.2f}" if latest_ma20 else "MA20: N/A")
+                lines.append(f"20日涨跌幅: {ret_20d:.1f}%" if ret_20d else "20日涨跌幅: N/A")
+                lines.append("趋势: " + ("上涨" if latest_ma5 and latest_ma20 and latest_ma5 > latest_ma20 else "下跌/震荡"))
+                return "\n".join(lines)
+    except Exception:
+        pass
+    return f"技术指标({code}): 暂不可用"
 
 
 # ── Agent 执行器 ──
@@ -101,13 +179,22 @@ class AgentOrchestrator:
 
     def __init__(self):
         self._memory_base = Path.home() / ".qlib" / "agent_memory"
+        self._llm_client = None  # 可选的 per-request LLM client
+
+    def set_llm_client(self, client):
+        """设置 per-request LLM 客户端（用户自己的 API key）"""
+        self._llm_client = client
 
     def _check_llm(self):
+        if self._llm_client:
+            return
         from core.llm_client import get_llm_config
         if not get_llm_config().is_configured:
             raise RuntimeError("LLM 未配置")
 
     def _get_llm(self, deep: bool = False):
+        if self._llm_client:
+            return self._llm_client.get_deep_llm() if deep else self._llm_client.get_quick_llm()
         from core.llm_client import get_llm_client
         client = get_llm_client()
         return client.get_deep_llm() if deep else client.get_quick_llm()
@@ -157,14 +244,27 @@ class AgentOrchestrator:
         return AnalystReport(analyst=role, summary=text[:200])
 
     def stage1_analysts(self, code: str) -> list[AnalystReport]:
-        """并行运行 4 个分析师"""
+        """并行运行 4 个分析师（注入真实数据）"""
         logger.info(f"Stage 1: 分析师团队开始分析 {code}")
 
+        # 获取真实数据
+        stock_info = _get_stock_info(code)
+        financials_text = _format_financials(code)
+        indicators_text = _format_indicators(code)
+
         roles = [
-            ("技术面分析师", "分析价格趋势、均线、RSI、MACD、成交量等技术指标，判断短期和中期走势"),
-            ("基本面分析师", "分析PE/PB估值、ROE、营收增速、毛利率、负债率等财务指标，评估内在价值"),
-            ("情绪面分析师", "分析近期新闻情绪、市场关注度、北向资金流向、融资余额变化"),
-            ("宏观面分析师", "分析当前货币政策、经济周期、行业政策、外部环境对A股的影响"),
+            ("技术面分析师",
+             f"分析价格趋势、均线、RSI、MACD、成交量等技术指标，判断短期和中期走势。\n\n"
+             f"【真实技术数据】\n{indicators_text}"),
+            ("基本面分析师",
+             f"分析PE/PB估值、ROE、营收增速、毛利率、负债率等财务指标，评估内在价值。\n\n"
+             f"【真实财务数据】\n{financials_text}"),
+            ("情绪面分析师",
+             f"分析近期新闻情绪、市场关注度、北向资金流向、融资余额变化。\n\n"
+             f"【已知信息】股票代码: {code}, 数据源: {stock_info.get('source', 'unavailable')}"),
+            ("宏观面分析师",
+             "分析当前货币政策、经济周期、行业政策、外部环境对A股的影响（2025年中国经济背景：GDP增速约5%，"
+             "CPI低位运行，货币政策稳中偏松，AI/新能源/高端制造为政策重点支持方向）"),
         ]
 
         reports = []

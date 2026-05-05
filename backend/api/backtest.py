@@ -35,27 +35,7 @@ from stock_names import get_stock_name
 from db.task_store import task_store
 
 
-def _fix_parallel_ext():
-    """修复 Qlib 0.9.6 与 joblib 1.5+ 的兼容性问题
-    joblib 1.5+ 将 _backend_args 改名为 _backend_kwargs，
-    导致 Qlib 的 ParallelExt 访问 _backend_args 时 AttributeError。
-    """
-    try:
-        from qlib.utils.paral import ParallelExt
-        from joblib._parallel_backends import MultiprocessingBackend
-
-        def _new_init(self, *args, **kwargs):
-            maxtasksperchild = kwargs.pop("maxtasksperchild", None)
-            super(ParallelExt, self).__init__(*args, **kwargs)
-            # 兼容新旧版本 joblib
-            backend_args = getattr(self, '_backend_kwargs', getattr(self, '_backend_args', None))
-            if backend_args is not None and isinstance(self._backend, MultiprocessingBackend):
-                backend_args["maxtasksperchild"] = maxtasksperchild
-
-        ParallelExt.__init__ = _new_init
-        logger.info("ParallelExt 兼容性补丁已应用 (joblib 1.5+)")
-    except Exception as e:
-        logger.warning(f"ParallelExt 补丁失败: {e}")
+from core.compat import fix_parallel_ext
 
 
 def _check_a_share_constraints(codes: list, start_date: str, end_date: str) -> dict:
@@ -186,7 +166,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         qlib.config.N_PROC = 1
 
         # 修复 ParallelExt 兼容性
-        _fix_parallel_ext()
+        fix_parallel_ext()
 
         task_store.update_progress(task_id, 10)
 

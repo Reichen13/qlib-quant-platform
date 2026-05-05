@@ -61,24 +61,24 @@ def calc_correlation_from_qlib(code1: str, code2: str, days: int = 60) -> float:
         df2 = D.features([qlib_code2], ["$close"], start_time=start_date, end_time=end_date)
 
         if df1.empty or df2.empty:
-            return 0.7
+            return None
 
         ret1 = df1.xs(qlib_code1, level=1)["$close"].pct_change().dropna()
         ret2 = df2.xs(qlib_code2, level=1)["$close"].pct_change().dropna()
 
         if len(ret1) < 10 or len(ret2) < 10:
-            return 0.7
+            return None
 
         common_index = ret1.index.intersection(ret2.index)
         if len(common_index) < 10:
-            return 0.7
+            return None
 
         corr = ret1.loc[common_index].corr(ret2.loc[common_index])
-        return float(corr) if not np.isnan(corr) else 0.7
+        return float(corr) if not np.isnan(corr) else None
 
     except Exception as e:
         logger.warning(f"计算相关性失败 {code1}/{code2}: {e}")
-        return 0.7
+        return None
 
 
 def calc_zscore_from_qlib(code1: str, code2: str, days: int = 60) -> float | None:

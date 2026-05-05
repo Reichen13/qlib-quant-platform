@@ -24,6 +24,8 @@ router = APIRouter()
 class NLStrategyRequest(BaseModel):
     description: str = Field(..., min_length=5, description="自然语言策略描述")
     use_deep: bool = Field(default=False, description="是否使用深度推理")
+    api_key: Optional[str] = Field(default=None, description="用户 API Key（可选，优先级高于服务器配置）")
+    base_url: Optional[str] = Field(default=None, description="用户 Base URL（可选）")
 
 
 class StrategyTemplate(BaseModel):
@@ -45,12 +47,16 @@ class StrategyAnalyzeRequest(BaseModel):
     holdings: list[PortfolioHolding]
     total_capital: float = Field(default=1_000_000, ge=1, description="总资金")
     risk_tolerance: str = Field(default="moderate", description="风险偏好: conservative/moderate/aggressive")
+    api_key: Optional[str] = Field(default=None, description="用户 API Key（可选）")
+    base_url: Optional[str] = Field(default=None, description="用户 Base URL（可选）")
 
 
 class StrategyOptimizeRequest(BaseModel):
     strategy_type: str = Field(..., description="策略类型")
     param_ranges: dict = Field(default={}, description="参数范围")
     start_date: Optional[str] = Field(default=None, description="优化回测起始日期")
+    api_key: Optional[str] = Field(default=None, description="用户 API Key（可选）")
+    base_url: Optional[str] = Field(default=None, description="用户 Base URL（可选）")
 
 
 # ── 策略模板库 ──
@@ -159,20 +165,31 @@ STRATEGY_TEMPLATES: list[dict] = [
 
 # ── 辅助函数 ──
 
-def _check_llm_available():
-    """检查 LLM 是否可用"""
+def _check_llm_available(api_key: Optional[str] = None):
+    """检查 LLM 是否可用。如果用户提供了 api_key 则始终可用。"""
+    if api_key:
+        return True
     try:
         from core.llm_client import get_llm_config
         if not get_llm_config().is_configured:
             raise HTTPException(
                 status_code=503,
-                detail="LLM 未配置。请设置 LLM_BASE_URL 和 LLM_API_KEY 环境变量。",
+                detail="LLM 未配置。请在设置页面输入您的 API Key，或联系管理员配置服务器。",
             )
         return True
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"LLM 不可用: {e}")
+
+
+def _get_llm_client(api_key: Optional[str] = None, base_url: Optional[str] = None):
+    """获取 LLM 客户端（优先使用用户 key）"""
+    if api_key:
+        from core.llm_client import create_llm_client
+        return create_llm_client(api_key=api_key, base_url=base_url or "")
+    from core.llm_client import get_llm_client
+    return get_llm_client()
 
 
 def _parse_strategy_params(llm_text: str) -> dict:
@@ -205,10 +222,9 @@ async def generate_strategy(req: NLStrategyRequest):
 
     示例输入: "买入沪深300成分股中ROE>15%且处于60日均线以上的股票，每月调仓"
     """
-    _check_llm_available()
+    _check_llm_available(req.api_key)
 
-    from core.llm_client import get_llm_client
-    client = get_llm_client()
+    client = _get_llm_client(req.api_key, req.base_url)
 
     # 构建 prompt
     templates_desc = "\n".join(
@@ -283,10 +299,9 @@ async def generate_strategy(req: NLStrategyRequest):
 @router.post("/analyze")
 async def analyze_strategy(req: StrategyAnalyzeRequest):
     """策略分析：LLM 分析当前持仓并给出调整建议"""
-    _check_llm_available()
+    _check_llm_available(req.api_key)
 
-    from core.llm_client import get_llm_client
-    client = get_llm_client()
+    client = _get_llm_client(req.api_key, req.base_url)
 
     holdings_desc = "\n".join(
         f"- {h.code} ({h.name}): 权重 {h.weight:.1%}"
@@ -356,10 +371,9 @@ async def optimize_strategy(req: StrategyOptimizeRequest):
     注: 完整闭环需要与回测引擎集成。当前版本 LLM 基于经验建议参数候选，
     用户可手动将这些参数提交到回测端点进行验证。
     """
-    _check_llm_available()
+    _check_llm_available(req.api_key)
 
-    from core.llm_client import get_llm_client
-    client = get_llm_client()
+    client = _get_llm_client(req.api_key, req.base_url)
 
     # 找匹配的模板
     template = None

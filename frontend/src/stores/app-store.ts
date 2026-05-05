@@ -62,6 +62,16 @@ interface AppState {
   // ── 投资组合页面状态 ──
   portfolioCodes: string
   setPortfolioCodes: (codes: string) => void
+
+  // ── LLM 设置页面状态 ──
+  llmApiKey: string
+  llmBaseUrl: string
+  llmQuickModel: string
+  llmDeepModel: string
+  setLlmApiKey: (key: string) => void
+  setLlmBaseUrl: (url: string) => void
+  setLlmQuickModel: (model: string) => void
+  setLlmDeepModel: (model: string) => void
 }
 
 // 动态默认值工厂函数
@@ -150,6 +160,16 @@ export const useAppStore = create<AppState>()(
       // 投资组合
       portfolioCodes: DEFAULT_PORTFOLIO_CODES,
       setPortfolioCodes: (codes) => set({ portfolioCodes: codes }),
+
+      // LLM 设置
+      llmApiKey: "",
+      llmBaseUrl: "",
+      llmQuickModel: "",
+      llmDeepModel: "",
+      setLlmApiKey: (key) => set({ llmApiKey: key }),
+      setLlmBaseUrl: (url) => set({ llmBaseUrl: url }),
+      setLlmQuickModel: (model) => set({ llmQuickModel: model }),
+      setLlmDeepModel: (model) => set({ llmDeepModel: model }),
     }),
     {
       name: "qlib-app-store",
@@ -163,6 +183,11 @@ export const useAppStore = create<AppState>()(
         backtestActiveTab: state.backtestActiveTab,
         factorParams: state.factorParams,
         portfolioCodes: state.portfolioCodes,
+        // 持久化 LLM 设置
+        llmApiKey: state.llmApiKey,
+        llmBaseUrl: state.llmBaseUrl,
+        llmQuickModel: state.llmQuickModel,
+        llmDeepModel: state.llmDeepModel,
       }),
     }
   )

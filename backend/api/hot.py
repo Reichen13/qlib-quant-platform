@@ -123,26 +123,10 @@ async def get_sector_stocks(
         from stock_names import get_stock_name, get_transparency_level
         import qlib
         from qlib.data import D
+        from core.sector_definitions import get_sectors_qlib
 
-        # 板块股票池
-        sector_stocks = {
-            "金融": ["SH600000", "SH600016", "SH600036", "SH601166", "SH601288",
-                    "SH601318", "SH601328", "SH601398", "SH600030", "SH600999"],
-            "科技": ["SZ000063", "SZ000725", "SZ002415", "SZ002475", "SZ300014",
-                    "SZ300750", "SH600584", "SH688012", "SH688111", "SH688981"],
-            "医药": ["SH600085", "SH600196", "SH600276", "SH600436", "SH603259",
-                    "SZ000538", "SZ000661", "SZ000858", "SZ300015", "SZ300760"],
-            "消费": ["SH600519", "SH600887", "SH600809", "SZ000568", "SZ000895",
-                    "SZ002304", "SZ002352", "SZ002714", "SH600132", "SH600779"],
-            "新能源": ["SZ002129", "SZ002460", "SZ002594", "SZ300750", "SZ300274",
-                      "SH600089", "SH601012", "SH603806", "SH688223", "SZ002459"],
-            "半导体": ["SH600667", "SH603986", "SH688008", "SH688012", "SH688047",
-                      "SZ002371", "SZ002384", "SZ002459", "SH600584", "SZ000049"],
-            "军工": ["SH600009", "SH600893", "SH600118", "SH600150", "SH600316",
-                     "SH600343", "SH600372", "SH600760", "SZ002013", "SZ002025"],
-            "有色": ["SH600111", "SH600489", "SH600547", "SH600549", "SH601600",
-                     "SH601899", "SH603993", "SZ000060", "SZ000878", "SZ002466"],
-        }
+        # 板块股票池（统一数据源）
+        sector_stocks = get_sectors_qlib()
 
         if sector_name not in sector_stocks:
             raise HTTPException(status_code=404, detail=f"板块不存在: {sector_name}")

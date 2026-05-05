@@ -27,11 +27,15 @@ async function apiFetch(input: RequestInfo | URL, init: ApiRequestInit = {}): Pr
     }
   }
 
-  // 注入 API Key（如果已配置）
+  // 注入 API Key 和 Base URL（如果已配置）
   const apiKey = localStorage.getItem("qlib-api-key")
+  const baseUrl = localStorage.getItem("qlib-llm-base-url")
   const headers = { ...(requestInit.headers as Record<string, string> || {}) }
   if (apiKey) {
     headers["X-API-Key"] = apiKey
+  }
+  if (baseUrl) {
+    headers["X-LLM-Base-URL"] = baseUrl
   }
 
   try {
@@ -677,8 +681,15 @@ export const api = {
   news: {
     sentiment: (code: string, days: number = 7) =>
       fetch(`${API_BASE}/api/news/sentiment/${encodeURIComponent(code)}?days=${days}`).then(r => handleResponse<any>(r)),
-    dailyBrief: () =>
-      fetch(`${API_BASE}/api/news/daily-brief`).then(r => handleResponse<any>(r)),
+    dailyBrief: () => {
+      const apiKey = localStorage.getItem("qlib-api-key") || ""
+      const baseUrl = localStorage.getItem("qlib-llm-base-url") || ""
+      const params = new URLSearchParams()
+      if (apiKey) params.append("api_key", apiKey)
+      if (baseUrl) params.append("base_url", baseUrl)
+      const qs = params.toString()
+      return fetch(`${API_BASE}/api/news/daily-brief${qs ? "?" + qs : ""}`).then(r => handleResponse<any>(r))
+    },
     events: (code: string, days: number = 30) =>
       fetch(`${API_BASE}/api/news/events/${encodeURIComponent(code)}?days=${days}`).then(r => handleResponse<any>(r)),
     marketSentiment: () =>
@@ -689,39 +700,58 @@ export const api = {
   aiStrategy: {
     templates: () =>
       fetch(`${API_BASE}/api/ai-strategy/templates`).then(r => handleResponse<any>(r)),
-    generate: (description: string, useDeep: boolean = false) =>
-      fetch(`${API_BASE}/api/ai-strategy/generate`, {
+    generate: (description: string, useDeep: boolean = false) => {
+      const apiKey = localStorage.getItem("qlib-api-key") || ""
+      const baseUrl = localStorage.getItem("qlib-llm-base-url") || ""
+      return fetch(`${API_BASE}/api/ai-strategy/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description, use_deep: useDeep }),
-      }).then(r => handleResponse<any>(r)),
-    analyze: (holdings: { code: string; name: string; weight: number; cost?: number }[], totalCapital?: number, riskTolerance?: string) =>
-      fetch(`${API_BASE}/api/ai-strategy/analyze`, {
+        body: JSON.stringify({ description, use_deep: useDeep, api_key: apiKey || undefined, base_url: baseUrl || undefined }),
+      }).then(r => handleResponse<any>(r))
+    },
+    analyze: (holdings: { code: string; name: string; weight: number; cost?: number }[], totalCapital?: number, riskTolerance?: string) => {
+      const apiKey = localStorage.getItem("qlib-api-key") || ""
+      const baseUrl = localStorage.getItem("qlib-llm-base-url") || ""
+      return fetch(`${API_BASE}/api/ai-strategy/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           holdings,
           total_capital: totalCapital || 1_000_000,
           risk_tolerance: riskTolerance || "moderate",
+          api_key: apiKey || undefined,
+          base_url: baseUrl || undefined,
         }),
-      }).then(r => handleResponse<any>(r)),
-    optimize: (strategyType: string, paramRanges?: Record<string, any>) =>
-      fetch(`${API_BASE}/api/ai-strategy/optimize`, {
+      }).then(r => handleResponse<any>(r))
+    },
+    optimize: (strategyType: string, paramRanges?: Record<string, any>) => {
+      const apiKey = localStorage.getItem("qlib-api-key") || ""
+      const baseUrl = localStorage.getItem("qlib-llm-base-url") || ""
+      return fetch(`${API_BASE}/api/ai-strategy/optimize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           strategy_type: strategyType,
           param_ranges: paramRanges || {},
+          api_key: apiKey || undefined,
+          base_url: baseUrl || undefined,
         }),
-      }).then(r => handleResponse<any>(r)),
+      }).then(r => handleResponse<any>(r))
+    },
   },
 
   // 多智能体辩论
   agent: {
-    analyze: (code: string, asyncMode: boolean = true) =>
-      fetch(`${API_BASE}/api/agent/analyze?code=${encodeURIComponent(code)}&async_mode=${asyncMode}`, {
+    analyze: (code: string, asyncMode: boolean = true) => {
+      const apiKey = localStorage.getItem("qlib-api-key") || ""
+      const baseUrl = localStorage.getItem("qlib-llm-base-url") || ""
+      const params = new URLSearchParams({ code, async_mode: String(asyncMode) })
+      if (apiKey) params.append("api_key", apiKey)
+      if (baseUrl) params.append("base_url", baseUrl)
+      return fetch(`${API_BASE}/api/agent/analyze?${params}`, {
         method: "POST",
-      }).then(r => handleResponse<any>(r)),
+      }).then(r => handleResponse<any>(r))
+    },
     report: (taskId: string) =>
       fetch(`${API_BASE}/api/agent/report/${taskId}`).then(r => handleResponse<any>(r)),
     memory: (code: string) =>
@@ -762,6 +792,23 @@ export const api = {
       fetch(`${API_BASE}/api/stock-pool/${id}`, {
         method: "DELETE",
       }).then(r => handleResponse<any>(r)),
+  },
+
+  // LLM 配置
+  llm: {
+    testConnection: (apiKey: string, baseUrl?: string, quickModel?: string, deepModel?: string) =>
+      fetch(`${API_BASE}/api/llm/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          api_key: apiKey,
+          base_url: baseUrl || "",
+          quick_model: quickModel || "",
+          deep_model: deepModel || "",
+        }),
+      }).then(r => handleResponse<any>(r)),
+    status: () =>
+      fetch(`${API_BASE}/api/llm/status`).then(r => handleResponse<any>(r)),
   },
 }
 

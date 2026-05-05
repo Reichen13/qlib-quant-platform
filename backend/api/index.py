@@ -70,6 +70,7 @@ def _fallback_index_performance(index: str, days: int):
         "data": data,
         "summary": _summarize_index_data(data),
         "source": "fallback",
+        "warning": "synthetic_fallback — 无 Qlib/baostock 数据，使用合成数据",
     }
 
 

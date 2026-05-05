@@ -62,21 +62,7 @@ def _sample_stocks(codes: list, n: int = 150) -> list:
     return random.sample(codes, min(n, len(codes)))
 
 
-def _fix_parallel():
-    try:
-        from qlib.utils.paral import ParallelExt
-        from joblib._parallel_backends import MultiprocessingBackend
-
-        def _new_init(self, *args, **kwargs):
-            maxtasksperchild = kwargs.pop("maxtasksperchild", None)
-            super(ParallelExt, self).__init__(*args, **kwargs)
-            ba = getattr(self, '_backend_kwargs', getattr(self, '_backend_args', None))
-            if ba is not None and isinstance(self._backend, MultiprocessingBackend):
-                ba["maxtasksperchild"] = maxtasksperchild
-
-        ParallelExt.__init__ = _new_init
-    except Exception:
-        pass
+from core.compat import fix_parallel_ext
 
 
 @router.post("/analyze")
@@ -93,7 +79,7 @@ async def analyze_factors(params: FactorAnalysisRequest):
         from qlib.utils import init_instance_by_config
 
         qlib.config.N_PROC = 1
-        _fix_parallel()
+        fix_parallel_ext()
 
         start_str = str(params.start_date)
         end_str = str(params.end_date)
@@ -479,7 +465,7 @@ async def factor_quantile_returns(
         from qlib.utils import init_instance_by_config
 
         qlib.config.N_PROC = 1
-        _fix_parallel()
+        fix_parallel_ext()
 
         logger.info(f"分组收益: {factor_name}, {start_date}~{end_date}, {num_quantiles}组")
 
@@ -624,7 +610,7 @@ async def factor_decay(request: FactorAnalysisRequest):
         top_k = min(request.top_k, 15)
 
         qlib.config.N_PROC = 1
-        _fix_parallel()
+        fix_parallel_ext()
 
         logger.info(f"因子衰减分析: {start_str}~{end_str}, Top {top_k}")
 
@@ -744,7 +730,7 @@ async def combine_signals(request: FactorAnalysisRequest):
         end_str = str(request.end_date)
 
         qlib.config.N_PROC = 1
-        _fix_parallel()
+        fix_parallel_ext()
 
         logger.info(f"信号组合: {start_str}~{end_str}, Top {top_n}")
 
@@ -884,7 +870,7 @@ async def factor_detail(factor_name: str, start_date: str, end_date: str, predic
         from qlib.utils import init_instance_by_config
 
         qlib.config.N_PROC = 1
-        _fix_parallel()
+        fix_parallel_ext()
 
         logger.info(f"因子详情: {factor_name}, {start_date}~{end_date}")
 

@@ -167,16 +167,16 @@ async def get_financial_rank(
 
         # 获取最近季度
         from datetime import datetime
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         today = datetime.now()
         year = today.year
         quarter = (today.month - 1) // 3 + 1
         if quarter > 4:
             quarter = 4
 
-        # 获取每只股票的财务数据
-        for stock in stocks[:100]:  # 限制数量避免超时
+        # 并行查询（最多 8 线程，单查询 5s 超时）
+        def _fetch_one(stock):
             code = provider._from_baostock_code(stock["code"])
-
             try:
                 if metric == "roe" or metric == "npMargin":
                     data = provider.get_profit_data(code, year, quarter)
@@ -188,15 +188,23 @@ async def get_financial_rank(
                     data = provider.get_profit_data(code, year, quarter)
 
                 if data and data.get(metric) is not None:
-                    results.append({
+                    return {
                         "code": code,
                         "name": stock["name"],
                         "value": data[metric],
                         "year": year,
-                        "quarter": quarter
-                    })
-            except:
-                continue
+                        "quarter": quarter,
+                    }
+            except Exception:
+                pass
+            return None
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(_fetch_one, s): s for s in stocks[:100]}
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    results.append(result)
 
         # 排序
         reverse = order == "desc"

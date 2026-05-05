@@ -8,6 +8,7 @@
 """
 
 from datetime import datetime
+from typing import Optional
 from fastapi import APIRouter, Query, HTTPException
 from loguru import logger
 
@@ -58,7 +59,10 @@ async def get_stock_news_sentiment(
 
 
 @router.get("/daily-brief")
-async def get_daily_brief():
+async def get_daily_brief(
+    api_key: Optional[str] = Query(default=None, description="用户 API Key（可选）"),
+    base_url: Optional[str] = Query(default=None, description="用户 Base URL（可选）"),
+):
     """每日市场简报 — 聚合当日重要新闻
 
     优先使用 LLM 生成摘要（如果已配置），否则返回规则化聚合结果。
@@ -90,8 +94,8 @@ async def get_daily_brief():
     summary = _rule_based_summary(market_news, avg_score)
     try:
         from core.llm_client import get_llm_config
-        if get_llm_config().is_configured:
-            summary = _llm_summary(market_news)
+        if api_key or get_llm_config().is_configured:
+            summary = _llm_summary(market_news, api_key, base_url)
     except Exception:
         pass
 
@@ -130,11 +134,14 @@ def _rule_based_summary(news: list[dict], avg_score: float) -> str:
     return "".join(parts)
 
 
-def _llm_summary(news: list[dict]) -> str:
+def _llm_summary(news: list[dict], api_key: Optional[str] = None, base_url: Optional[str] = None) -> str:
     """LLM 生成的市场摘要"""
-    from core.llm_client import get_llm_client
+    from core.llm_client import get_llm_client, create_llm_client
 
-    client = get_llm_client()
+    if api_key:
+        client = create_llm_client(api_key=api_key, base_url=base_url or "")
+    else:
+        client = get_llm_client()
     titles = "\n".join(
         f"- [{n.get('sentiment', {}).get('label', '?')}] {n.get('title', '')}"
         for n in news[:20]

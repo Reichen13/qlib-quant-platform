@@ -154,42 +154,59 @@ async def get_industry_performance(
             if industry and len(industry_stocks.get(industry, [])) < 20:
                 industry_stocks[industry].append(row[1])
 
-        # 计算行业平均涨跌幅
-        industry_performance = []
+        # 展平所有股票查询任务
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        for industry, codes in industry_stocks.items():
-            total_change = 0
-            count = 0
-
-            for code in codes[:10]:  # 每个行业取10只股票计算
-                try:
-                    rs_quote = bs.query_history_k_data_plus(
-                        code,
-                        "date,code,pctChg",
-                        start_date=start_date,
-                        end_date=end_date,
-                        frequency="d",
-                        adjustflag="2"
-                    )
-
+        def _fetch_quote(code):
+            try:
+                rs_quote = bs.query_history_k_data_plus(
+                    code,
+                    "date,code,pctChg",
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency="d",
+                    adjustflag="2",
+                )
+                if rs_quote.error_code == '0':
                     changes = []
                     while (rs_quote.error_code == '0') & rs_quote.next():
-                        row = rs_quote.get_row_data()
-                        if row[2]:  # pctChg
-                            changes.append(float(row[2]))
-
+                        pct = rs_quote.get_row_data()[2]
+                        if pct:
+                            changes.append(float(pct))
                     if changes:
-                        total_change += changes[-1] if changes else 0
-                        count += 1
-                except:
-                    continue
+                        return sum(changes) / len(changes)
+            except Exception:
+                pass
+            return None
 
-            if count > 0:
-                avg_change = total_change / count
+        # 展平为 (industry, code) 任务列表
+        tasks = []
+        for industry, codes in industry_stocks.items():
+            for code in codes[:10]:
+                tasks.append((industry, code))
+
+        # 并行查询
+        industry_changes: dict[str, list] = {}
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(_fetch_quote, code): (ind, code) for ind, code in tasks}
+            for future in as_completed(futures):
+                ind, code = futures[future]
+                avg_change = future.result()
+                if avg_change is not None:
+                    if ind not in industry_changes:
+                        industry_changes[ind] = []
+                    industry_changes[ind].append(avg_change)
+
+        # 汇总行业表现
+        industry_performance = []
+        for industry in industry_stocks:
+            changes = industry_changes.get(industry, [])
+            if changes:
+                avg = sum(changes) / len(changes)
                 industry_performance.append({
                     "industry": industry,
-                    "change_pct": round(avg_change, 2),
-                    "stock_count": count
+                    "change_pct": round(avg, 2),
+                    "stock_count": len(changes),
                 })
 
         # 排序

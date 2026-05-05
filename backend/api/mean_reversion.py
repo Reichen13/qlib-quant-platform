@@ -246,7 +246,8 @@ def generate_mock_signals(rsi_threshold: int = 70) -> Dict:
         "overbought": len([s for s in mock_signals if s["signal"] == "超买"]),
         "oversold": len([s for s in mock_signals if s["signal"] == "超卖"]),
         "watch": len([s for s in mock_signals if s["signal"] == "关注"]),
-        "date": datetime.now().strftime("%Y-%m-%d")
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "warning": "mock_data — Qlib 数据源不可用，返回缓存示例数据",
     }
 
 

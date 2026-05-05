@@ -69,8 +69,12 @@ def _fetch_etf_prices(code: str, period: str = "3mo") -> pd.Series | None:
         return None
 
 
-def _fetch_all_etf_prices(period: str = "3mo") -> Dict[str, pd.Series]:
-    """批量获取所有 ETF 收盘价（单次网络调用）"""
+def _fetch_all_etf_prices(period: str = "3mo") -> tuple[Dict[str, pd.Series], Dict[str, float]]:
+    """批量获取所有 ETF 收盘价和成交量（单次网络调用）
+
+    Returns:
+        (prices_dict, volume_dict)
+    """
     import yfinance as yf
     yf_codes = [_to_yf_code(c) for c in ETF_LIST]
     code_map = {_to_yf_code(c): c for c in ETF_LIST}
@@ -79,34 +83,43 @@ def _fetch_all_etf_prices(period: str = "3mo") -> Dict[str, pd.Series]:
         data = yf.download(yf_codes, period=period, progress=False, auto_adjust=True)
         if data.empty:
             logger.warning("yfinance 批量下载返回空数据")
-            return {}
+            return {}, {}
 
-        result = {}
+        prices = {}
+        volumes = {}
         if "Close" in data.columns:
             closes = data["Close"]
             for yf_code in yf_codes:
                 if yf_code in closes.columns:
                     series = closes[yf_code].dropna()
                     if not series.empty:
-                        result[code_map[yf_code]] = series
-        return result
+                        prices[code_map[yf_code]] = series
+        if "Volume" in data.columns:
+            vols = data["Volume"]
+            for yf_code in yf_codes:
+                if yf_code in vols.columns:
+                    v = vols[yf_code].dropna()
+                    if not v.empty:
+                        volumes[code_map[yf_code]] = float(v.iloc[-1])
+
+        return prices, volumes
     except Exception as e:
         logger.warning(f"yfinance 批量下载失败: {e}")
-        return {}
+        return {}, {}
 
 
-def _get_cached_prices() -> Dict[str, pd.Series]:
-    """获取缓存的 ETF 价格数据"""
+def _get_cached_prices() -> tuple[Dict[str, pd.Series], Dict[str, float]]:
+    """获取缓存的 ETF 价格和成交量数据"""
     now = time.time()
     cache_key = "all_etfs"
     if cache_key in _cache:
-        ts, cached = _cache[cache_key]
+        ts, cached_prices, cached_volumes = _cache[cache_key]
         if now - ts < CACHE_TTL:
-            return cached
-    prices = _fetch_all_etf_prices()
+            return cached_prices, cached_volumes
+    prices, volumes = _fetch_all_etf_prices()
     if prices:
-        _cache[cache_key] = (now, prices)
-    return prices
+        _cache[cache_key] = (now, prices, volumes)
+    return prices, volumes
 
 
 def compute_signal(prices: pd.Series, days: int = 20) -> tuple[str, float, float]:
@@ -160,7 +173,7 @@ async def get_etf_signals(days: int = 20):
     基于 yfinance 实时行情计算动量信号
     """
     try:
-        all_prices = _get_cached_prices()
+        all_prices, all_volumes = _get_cached_prices()
         etfs = []
         top_buy = []
         top_sell = []
@@ -175,7 +188,7 @@ async def get_etf_signals(days: int = 20):
 
             current_price = round(float(prices.iloc[-1]), 3)
             signal, change_pct, _ = compute_signal(prices, days)
-            volume = round(float(len(prices)), 0)  # 近似成交量（缺失时用数据长度占位）
+            volume = round(all_volumes.get(code, 0), 0)  # 真实成交量
 
             etf_info = ETFInfo(
                 code=code,
