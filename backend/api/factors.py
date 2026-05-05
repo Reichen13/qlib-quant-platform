@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from typing import List
 import pandas as pd
 import numpy as np
+import random
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 
@@ -51,6 +52,12 @@ def _get_factor_category(name: str) -> str:
         if name.startswith(prefix):
             return category
     return "其他"
+
+
+def _sample_stocks(codes: list, n: int = 150) -> list:
+    """随机抽样股票代码，避免样本选择偏差，固定种子保证可复现"""
+    random.seed(42)
+    return random.sample(codes, min(n, len(codes)))
 
 
 def _fix_parallel():
@@ -131,7 +138,7 @@ async def analyze_factors(params: FactorAnalysisRequest):
         logger.info(f"特征数据: {df_features.shape}, 列数: {len(df_features.columns)}")
 
         # ── 3. 获取收盘价计算前向收益 ──
-        stock_codes = df_features.index.get_level_values("instrument").unique().tolist()[:80]
+        stock_codes = _sample_stocks(df_features.index.get_level_values("instrument").unique().tolist())
         raw_df = D.features(stock_codes, ["$close"], start_time=start_str, end_time=end_str)
 
         if raw_df is None or raw_df.empty:
@@ -488,7 +495,7 @@ async def factor_decay(request: FactorAnalysisRequest):
             raise HTTPException(status_code=500, detail="因子数据为空")
 
         # 获取收盘价
-        stock_codes = df_features.index.get_level_values("instrument").unique().tolist()[:80]
+        stock_codes = _sample_stocks(df_features.index.get_level_values("instrument").unique().tolist())
         raw_df = D.features(stock_codes, ["$close"], start_time=start_str, end_time=end_str)
 
         # 获取特征列名（只用前 top_k 个）
@@ -605,7 +612,7 @@ async def combine_signals(request: FactorAnalysisRequest):
 
         feature_names = [str(c) for c in df_features.columns[:top_n]]
 
-        stock_codes = df_features.index.get_level_values("instrument").unique().tolist()[:80]
+        stock_codes = _sample_stocks(df_features.index.get_level_values("instrument").unique().tolist())
         raw_df = D.features(stock_codes, ["$close"], start_time=start_str, end_time=end_str)
 
         pred_period = request.predict_period
@@ -661,7 +668,7 @@ async def combine_signals(request: FactorAnalysisRequest):
         last_date = sorted(df_features.index.get_level_values("datetime").unique())[-1]
         composite_scores = []
 
-        for code in stock_codes[:50]:
+        for code in _sample_stocks(stock_codes, 100):
             try:
                 score = 0
                 for fw in factor_weights[:10]:
@@ -749,7 +756,7 @@ async def factor_detail(factor_name: str, start_date: str, end_date: str, predic
         feat_col = df_features[factor_name]
 
         # 计算每日 IC
-        stock_codes = df_features.index.get_level_values("instrument").unique().tolist()[:80]
+        stock_codes = _sample_stocks(df_features.index.get_level_values("instrument").unique().tolist())
         raw_df = D.features(stock_codes, ["$close"], start_time=start_date, end_time=end_date)
 
         future_returns = {}
