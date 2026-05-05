@@ -114,6 +114,17 @@ async def lifespan(app: FastAPI):
 
     logger.info("✅ 所有路由已注册")
 
+    # ── 预加载行业映射（避免首次因子分析请求耗时 16 秒）──
+    try:
+        from qlib.data import D
+        instruments = D.instruments("csi300")
+        codes = D.list_instruments(instruments, as_list=True)
+        from core.factor_utils import load_industry_mapping
+        load_industry_mapping(codes)
+        logger.info(f"✅ 行业映射预加载完成: {len(codes)} 只 CSI300 成分股")
+    except Exception as e:
+        logger.warning(f"⚠️ 行业映射预加载跳过（非致命）: {e}")
+
     yield
 
     # 关闭时清理
