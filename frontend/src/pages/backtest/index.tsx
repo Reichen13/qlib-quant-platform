@@ -13,9 +13,13 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Zap, Play, Loader2, TrendingUp, Activity, Settings, BarChart3 } from "lucide-react"
+import { Zap, Play, Loader2, TrendingUp, Activity, Settings, BarChart3, ChevronDown, ChevronRight } from "lucide-react"
 import { LineChartComponent } from "@/components/charts/line-chart"
 import { DrawdownChart } from "@/components/charts/drawdown-chart"
+import {
+  AreaChart, Area,
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+} from "recharts"
 import { OperationAdvice } from "@/components/features/operation-advice"
 import { InstructionsPanel, commonInstructions } from "@/components/features/instructions-panel"
 import { useMutation } from "@tanstack/react-query"
@@ -49,6 +53,7 @@ export function BacktestPage() {
   const setParams = useAppStore((s) => s.setBacktestParams)
   const [result, setResult] = useState<BacktestResult>(emptyResult)
   const [pollingTaskId, setPollingTaskId] = useState<string | null>(null)
+  const [attributionOpen, setAttributionOpen] = useState(true)
 
   // 运行回测 mutation
   const backtestMutation = useMutation({
@@ -549,6 +554,167 @@ export function BacktestPage() {
                   </CardContent>
                 </Card>
               </div>
+
+              {/* 绩效归因 (Brinson) */}
+              {result.attribution && result.attribution_curve && result.attribution_curve.length > 0 && (
+                <Card>
+                  <CardHeader
+                    className="cursor-pointer select-none"
+                    onClick={() => setAttributionOpen(!attributionOpen)}
+                  >
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      {attributionOpen ? (
+                        <ChevronDown className="h-4 w-4" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4" />
+                      )}
+                      绩效归因 (Brinson)
+                    </CardTitle>
+                    <CardDescription>
+                      相对 CSI300 基准的超额收益分解
+                      <span className="text-xs text-muted-foreground ml-1">(等权基准近似)</span>
+                    </CardDescription>
+                  </CardHeader>
+
+                  {attributionOpen && (
+                    <CardContent className="space-y-6">
+                      {/* Summary KPIs */}
+                      <div className="grid grid-cols-3 gap-4">
+                        <div className="p-4 bg-muted/50 rounded-lg text-center">
+                          <p className="text-xs text-muted-foreground mb-1">配置效应</p>
+                          <p className={`text-xl font-bold ${result.attribution.allocation_effect >= 0 ? "text-up" : "text-down"}`}>
+                            {result.attribution.allocation_effect > 0 ? "+" : ""}
+                            {result.attribution.allocation_effect.toFixed(2)}%
+                          </p>
+                          <p className="text-xs text-muted-foreground mt-1">行业超/低配</p>
+                        </div>
+                        <div className="p-4 bg-muted/50 rounded-lg text-center">
+                          <p className="text-xs text-muted-foreground mb-1">选股效应</p>
+                          <p className={`text-xl font-bold ${result.attribution.selection_effect >= 0 ? "text-up" : "text-down"}`}>
+                            {result.attribution.selection_effect > 0 ? "+" : ""}
+                            {result.attribution.selection_effect.toFixed(2)}%
+                          </p>
+                          <p className="text-xs text-muted-foreground mt-1">行业内选股</p>
+                        </div>
+                        <div className="p-4 bg-muted/50 rounded-lg text-center">
+                          <p className="text-xs text-muted-foreground mb-1">交互效应</p>
+                          <p className={`text-xl font-bold ${result.attribution.interaction_effect >= 0 ? "text-up" : "text-down"}`}>
+                            {result.attribution.interaction_effect > 0 ? "+" : ""}
+                            {result.attribution.interaction_effect.toFixed(2)}%
+                          </p>
+                          <p className="text-xs text-muted-foreground mt-1">配置x选股</p>
+                        </div>
+                      </div>
+
+                      {/* Cumulative Attribution Stacked Area Chart */}
+                      <div>
+                        <p className="text-sm font-medium mb-3">累计归因分解</p>
+                        <ResponsiveContainer width="100%" height={250}>
+                          <AreaChart data={result.attribution_curve}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                            <XAxis dataKey="date" stroke="var(--muted-foreground)" fontSize={12} />
+                            <YAxis
+                              stroke="var(--muted-foreground)"
+                              fontSize={12}
+                              tickFormatter={(v: any) => `${(v as number).toFixed(1)}%`}
+                            />
+                            <Tooltip
+                              contentStyle={{
+                                backgroundColor: "var(--popover)",
+                                border: "1px solid var(--border)",
+                                borderRadius: "6px",
+                              }}
+                              formatter={(v: any) => `${(v as number).toFixed(2)}%`}
+                            />
+                            <Legend />
+                            <Area
+                              type="monotone"
+                              dataKey="allocation"
+                              name="配置效应"
+                              stackId="1"
+                              stroke="#22c55e"
+                              fill="#22c55e"
+                              fillOpacity={0.3}
+                            />
+                            <Area
+                              type="monotone"
+                              dataKey="selection"
+                              name="选股效应"
+                              stackId="1"
+                              stroke="#3b82f6"
+                              fill="#3b82f6"
+                              fillOpacity={0.3}
+                            />
+                            <Area
+                              type="monotone"
+                              dataKey="interaction"
+                              name="交互效应"
+                              stackId="1"
+                              stroke="#94a3b8"
+                              fill="#94a3b8"
+                              fillOpacity={0.3}
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+
+                      {/* Interpretation */}
+                      {result.attribution_interpretation && (
+                        <div className="p-4 bg-muted/50 rounded-lg">
+                          <p className="text-sm font-medium mb-1">归因解读</p>
+                          <p className="text-sm text-muted-foreground">
+                            {result.attribution_interpretation}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Industry Breakdown */}
+                      {result.attribution.by_industry && Object.keys(result.attribution.by_industry).length > 0 && (
+                        <div>
+                          <p className="text-sm font-medium mb-3">行业贡献明细</p>
+                          <div className="border rounded-lg overflow-hidden">
+                            <table className="w-full text-sm">
+                              <thead className="bg-muted/50">
+                                <tr>
+                                  <th className="text-left px-4 py-2 font-medium">行业</th>
+                                  <th className="text-right px-4 py-2 font-medium">配置贡献(%)</th>
+                                  <th className="text-right px-4 py-2 font-medium">选股贡献(%)</th>
+                                  <th className="text-right px-4 py-2 font-medium">总贡献(%)</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {Object.entries(result.attribution.by_industry)
+                                  .map(([ind, v]) => ({
+                                    industry: ind,
+                                    allocation: v.allocation,
+                                    selection: v.selection,
+                                    total: v.allocation + v.selection,
+                                  }))
+                                  .sort((a, b) => Math.abs(b.total) - Math.abs(a.total))
+                                  .slice(0, 10)
+                                  .map((row) => (
+                                    <tr key={row.industry} className="border-t">
+                                      <td className="px-4 py-2">{row.industry}</td>
+                                      <td className={`text-right px-4 py-2 ${row.allocation >= 0 ? "text-up" : "text-down"}`}>
+                                        {row.allocation > 0 ? "+" : ""}{row.allocation.toFixed(2)}
+                                      </td>
+                                      <td className={`text-right px-4 py-2 ${row.selection >= 0 ? "text-up" : "text-down"}`}>
+                                        {row.selection > 0 ? "+" : ""}{row.selection.toFixed(2)}
+                                      </td>
+                                      <td className={`text-right px-4 py-2 font-medium ${row.total >= 0 ? "text-up" : "text-down"}`}>
+                                        {row.total > 0 ? "+" : ""}{row.total.toFixed(2)}
+                                      </td>
+                                    </tr>
+                                  ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+                    </CardContent>
+                  )}
+                </Card>
+              )}
             </>
           ) : (
             <Card>

@@ -20,7 +20,8 @@ os.environ['OMP_NUM_THREADS'] = '1'
 
 from models.schemas import (
     BacktestParams, BacktestResponse,
-    StockRecommendation, EquityPoint, DrawdownPoint
+    StockRecommendation, EquityPoint, DrawdownPoint,
+    AttributionPoint, AttributionSummary,
 )
 
 router = APIRouter()
@@ -317,7 +318,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         n_drop = max(1, topk // 5)  # 每次换手约20%持仓
         strategy = TopkDropoutStrategy(topk=topk, n_drop=n_drop, signal=pred)
 
-        report, _ = backtest_daily(
+        report, positions_dict = backtest_daily(
             start_time=test_start,
             end_time=str(backtest_end),
             strategy=strategy,
@@ -387,6 +388,15 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         # 月度胜率
         monthly_r = r.resample("ME").apply(lambda x: (1 + x).prod() - 1)
         monthly_win_rate = (monthly_r > 0).mean()
+
+        # ── Brinson 绩效归因 ──
+        attribution_result = _compute_brinson_attribution(
+            positions_dict=positions_dict,
+            benchmark="SH000300",
+            start_date=test_start,
+            end_date=str(backtest_end),
+            instruments=instruments,
+        )
 
         backtest_tasks[task_id]["progress"] = 90
 
@@ -486,6 +496,9 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 position_advice=position_advice,
                 constraint_analysis=constraint_analysis,
                 factor_source=params.source_factor,
+                attribution=AttributionSummary(**attribution_result["summary"]) if attribution_result else None,
+                attribution_curve=[AttributionPoint(**p) for p in attribution_result["curve"]] if attribution_result else None,
+                attribution_interpretation=attribution_result["interpretation"] if attribution_result else None,
             ),
             "error": None
         }
@@ -502,6 +515,249 @@ def run_backtest_task(task_id: str, params: BacktestParams):
             "result": None,
             "error": str(e)
         }
+
+
+def _compute_brinson_attribution(
+    positions_dict: dict,
+    benchmark: str,
+    start_date: str,
+    end_date: str,
+    instruments,
+) -> Optional[dict]:
+    """
+    Brinson 绩效归因 — 将超额收益分解为配置效应、选股效应、交互效应
+
+    基准采用 CSI300 等权近似（cn_data 不含成分股权重数据）
+    """
+    try:
+        from qlib.data import D
+        from backend.core.factor_utils import load_industry_mapping
+
+        # 1. 获取交易日历和成分股
+        calendars = D.calendar(freq="day")
+        dates = sorted([
+            d for d in calendars
+            if pd.Timestamp(start_date) <= d <= pd.Timestamp(end_date)
+        ])
+
+        if len(dates) < 5:
+            return None
+
+        all_csi300 = D.list_instruments(instruments, as_list=True)
+
+        # 2. 加载行业映射
+        industry_map = load_industry_mapping(all_csi300)
+        if not industry_map:
+            return None
+
+        # 3. 获取日收益
+        close_raw = D.features(
+            all_csi300, ["$close"],
+            start_time=start_date, end_time=end_date, freq="day",
+        )
+        if close_raw is None or close_raw.empty:
+            return None
+
+        close_df = close_raw.reset_index().pivot(
+            index="datetime", columns="instrument", values="$close"
+        )
+        daily_returns = close_df.pct_change().fillna(0)
+
+        # 4. 构建每日持仓权重（前向填充）
+        pos_weights_series = {}
+        for dt_key in sorted(positions_dict.keys()):
+            pos = positions_dict[dt_key]
+            w = pos.get_stock_weight_dict(only_stock=False)
+            w_filtered = {k: v for k, v in w.items() if k in all_csi300 and v > 0}
+            if w_filtered:
+                total = sum(w_filtered.values())
+                w_filtered = {k: v / total for k, v in w_filtered.items()}
+            pos_weights_series[dt_key] = w_filtered
+
+        # 前向填充到所有交易日
+        last_weights = {}
+        filled_weights = {}
+        for d in dates:
+            if d in pos_weights_series:
+                last_weights = pos_weights_series[d]
+            filled_weights[d] = last_weights.copy() if last_weights else {}
+
+        # 5. 逐日归因
+        daily_raa = []  # 配置效应
+        daily_rss = []  # 选股效应
+        daily_rin = []  # 交互效应
+        daily_active_return = []
+        date_labels = []
+        industry_contrib = {}  # {industry: {"allocation": cum, "selection": cum}}
+
+        for d in dates:
+            if d not in daily_returns.index:
+                continue
+
+            pw = filled_weights.get(d, {})
+            if not pw:
+                continue
+
+            day_ret = daily_returns.loc[d]
+
+            # 构建行业映射: code -> industry
+            held_codes = list(pw.keys())
+            held_industries = {}
+            for c in held_codes:
+                ind = industry_map.get(c, "其他")
+                held_industries[c] = ind
+
+            # CSI300 成分股当日的行业归属（等权基准）
+            valid_csi = [c for c in all_csi300 if c in day_ret.index and pd.notna(day_ret[c])]
+            if len(valid_csi) < 5:
+                continue
+
+            csi_industries = {}
+            for c in valid_csi:
+                csi_industries[c] = industry_map.get(c, "其他")
+
+            # 6. 计算 Q1-Q4
+            # 等权基准行业权重
+            n_bench = len(valid_csi)
+            bench_ind_weight = {}
+            bench_ind_return = {}
+            for c in valid_csi:
+                ind = csi_industries[c]
+                bench_ind_weight[ind] = bench_ind_weight.get(ind, 0) + 1.0 / n_bench
+                bench_ind_return[ind] = bench_ind_return.get(ind, 0) + day_ret[c] / n_bench
+            for ind in bench_ind_return:
+                if bench_ind_weight[ind] > 0:
+                    bench_ind_return[ind] /= bench_ind_weight[ind]
+
+            # 策略行业权重和收益
+            port_ind_weight = {}
+            port_ind_return = {}
+            for c, w in pw.items():
+                if c not in day_ret.index or pd.isna(day_ret[c]):
+                    continue
+                ind = held_industries.get(c, "其他")
+                port_ind_weight[ind] = port_ind_weight.get(ind, 0) + w
+                port_ind_return[ind] = port_ind_return.get(ind, 0) + w * day_ret[c]
+            for ind in port_ind_return:
+                if port_ind_weight[ind] > 0:
+                    port_ind_return[ind] /= port_ind_weight[ind]
+
+            # Q1 = sum(bench_weight_i * bench_return_i) — 基准收益
+            # Q2 = sum(port_weight_i * bench_return_i) — 配置收益
+            # Q3 = sum(bench_weight_i * port_return_i) — 选股收益
+            # Q4 = sum(port_weight_i * port_return_i) — 实际策略收益
+            all_inds = set(list(bench_ind_weight.keys()) + list(port_ind_weight.keys()))
+
+            Q1 = sum(bench_ind_weight.get(i, 0) * bench_ind_return.get(i, 0) for i in all_inds)
+            Q2 = sum(port_ind_weight.get(i, 0) * bench_ind_return.get(i, 0) for i in all_inds)
+            Q3 = sum(bench_ind_weight.get(i, 0) * port_ind_return.get(i, 0) for i in all_inds)
+            Q4 = sum(port_ind_weight.get(i, 0) * port_ind_return.get(i, 0) for i in all_inds)
+
+            raa = Q2 - Q1
+            rss = Q3 - Q1
+            rin = Q4 - Q3 - Q2 + Q1
+
+            daily_raa.append(raa)
+            daily_rss.append(rss)
+            daily_rin.append(rin)
+            daily_active_return.append(Q4 - Q1)
+            date_labels.append(d.strftime("%Y-%m-%d"))
+
+            # 行业贡献
+            for ind in all_inds:
+                bw = bench_ind_weight.get(ind, 0)
+                pw_i = port_ind_weight.get(ind, 0)
+                br = bench_ind_return.get(ind, 0)
+                pr = port_ind_return.get(ind, 0)
+                alloc_c = (pw_i - bw) * br  # 行业配置贡献
+                selec_c = bw * (pr - br)    # 行业选股贡献
+                if ind not in industry_contrib:
+                    industry_contrib[ind] = {"allocation": 0.0, "selection": 0.0}
+                industry_contrib[ind]["allocation"] += alloc_c
+                industry_contrib[ind]["selection"] += selec_c
+
+        if len(daily_raa) < 5:
+            return None
+
+        # 7. 累计归因（乘法复合）
+        raa_arr = np.array(daily_raa)
+        rss_arr = np.array(daily_rss)
+        rin_arr = np.array(daily_rin)
+        active_arr = np.array(daily_active_return)
+
+        cum_raa = (1 + raa_arr).cumprod() - 1
+        cum_rss = (1 + rss_arr).cumprod() - 1
+        cum_rin = (1 + rin_arr).cumprod() - 1
+        cum_active = (1 + active_arr).cumprod() - 1
+
+        # 8. 构建归因曲线
+        curve = []
+        for i in range(len(date_labels)):
+            curve.append({
+                "date": date_labels[i],
+                "allocation": round(float(cum_raa[i]) * 100, 2),
+                "selection": round(float(cum_rss[i]) * 100, 2),
+                "interaction": round(float(cum_rin[i]) * 100, 2),
+                "total_active": round(float(cum_active[i]) * 100, 2),
+            })
+
+        # 9. 行业贡献（乘以100转为百分比）
+        by_industry = {}
+        for ind, v in sorted(industry_contrib.items(),
+                             key=lambda x: abs(x[1]["allocation"] + x[1]["selection"]),
+                             reverse=True):
+            by_industry[ind] = {
+                "allocation": round(v["allocation"] * 100, 2),
+                "selection": round(v["selection"] * 100, 2),
+            }
+
+        # 10. 汇总
+        alloc_term = float(cum_raa[-1]) * 100
+        selec_term = float(cum_rss[-1]) * 100
+        inter_term = float(cum_rin[-1]) * 100
+        total_term = float(cum_active[-1]) * 100
+
+        # 11. 解读文本
+        if abs(alloc_term) > abs(selec_term):
+            main_type = "行业配置"
+            main_val = alloc_term
+        else:
+            main_type = "选股能力"
+            main_val = selec_term
+
+        if total_term > 0:
+            interp = (
+                f"回测期间，策略相对CSI300基准取得了 {total_term:.2f}% 的超额收益。"
+                f"其中，{main_type}是主要贡献来源（{main_val:+.2f}%）。"
+            )
+        else:
+            interp = (
+                f"回测期间，策略相对CSI300基准落后 {abs(total_term):.2f}%。"
+                f"其中，{main_type}是主要拖累因素（{main_val:+.2f}%）。"
+            )
+
+        if abs(inter_term) > abs(total_term) * 0.1:
+            interp += f"交互效应为 {inter_term:+.2f}%，表明行业配置与选股之间存在一定协同/抵消。"
+        else:
+            interp += "配置与选股的交互效应较小，两者较为独立。"
+
+        interp += "（注：基准采用CSI300等权近似，非真实市值加权。）"
+
+        return {
+            "summary": {
+                "allocation_effect": round(alloc_term, 2),
+                "selection_effect": round(selec_term, 2),
+                "interaction_effect": round(inter_term, 2),
+                "total_active_return": round(total_term, 2),
+                "by_industry": by_industry if by_industry else None,
+            },
+            "curve": curve,
+            "interpretation": interp,
+        }
+
+    except Exception as e:
+        logger.warning(f"Brinson 归因计算失败: {e}")
+        return None
 
 
 def _generate_buy_reason(score: float, name: str) -> str:

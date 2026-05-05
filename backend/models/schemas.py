@@ -185,6 +185,24 @@ class StockRecommendation(BaseModel):
     reason: str
 
 
+class AttributionPoint(BaseModel):
+    """单日 Brinson 归因数据点（累计值）"""
+    date: str
+    allocation: float       # 累计配置效应 (%)
+    selection: float        # 累计选股效应 (%)
+    interaction: float      # 累计交互效应 (%)
+    total_active: float     # 累计主动收益 (%)
+
+
+class AttributionSummary(BaseModel):
+    """Brinson 归因汇总"""
+    allocation_effect: float     # 配置效应终端值 (%)
+    selection_effect: float      # 选股效应终端值 (%)
+    interaction_effect: float    # 交互效应终端值 (%)
+    total_active_return: float   # 总主动收益终端值 (%)
+    by_industry: Optional[dict] = None  # {"银行": {"allocation": 0.5, "selection": 1.2}}
+
+
 class BacktestResponse(BaseModel):
     """回测响应"""
     task_id: str
@@ -215,6 +233,10 @@ class BacktestResponse(BaseModel):
     constraint_analysis: Optional[dict] = None
     # 因子来源（从因子分析跳转时带入）
     factor_source: Optional[str] = None
+    # 绩效归因 (Brinson)
+    attribution: Optional[AttributionSummary] = None
+    attribution_curve: Optional[List[AttributionPoint]] = None
+    attribution_interpretation: Optional[str] = None
     # 错误信息
     error: Optional[str] = None
 

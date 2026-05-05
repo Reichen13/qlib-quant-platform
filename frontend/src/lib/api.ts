@@ -205,6 +205,21 @@ export type BacktestResult = {
     warning?: string
   }
   factor_source?: string
+  attribution?: {
+    allocation_effect: number
+    selection_effect: number
+    interaction_effect: number
+    total_active_return: number
+    by_industry?: Record<string, { allocation: number; selection: number }>
+  }
+  attribution_curve?: Array<{
+    date: string
+    allocation: number
+    selection: number
+    interaction: number
+    total_active: number
+  }>
+  attribution_interpretation?: string
   error?: string
 }
 
