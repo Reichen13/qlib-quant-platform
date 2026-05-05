@@ -149,7 +149,14 @@ def neutralize_factor(
             y_pred = X.values @ beta
             residual_values = y - y_pred
 
-            neutralized = pd.Series(residual_values, index=cross_valid.index, name=factor_values.name)
+            neutralized = pd.Series(
+                residual_values,
+                index=pd.MultiIndex.from_arrays(
+                    [cross_valid.index, [dt] * len(cross_valid)],
+                    names=["instrument", "datetime"],
+                ),
+                name=factor_values.name,
+            )
             neutralized_parts.append(neutralized)
             processed_dates += 1
 
@@ -163,11 +170,7 @@ def neutralize_factor(
         return factor_values
 
     result = pd.concat(neutralized_parts)
-    result.index = pd.MultiIndex.from_tuples(
-        [(code, dt) for code, dt in result.index],
-        names=["instrument", "datetime"],
-    )
-
+    result = result.sort_index()
     logger.info(
         f"中性化完成: {processed_dates} 日期成功, {skipped_dates} 日期跳过, "
         f"输出 {len(result)} 条记录"
