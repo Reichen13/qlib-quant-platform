@@ -188,9 +188,11 @@ async def analyze_factors(params: FactorAnalysisRequest):
 
                 # ── 可选中性化 ──
                 feat_for_ic = feat_col
-                if params.neutralize == "industry" and industry_map:
-                    logger.debug(f"中性化因子: {feat_name}")
-                    feat_for_ic = neutralize_factor(feat_col, industry_map)
+                neutralized = False
+                if params.neutralize and params.neutralize != "none" and industry_map:
+                    logger.debug(f"中性化因子 {feat_name}: {params.neutralize}")
+                    feat_for_ic = neutralize_factor(feat_col, industry_map, method=params.neutralize)
+                    neutralized = True
 
                 # 按日期计算 daily IC
                 daily_ics = []
@@ -270,8 +272,8 @@ async def analyze_factors(params: FactorAnalysisRequest):
                 "positive_factors": sum(1 for f in factors_ics if f.ic > 0),
                 "negative_factors": sum(1 for f in factors_ics if f.ic < 0),
                 "best_factor": factors_ics[0].factor if factors_ics else None,
-                "neutralized": params.neutralize is not None,
-                "neutralize_method": params.neutralize,
+                "neutralized": bool(params.neutralize and params.neutralize != "none"),
+                "neutralize_method": params.neutralize if params.neutralize != "none" else None,
             }
         )
 

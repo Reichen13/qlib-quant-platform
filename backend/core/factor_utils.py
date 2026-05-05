@@ -76,20 +76,87 @@ def load_industry_mapping(instruments: list[str]) -> dict[str, str]:
     return result
 
 
+def _load_market_cap(
+    instruments: list[str],
+    start_date: str,
+    end_date: str,
+) -> dict[str, dict[str, float]]:
+    """
+    从 Baostock 获取股票每日总市值。
+
+    返回: {qlib_code: {date_str: market_cap_float}}
+    例: {"SH600519": {"2025-01-02": 2.5e12, ...}}
+    """
+    result: dict[str, dict[str, float]] = {}
+
+    try:
+        import baostock as bs
+
+        lg = bs.login()
+        if lg.error_code != "0":
+            logger.warning(f"Baostock 登录失败，市值数据不可用: {lg.error_msg}")
+            return result
+
+        loaded = 0
+        for qlib_code in instruments:
+            try:
+                market = qlib_code[:2].lower()
+                code_num = qlib_code[2:]
+                bs_code = f"{market}.{code_num}"
+
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,total_mv",
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency="d",
+                    adjustflag="2",  # 前复权
+                )
+                if rs.error_code != "0":
+                    continue
+
+                mc_dict = {}
+                while rs.next():
+                    row = rs.get_row_data()
+                    date_str = row[0]
+                    try:
+                        mc_dict[date_str] = float(row[1]) if row[1] else None
+                    except (ValueError, TypeError):
+                        mc_dict[date_str] = None
+
+                # 过滤非交易日
+                result[qlib_code] = {k: v for k, v in mc_dict.items() if v is not None and v > 0}
+                if result[qlib_code]:
+                    loaded += 1
+            except Exception:
+                continue
+
+        bs.logout()
+        logger.info(f"市值数据加载完成: {loaded}/{len(instruments)} 只有效")
+
+    except ImportError:
+        logger.warning("baostock 未安装，市值数据不可用")
+    except Exception as e:
+        logger.warning(f"市值数据加载失败: {e}")
+
+    return result
+
+
 def neutralize_factor(
     factor_values: pd.Series,
     industry_map: dict[str, str],
+    method: str = "industry",
 ) -> pd.Series:
     """
-    截面 OLS 行业中性化。
+    截面 OLS 中性化。
 
-    逐日期对因子值做：factor = X @ beta + residual
-    X = 行业 one-hot dummies (drop_first=True) + 常数项
-    返回 residual（中性化后的因子值）
+    逐日期对因子值做：factor = X @ beta + residual，返回 residual
 
     参数:
         factor_values: MultiIndex (instrument, datetime) 的 Series
         industry_map: {instrument: industry_name}
+        method: "industry" (行业回归), "market_cap" (log市值回归),
+                "industry+market_cap" (行业+市值联合回归)
     返回:
         同 index 的中性化 Series
     """
@@ -99,6 +166,19 @@ def neutralize_factor(
     # 确保 index 有名称
     if factor_values.index.names[0] is None:
         factor_values.index.names = ["instrument", "datetime"]
+
+    # 如果需要市值中性化，加载市值数据
+    market_cap_data = None
+    if "market_cap" in method:
+        dates = factor_values.index.get_level_values("datetime").unique()
+        instruments = factor_values.index.get_level_values("instrument").unique().tolist()
+        start = str(dates.min())[:10]
+        end = str(dates.max())[:10]
+        market_cap_data = _load_market_cap(instruments, start, end)
+        if not market_cap_data:
+            logger.warning("市值数据不可用，回退为行业中性化")
+            if method == "market_cap":
+                return factor_values  # 无法中性化
 
     dates = factor_values.index.get_level_values("datetime").unique()
     neutralized_parts = []
@@ -113,46 +193,73 @@ def neutralize_factor(
                 skipped_dates += 1
                 continue
 
-            # 为每只股票获取行业
-            industries = pd.Series(
-                {code: industry_map.get(code, "未知") for code in cross.index},
-                name="industry",
-            )
+            # 构建解释变量列表
+            X_cols = {}
 
-            # 去掉未知行业的股票
-            valid_mask = industries != "未知"
-            if valid_mask.sum() < 10:
+            if method in ("industry", "industry+market_cap"):
+                # 为每只股票获取行业
+                industries = pd.Series(
+                    {code: industry_map.get(code, "未知") for code in cross.index},
+                    name="industry",
+                )
+                valid_mask = industries != "未知"
+                if method == "industry" and valid_mask.sum() < 10:
+                    skipped_dates += 1
+                    continue
+
+                if valid_mask.sum() >= 5:
+                    ind_valid = industries[valid_mask]
+                    unique_inds = ind_valid.unique()
+                    if len(unique_inds) >= 2:
+                        ind_dummies = pd.get_dummies(ind_valid, drop_first=True, dtype=float)
+                        for col in ind_dummies.columns:
+                            X_cols[f"ind_{col}"] = ind_dummies[col].reindex(cross.index).fillna(0).values
+                    else:
+                        # 单一行业，不做行业哑变量
+                        pass
+
+            if method in ("market_cap", "industry+market_cap"):
+                # 获取当日市值
+                dt_str = str(dt)[:10]
+                mc_series = pd.Series(index=cross.index, dtype=float)
+                for code in cross.index:
+                    mc = market_cap_data.get(code, {}).get(dt_str) if market_cap_data else None
+                    mc_series[code] = mc
+
+                mc_valid = mc_series.dropna()
+                if len(mc_valid) >= 10:
+                    log_mc = np.log(mc_valid.clip(lower=1e8))  # 防零值
+                    X_cols["log_mcap"] = log_mc.reindex(cross.index).fillna(log_mc.median()).values
+                elif method == "market_cap":
+                    skipped_dates += 1
+                    continue
+
+            if not X_cols:
                 skipped_dates += 1
                 continue
 
-            cross_valid = cross[valid_mask]
-            ind_valid = industries[valid_mask]
+            # 构建设计矩阵
+            X_df = pd.DataFrame(X_cols, index=cross.index)
+            X_df["const"] = 1.0
 
-            # 检查是否只有单一行业
-            unique_inds = ind_valid.unique()
-            if len(unique_inds) < 2:
-                # 只有一个行业，无法中性化，返回 demean 后的值
-                neutralized = cross_valid - cross_valid.mean()
-                neutralized_parts.append(neutralized)
-                processed_dates += 1
+            # 对齐样本
+            common_idx = X_df.dropna().index
+            if len(common_idx) < 10:
+                skipped_dates += 1
                 continue
 
-            # 构建设计矩阵: one-hot industry dummies + constant
-            X = pd.get_dummies(ind_valid, drop_first=True, dtype=float)
-            X["const"] = 1.0
-            y = cross_valid.values
+            X = X_df.loc[common_idx].values
+            y = cross.loc[common_idx].values
 
-            # OLS via np.linalg.lstsq
-            beta, residuals, rank, _ = np.linalg.lstsq(X.values, y, rcond=None)
-
-            # 计算残差 = y - X @ beta
-            y_pred = X.values @ beta
+            # OLS
+            beta, residuals, rank, _ = np.linalg.lstsq(X, y, rcond=None)
+            y_pred = X @ beta
             residual_values = y - y_pred
 
             neutralized = pd.Series(
                 residual_values,
                 index=pd.MultiIndex.from_arrays(
-                    [cross_valid.index, [dt] * len(cross_valid)],
+                    [common_idx, [dt] * len(common_idx)],
                     names=["instrument", "datetime"],
                 ),
                 name=factor_values.name,
@@ -172,7 +279,7 @@ def neutralize_factor(
     result = pd.concat(neutralized_parts)
     result = result.sort_index()
     logger.info(
-        f"中性化完成: {processed_dates} 日期成功, {skipped_dates} 日期跳过, "
+        f"中性化完成 [{method}]: {processed_dates} 日期成功, {skipped_dates} 日期跳过, "
         f"输出 {len(result)} 条记录"
     )
     return result

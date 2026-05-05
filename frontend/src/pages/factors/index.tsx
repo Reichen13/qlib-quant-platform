@@ -89,7 +89,7 @@ export function FactorAnalysisPage() {
       end_date: endDate,
       predict_period: parseInt(predictPeriod),
       top_k: 158,
-      neutralize: neutralize === "industry" ? "industry" : undefined,
+      neutralize: neutralize !== "none" ? neutralize : undefined,
     }),
     enabled: true,
     retry: false,
@@ -277,6 +277,8 @@ export function FactorAnalysisPage() {
                 <SelectContent>
                   <SelectItem value="none">无中性化</SelectItem>
                   <SelectItem value="industry">行业中性化 (OLS)</SelectItem>
+                  <SelectItem value="market_cap">市值中性化 (log MCap)</SelectItem>
+                  <SelectItem value="industry+market_cap">行业+市值中性化</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -326,8 +328,10 @@ export function FactorAnalysisPage() {
               数据范围: {startDate} ~ {endDate}
             </Badge>
             <Badge variant="secondary">因子总数: {factors.length}</Badge>
-            {neutralize === "industry" && (
-              <Badge variant="default" className="bg-purple-600">行业中性化</Badge>
+            {neutralize !== "none" && (
+              <Badge variant="default" className="bg-purple-600">
+                {neutralize === "industry" ? "行业中性化" : neutralize === "market_cap" ? "市值中性化" : "行业+市值中性化"}
+              </Badge>
             )}
           </div>
         </CardContent>
