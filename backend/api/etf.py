@@ -44,6 +44,51 @@ ETF_LIST = {
 }
 
 # ── 缓存 ──
+def _is_etf_code(code: str) -> bool:
+    code = code.upper()
+    return (
+        code.startswith("SH51")
+        or code.startswith("SH56")
+        or code.startswith("SH58")
+        or code.startswith("SZ159")
+        or code.startswith("SZ16")
+    )
+
+
+def _normalize_qlib_code(raw_code: str) -> str:
+    code = raw_code.strip().upper()
+    if code.startswith("SH.") or code.startswith("SZ."):
+        prefix, pure = code.split(".", 1)
+        return f"{prefix}{pure}"
+    return code
+
+
+def _discover_local_etf_codes() -> list[str]:
+    features_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data" / "features"
+    if not features_dir.exists():
+        return []
+    codes = []
+    try:
+        for child in features_dir.iterdir():
+            code = _normalize_qlib_code(child.name)
+            if _is_etf_code(code):
+                codes.append(code)
+    except Exception as exc:
+        logger.warning(f"读取本地 ETF 特征目录失败: {exc}")
+    return sorted(set(codes))
+
+
+def _get_etf_universe() -> dict[str, str]:
+    universe = dict(ETF_LIST)
+    for code in _discover_local_etf_codes():
+        universe.setdefault(code, code)
+    return dict(sorted(universe.items()))
+
+
+def _get_etf_name(code: str) -> str:
+    return _get_etf_universe().get(code, code)
+
+
 _cache: Dict[str, tuple[float, Dict[str, pd.DataFrame]]] = {}
 CACHE_TTL = 300  # 5 分钟
 
@@ -161,7 +206,7 @@ def _fetch_etf_prices(code: str, period: str = "6mo") -> pd.Series | None:
 def _fetch_all_etf_history_from_qlib(period: str = "6mo") -> Dict[str, pd.DataFrame]:
     """从本地 Qlib 批量读取 ETF 行情。"""
     result = {}
-    for code in ETF_LIST:
+    for code in _get_etf_universe():
         hist = _fetch_etf_history_from_qlib(code, period)
         if hist is not None and len(hist) >= 10:
             result[code] = hist
@@ -175,8 +220,9 @@ def _fetch_all_etf_history_from_yfinance(period: str = "6mo") -> Dict[str, pd.Da
         code -> DataFrame(Open/High/Low/Close/Volume)
     """
     import yfinance as yf
-    yf_codes = [_to_yf_code(c) for c in ETF_LIST]
-    code_map = {_to_yf_code(c): c for c in ETF_LIST}
+    universe = _get_etf_universe()
+    yf_codes = [_to_yf_code(c) for c in universe]
+    code_map = {_to_yf_code(c): c for c in universe}
 
     try:
         data = yf.download(yf_codes, period=period, progress=False, auto_adjust=True)
@@ -204,7 +250,7 @@ def _fetch_all_etf_history_from_yfinance(period: str = "6mo") -> Dict[str, pd.Da
 def _fetch_all_etf_history(period: str = "6mo") -> Dict[str, pd.DataFrame]:
     """获取 ETF 行情：先用本地 Qlib，缺失部分再尝试 yfinance 补充。"""
     result = _fetch_all_etf_history_from_qlib(period)
-    missing_codes = [code for code in ETF_LIST if code not in result]
+    missing_codes = [code for code in _get_etf_universe() if code not in result]
 
     if missing_codes:
         yf_history = _fetch_all_etf_history_from_yfinance(period)
@@ -311,7 +357,7 @@ def _compute_etf_metrics(code: str, hist: pd.DataFrame, days: int = 20) -> ETFIn
     if amount is None and volume is not None:
         amount = volume * float(prices.iloc[-1])
 
-    name = ETF_LIST[code]
+    name = _get_etf_name(code)
     return ETFInfo(
         code=code,
         name=name,
@@ -347,7 +393,7 @@ async def get_etf_signals(days: int = 20):
         top_buy = []
         top_sell = []
 
-        for code, name in ETF_LIST.items():
+        for code, name in _get_etf_universe().items():
             hist = all_history.get(code)
             if hist is None or len(hist) < 10:
                 # 降级：单独获取
@@ -396,7 +442,7 @@ async def list_etfs():
     all_history = _get_cached_history()
     etfs = []
     missing = []
-    for code, name in ETF_LIST.items():
+    for code, name in _get_etf_universe().items():
         hist = all_history.get(code)
         if hist is None or len(hist) < 10:
             hist = _fetch_etf_history(code)
@@ -423,21 +469,22 @@ async def list_etfs():
 async def get_etf_quote(code: str):
     """获取单个 ETF 行情"""
     code_upper = code.upper().strip()
+    universe = _get_etf_universe()
 
-    if code_upper not in ETF_LIST:
+    if code_upper not in universe:
         pure = code_upper.replace("SH", "").replace("SZ", "")
-        for c in ETF_LIST:
+        for c in universe:
             if pure in c:
                 code_upper = c
                 break
 
-    if code_upper not in ETF_LIST:
+    if code_upper not in universe:
         raise HTTPException(status_code=404, detail="ETF 不存在")
 
     hist = _fetch_etf_history(code_upper)
 
     if hist is None or len(hist) < 2:
-        return {"code": code_upper, "name": ETF_LIST[code_upper], "error": "无数据"}
+        return {"code": code_upper, "name": universe[code_upper], "error": "无数据"}
 
     prices = hist["Close"].dropna()
     signal, change_pct, _ = compute_signal(prices)
@@ -460,7 +507,7 @@ async def get_etf_quote(code: str):
 
     return {
         "code": code_upper,
-        "name": ETF_LIST[code_upper],
+        "name": universe[code_upper],
         "price": float(prices.iloc[-1]),
         "change": float(prices.iloc[-1] - prices.iloc[-2]),
         "change_pct": float((prices.iloc[-1] - prices.iloc[-2]) / prices.iloc[-2] * 100),

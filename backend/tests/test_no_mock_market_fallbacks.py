@@ -1,4 +1,5 @@
 import sys
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,9 +10,26 @@ for path in (str(project_root), str(backend_dir)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
+if "loguru" not in sys.modules:
+    logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    sys.modules["loguru"] = types.SimpleNamespace(logger=logger)
+
 import pandas as pd
 
 from backend.api import etf, mean_reversion, pair
+
+
+def make_history(rows: int = 12) -> pd.DataFrame:
+    return pd.DataFrame({
+        "Close": [1.0 + i * 0.01 for i in range(rows)],
+        "Volume": [1000.0 + i for i in range(rows)],
+        "Money": [100000.0 + i * 100 for i in range(rows)],
+    })
 
 
 class NoMockMarketFallbackTests(unittest.IsolatedAsyncioTestCase):
@@ -55,10 +73,7 @@ class NoMockMarketFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("未生成模拟", response.warning)
 
     def test_etf_history_prefers_local_qlib_before_yfinance(self):
-        local_history = pd.DataFrame({
-            "Close": [1.0] * 12,
-            "Volume": [1000.0] * 12,
-        })
+        local_history = make_history()
 
         with patch.object(etf, "_fetch_all_etf_history_from_qlib", return_value={"SH510300": local_history}), \
              patch.object(etf, "_fetch_all_etf_history_from_yfinance", return_value={}) as yf_fetch:
@@ -66,6 +81,43 @@ class NoMockMarketFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("SH510300", result)
         yf_fetch.assert_called_once()
+
+    def test_etf_universe_discovers_local_qlib_etf_feature_dirs(self):
+        with patch.object(etf.Path, "home", return_value=Path("/tmp/qlib-test")):
+            with patch.object(etf.Path, "exists", return_value=True), \
+                 patch.object(etf.Path, "iterdir", return_value=[
+                     Path("/tmp/qlib-test/.qlib/qlib_data/cn_data/features/sh510300"),
+                     Path("/tmp/qlib-test/.qlib/qlib_data/cn_data/features/sh563000"),
+                     Path("/tmp/qlib-test/.qlib/qlib_data/cn_data/features/sz159915"),
+                     Path("/tmp/qlib-test/.qlib/qlib_data/cn_data/features/sh600519"),
+                 ]):
+                universe = etf._get_etf_universe()
+
+        self.assertIn("SH510300", universe)
+        self.assertIn("SH563000", universe)
+        self.assertIn("SZ159915", universe)
+        self.assertNotIn("SH600519", universe)
+        self.assertEqual(universe["SH563000"], "SH563000")
+
+    def test_fetch_all_etf_history_from_qlib_uses_discovered_universe(self):
+        local_history = make_history()
+
+        with patch.object(etf, "_get_etf_universe", return_value={
+            "SH510300": "沪深300ETF",
+            "SH563000": "SH563000",
+        }, create=True), \
+             patch.object(etf, "_fetch_etf_history_from_qlib", return_value=local_history):
+            result = etf._fetch_all_etf_history_from_qlib()
+
+        self.assertEqual(set(result), {"SH510300", "SH563000"})
+
+    def test_compute_etf_metrics_accepts_discovered_etf_code(self):
+        with patch.object(etf, "_get_etf_universe", return_value={"SH563000": "SH563000"}, create=True):
+            info = etf._compute_etf_metrics("SH563000", make_history(), days=5)
+
+        self.assertIsNotNone(info)
+        self.assertEqual(info.code, "SH563000")
+        self.assertEqual(info.name, "SH563000")
 
 
 if __name__ == "__main__":
