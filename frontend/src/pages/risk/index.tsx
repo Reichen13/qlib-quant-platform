@@ -92,6 +92,8 @@ export function RiskPage() {
   const positionSizing = riskData?.position_sizing
   const equity = riskData?.equity || []
   const drawdown = riskData?.drawdown || []
+  const errorMessage = (error as any)?.message || "无法获取风险数据，请检查股票代码是否正确"
+  const isAuthError = errorMessage.includes("服务器管理 Key") || errorMessage.includes("API Key")
 
   // 压力测试柱状图数据
   const stressChartData = stressTests.map((s: any) => ({
@@ -173,8 +175,15 @@ export function RiskPage() {
               <div>
                 <p className="font-medium">风险分析失败</p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  {(error as any)?.message || "无法获取风险数据，请检查股票代码是否正确"}
+                  {isAuthError
+                    ? "需要先配置服务器管理 Key。请到数据管理页面填写服务器 API_KEY 后，再回到本页重试。"
+                    : errorMessage}
                 </p>
+                {isAuthError && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    原始提示：{errorMessage}
+                  </p>
+                )}
               </div>
             </div>
             <Button variant="outline" className="mt-4" onClick={() => refetch()}>

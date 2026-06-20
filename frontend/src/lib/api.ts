@@ -57,10 +57,32 @@ async function apiFetch(input: RequestInfo | URL, init: ApiRequestInit = {}): Pr
 
 const fetch = apiFetch
 
+function parseErrorMessage(status: number, body: string): string {
+  let detail = body
+  try {
+    const parsed = JSON.parse(body)
+    if (typeof parsed?.detail === "string") {
+      detail = parsed.detail
+    } else if (typeof parsed?.message === "string") {
+      detail = parsed.message
+    }
+  } catch {
+    // Keep raw text body when the server did not return JSON.
+  }
+
+  if (status === 401 || status === 403) {
+    if (detail.includes("API Key") || detail.includes("X-API-Key")) {
+      return `服务器管理 Key 未配置或不正确：${detail}`
+    }
+  }
+
+  return detail || "Unknown error"
+}
+
 async function handleResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const error = await response.text().catch(() => "Unknown error")
-    throw new ApiError(response.status, error)
+    throw new ApiError(response.status, parseErrorMessage(response.status, error))
   }
   return response.json()
 }
