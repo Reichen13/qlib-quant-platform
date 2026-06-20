@@ -108,6 +108,14 @@ export interface PortfolioParams {
   turnoverLambda: number
 }
 
+export interface MeanReversionParams {
+  searchQuery: string
+  rsiThreshold: string
+  bollingerPeriod: string
+  scanType: "both" | "rsi" | "bollinger"
+  activeTab: "overbought" | "oversold" | "watch"
+}
+
 interface AppState {
   // 侧边栏状态
   sidebarOpen: boolean
@@ -163,6 +171,9 @@ interface AppState {
   portfolioCodes: string
   setPortfolioParams: (params: Partial<PortfolioParams>) => void
   setPortfolioCodes: (codes: string) => void
+
+  meanReversionParams: MeanReversionParams
+  setMeanReversionParams: (params: Partial<MeanReversionParams>) => void
 
   // ── LLM 设置页面状态 ──
   llmApiKey: string
@@ -274,6 +285,16 @@ function createDefaultPortfolioParams(): PortfolioParams {
   }
 }
 
+function createDefaultMeanReversionParams(): MeanReversionParams {
+  return {
+    searchQuery: "",
+    rsiThreshold: "70",
+    bollingerPeriod: "20",
+    scanType: "both",
+    activeTab: "overbought",
+  }
+}
+
 const DEFAULT_RISK_CODES = ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS", "601012.SS", "300750.SZ", "000002.SZ"]
 
 const DEFAULT_PORTFOLIO_CODES = "600519.SS 000858.SZ 601318.SS 000333.SZ 600036.SS"
@@ -373,6 +394,11 @@ export const useAppStore = create<AppState>()(
       setPortfolioCodes: (codes) => set({ portfolioCodes: codes }),
 
       // LLM 设置
+      meanReversionParams: createDefaultMeanReversionParams(),
+      setMeanReversionParams: (params) => set((state) => ({
+        meanReversionParams: { ...state.meanReversionParams, ...params },
+      })),
+
       llmApiKey: "",
       llmBaseUrl: "",
       llmQuickModel: "",
@@ -427,6 +453,10 @@ export const useAppStore = create<AppState>()(
             ...current.portfolioParams,
             ...persistedState?.portfolioParams,
           },
+          meanReversionParams: {
+            ...current.meanReversionParams,
+            ...persistedState?.meanReversionParams,
+          },
         }
       },
       partialize: (state) => ({
@@ -447,6 +477,7 @@ export const useAppStore = create<AppState>()(
         aiStrategyParams: state.aiStrategyParams,
         portfolioParams: state.portfolioParams,
         portfolioCodes: state.portfolioCodes,
+        meanReversionParams: state.meanReversionParams,
         // 持久化 LLM 设置
         llmApiKey: state.llmApiKey,
         llmBaseUrl: state.llmBaseUrl,

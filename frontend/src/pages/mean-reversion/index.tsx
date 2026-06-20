@@ -25,6 +25,7 @@ import { TrendingDown, TrendingUp, AlertCircle, Search, Loader2, RefreshCw, Filt
 import { InstructionsPanel } from "@/components/features/instructions-panel"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import { useAppStore } from "@/stores/app-store"
 
 // 扫描条件选项
 const rsiThresholds = [
@@ -50,10 +51,8 @@ interface SignalItem {
 }
 
 export function MeanReversionPage() {
-  const [searchQuery, setSearchQuery] = useState("")
-  const [rsiThreshold, setRsiThreshold] = useState("70")
-  const [bollingerPeriod, setBollingerPeriod] = useState("20")
-  const [scanType, setScanType] = useState<"both" | "rsi" | "bollinger">("both")
+  const { meanReversionParams, setMeanReversionParams } = useAppStore()
+  const { searchQuery, rsiThreshold, bollingerPeriod, scanType, activeTab } = meanReversionParams
   const [isLoading, setIsLoading] = useState(false)
 
   // 从后端获取均值回归信号
@@ -140,7 +139,7 @@ export function MeanReversionPage() {
           <div className="grid gap-4 md:grid-cols-4">
             <div className="space-y-2">
               <Label>RSI 阈值</Label>
-              <Select value={rsiThreshold} onValueChange={setRsiThreshold}>
+              <Select value={rsiThreshold} onValueChange={(value) => setMeanReversionParams({ rsiThreshold: value })}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -156,7 +155,7 @@ export function MeanReversionPage() {
 
             <div className="space-y-2">
               <Label>布林带周期</Label>
-              <Select value={bollingerPeriod} onValueChange={setBollingerPeriod}>
+              <Select value={bollingerPeriod} onValueChange={(value) => setMeanReversionParams({ bollingerPeriod: value })}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -172,7 +171,7 @@ export function MeanReversionPage() {
 
             <div className="space-y-2">
               <Label>扫描类型</Label>
-              <Select value={scanType} onValueChange={(v) => setScanType(v as any)}>
+              <Select value={scanType} onValueChange={(value) => setMeanReversionParams({ scanType: value as any })}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -209,7 +208,7 @@ export function MeanReversionPage() {
                 placeholder="输入股票代码或名称"
                 className="pl-9"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => setMeanReversionParams({ searchQuery: e.target.value })}
               />
             </div>
           </div>
@@ -281,7 +280,7 @@ export function MeanReversionPage() {
       </div>
 
       {/* 标签页 */}
-      <Tabs defaultValue="overbought">
+      <Tabs value={activeTab} onValueChange={(value) => setMeanReversionParams({ activeTab: value as any })}>
         <TabsList className="grid w-full max-w-md grid-cols-3">
           <TabsTrigger value="overbought">
             超买 ({overbought.length})
