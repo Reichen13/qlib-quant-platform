@@ -93,6 +93,11 @@
 
 ```bash
 API_KEY=replace-with-your-own-admin-key
+# Optional Tongdaxin MCP integration. Keep the real key only in .env or server env.
+TDX_API_KEY=replace-with-your-tdx-api-key
+TDX_MCP_URL=https://mcp.tdx.com.cn:3001/mcp
+# Set this after confirming the exact stock-list tool name exposed by your MCP.
+TDX_MCP_STOCK_LIST_TOOL=
 ```
 
 `API_KEY` 只用于保护会修改服务器数据的接口，例如 `/api/data/update`。不配置时，服务可以启动，但网页触发数据更新会被禁用。

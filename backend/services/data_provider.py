@@ -15,6 +15,18 @@ class DataProvider:
 
     def __init__(self):
         self._bs_client = None
+        self._tdx_provider = None
+
+    def _get_tdx_provider(self):
+        if self._tdx_provider is None:
+            try:
+                from services.tdx_mcp_provider import TdxMcpProvider
+                provider = TdxMcpProvider.from_env()
+                self._tdx_provider = provider if provider.can_fetch_stock_list else False
+            except Exception as e:
+                logger.warning(f"TDX MCP 初始化失败: {e}")
+                self._tdx_provider = False
+        return self._tdx_provider or None
 
     def _get_bs_client(self):
         """获取 Baostock 客户端（懒加载）"""
@@ -365,6 +377,13 @@ class DataProvider:
         """
         获取所有股票列表
         """
+        tdx = self._get_tdx_provider()
+        if tdx:
+            stocks = tdx.get_all_stocks()
+            if stocks:
+                logger.info(f"从 TDX MCP 获取全市场股票列表: {len(stocks)} 只")
+                return stocks
+
         bs = self._get_bs_client()
         if not bs:
             return self._get_all_stocks_from_qlib_features()
