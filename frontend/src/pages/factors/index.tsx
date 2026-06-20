@@ -1,5 +1,5 @@
 // 因子分析页面 - Alpha158 因子 IC 分析
-import { useState, useMemo } from "react"
+import { useMemo } from "react"
 import { useAppStore } from "@/stores/app-store"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -64,8 +64,6 @@ interface FactorItem {
 }
 
 export function FactorAnalysisPage() {
-  const [selectedCategory, setSelectedCategory] = useState("全部")
-  const [sortBy, setSortBy] = useState<"ic" | "rankIC">("ic")
   const factorParams = useAppStore((s) => s.factorParams)
   const setFactorParams = useAppStore((s) => s.setFactorParams)
   const setBacktestParams = useAppStore((s) => s.setBacktestParams)
@@ -75,12 +73,21 @@ export function FactorAnalysisPage() {
   const startDate = factorParams.startDate
   const endDate = factorParams.endDate
   const neutralize = factorParams.neutralize || "none"
+  const selectedCategory = factorParams.selectedCategory || "全部"
+  const sortBy = factorParams.sortBy || "ic"
+  const selectedFactor = factorParams.selectedFactor || null
+  const detailTab = factorParams.detailTab || "ic_stability"
+  const showDecay = factorParams.showDecay || false
+  const showCombination = factorParams.showCombination || false
+  const showAdvancedStats = factorParams.showAdvancedStats || false
 
-  const [selectedFactor, setSelectedFactor] = useState<string | null>(null)
-  const [detailTab, setDetailTab] = useState<"ic_stability" | "factor_series" | "industry_contrib">("ic_stability")
-  const [showDecay, setShowDecay] = useState(false)
-  const [showCombination, setShowCombination] = useState(false)
-  const [showAdvancedStats, setShowAdvancedStats] = useState(false)
+  const setSelectedCategory = (value: string) => setFactorParams({ selectedCategory: value })
+  const setSortBy = (value: "ic" | "rankIC") => setFactorParams({ sortBy: value })
+  const setSelectedFactor = (value: string | null) => setFactorParams({ selectedFactor: value })
+  const setDetailTab = (value: "ic_stability" | "factor_series" | "industry_contrib" | "quantile_returns") => setFactorParams({ detailTab: value })
+  const setShowDecay = (value: boolean) => setFactorParams({ showDecay: value })
+  const setShowCombination = (value: boolean) => setFactorParams({ showCombination: value })
+  const setShowAdvancedStats = (value: boolean) => setFactorParams({ showAdvancedStats: value })
 
   const { data: analyzeData, isLoading, isFetching, error, refetch } = useQuery({
     queryKey: ["factors", "analyze", predictPeriod, startDate, endDate, neutralize],

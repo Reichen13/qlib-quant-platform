@@ -451,8 +451,8 @@ export const api = {
       const query = params.toString() ? `?${params}` : ''
       return fetch(`${API_BASE}/api/quote/${code}${query}`).then(r => handleResponse<QuoteResponse>(r))
     },
-    getKline: (code: string) =>
-      fetch(`${API_BASE}/api/quote/${code}?indicators=true`).then(r => handleResponse<QuoteResponse>(r)),
+    getKline: (code: string, frequency: "daily" | "weekly" | "monthly" = "daily") =>
+      fetch(`${API_BASE}/api/quote/${code}?frequency=${frequency}&indicators=true`).then(r => handleResponse<QuoteResponse>(r)),
     getInfo: (code: string) =>
       fetch(`${API_BASE}/api/quote/${code}/info`).then(r => handleResponse<any>(r)),
   },
