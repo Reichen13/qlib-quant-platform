@@ -1,5 +1,4 @@
 // ETF筛选页面 - 全量 ETF 筛选分析
-import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -22,6 +21,7 @@ import {
 import { Target, Search, Filter, Loader2, Download, AlertCircle } from "lucide-react"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import { useAppStore } from "@/stores/app-store"
 import { Heatmap } from "@/components/charts/heatmap"
 import { BarChart } from "@/components/charts/bar-chart"
 import { InstructionsPanel } from "@/components/features/instructions-panel"
@@ -38,11 +38,13 @@ const sortOptions = [
 ]
 
 export function EtfScreenerPage() {
-  const [searchQuery, setSearchQuery] = useState("")
-  const [selectedCategory, setSelectedCategory] = useState("全部")
-  const [sortBy, setSortBy] = useState("change-desc")
-  const [filters, setFilters] = useState({ minPe: "", maxPe: "", minSize: "" })
-  const [dataSource, setDataSource] = useState<"core" | "all">("core")
+  const etfScreenerParams = useAppStore((s) => s.etfScreenerParams)
+  const setEtfScreenerParams = useAppStore((s) => s.setEtfScreenerParams)
+  const searchQuery = etfScreenerParams.searchQuery
+  const selectedCategory = etfScreenerParams.selectedCategory
+  const sortBy = etfScreenerParams.sortBy
+  const filters = etfScreenerParams.filters
+  const dataSource = etfScreenerParams.dataSource
 
   // 从后端获取ETF信号数据
   const { data: etfResponse, isLoading } = useQuery({
@@ -254,14 +256,14 @@ export function EtfScreenerPage() {
           <Badge
             variant={dataSource === "core" ? "default" : "outline"}
             className="cursor-pointer"
-            onClick={() => setDataSource("core")}
+            onClick={() => setEtfScreenerParams({ dataSource: "core" })}
           >
             核心50只
           </Badge>
           <Badge
             variant={dataSource === "all" ? "default" : "outline"}
             className="cursor-pointer"
-            onClick={() => setDataSource("all")}
+            onClick={() => setEtfScreenerParams({ dataSource: "all" })}
           >
             全量300+
           </Badge>
@@ -308,12 +310,12 @@ export function EtfScreenerPage() {
                 placeholder="搜索名称/代码"
                 className="pl-9"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => setEtfScreenerParams({ searchQuery: e.target.value })}
               />
             </div>
 
             {/* 分类筛选 */}
-            <Select value={selectedCategory} onValueChange={setSelectedCategory}>
+            <Select value={selectedCategory} onValueChange={(value) => setEtfScreenerParams({ selectedCategory: value })}>
               <SelectTrigger>
                 <SelectValue placeholder="选择分类" />
               </SelectTrigger>
@@ -327,7 +329,7 @@ export function EtfScreenerPage() {
             </Select>
 
             {/* 排序方式 */}
-            <Select value={sortBy} onValueChange={setSortBy}>
+            <Select value={sortBy} onValueChange={(value) => setEtfScreenerParams({ sortBy: value })}>
               <SelectTrigger>
                 <SelectValue placeholder="排序方式" />
               </SelectTrigger>
@@ -345,7 +347,7 @@ export function EtfScreenerPage() {
               type="number"
               placeholder="最小 PE"
               value={filters.minPe}
-              onChange={(e) => setFilters({ ...filters, minPe: e.target.value })}
+              onChange={(e) => setEtfScreenerParams({ filters: { minPe: e.target.value } })}
             />
 
             {/* 规模筛选 */}
@@ -353,7 +355,7 @@ export function EtfScreenerPage() {
               type="number"
               placeholder="最小规模(亿)"
               value={filters.minSize}
-              onChange={(e) => setFilters({ ...filters, minSize: e.target.value })}
+              onChange={(e) => setEtfScreenerParams({ filters: { minSize: e.target.value } })}
             />
           </div>
 
@@ -362,9 +364,11 @@ export function EtfScreenerPage() {
               variant="outline"
               size="sm"
               onClick={() => {
-                setSearchQuery("")
-                setSelectedCategory("全部")
-                setFilters({ minPe: "", maxPe: "", minSize: "" })
+                setEtfScreenerParams({
+                  searchQuery: "",
+                  selectedCategory: "全部",
+                  filters: { minPe: "", maxPe: "", minSize: "" },
+                })
               }}
             >
               重置筛选

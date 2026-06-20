@@ -45,6 +45,18 @@ export interface QuoteParams {
   showVolume: boolean
 }
 
+export interface EtfScreenerParams {
+  searchQuery: string
+  selectedCategory: string
+  sortBy: string
+  filters: {
+    minPe: string
+    maxPe: string
+    minSize: string
+  }
+  dataSource: "core" | "all"
+}
+
 interface AppState {
   // 侧边栏状态
   sidebarOpen: boolean
@@ -77,6 +89,11 @@ interface AppState {
 
   quoteParams: QuoteParams
   setQuoteParams: (params: Partial<QuoteParams>) => void
+
+  etfScreenerParams: EtfScreenerParams
+  setEtfScreenerParams: (params: Partial<Omit<EtfScreenerParams, "filters">> & {
+    filters?: Partial<EtfScreenerParams["filters"]>
+  }) => void
 
   // ── 投资组合页面状态 ──
   portfolioCodes: string
@@ -141,6 +158,16 @@ function createDefaultQuoteParams(): QuoteParams {
   }
 }
 
+function createDefaultEtfScreenerParams(): EtfScreenerParams {
+  return {
+    searchQuery: "",
+    selectedCategory: "全部",
+    sortBy: "change-desc",
+    filters: { minPe: "", maxPe: "", minSize: "" },
+    dataSource: "core",
+  }
+}
+
 const DEFAULT_RISK_CODES = ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS", "601012.SS", "300750.SZ", "000002.SZ"]
 
 const DEFAULT_PORTFOLIO_CODES = "600519.SS 000858.SZ 601318.SS 000333.SZ 600036.SS"
@@ -199,6 +226,17 @@ export const useAppStore = create<AppState>()(
         quoteParams: { ...state.quoteParams, ...params },
       })),
 
+      etfScreenerParams: createDefaultEtfScreenerParams(),
+      setEtfScreenerParams: (params) => set((state) => ({
+        etfScreenerParams: {
+          ...state.etfScreenerParams,
+          ...params,
+          filters: params.filters
+            ? { ...state.etfScreenerParams.filters, ...params.filters }
+            : state.etfScreenerParams.filters,
+        },
+      })),
+
       // 投资组合
       portfolioCodes: DEFAULT_PORTFOLIO_CODES,
       setPortfolioCodes: (codes) => set({ portfolioCodes: codes }),
@@ -232,6 +270,14 @@ export const useAppStore = create<AppState>()(
             ...current.backtestParams,
             ...persistedState?.backtestParams,
           },
+          etfScreenerParams: {
+            ...current.etfScreenerParams,
+            ...persistedState?.etfScreenerParams,
+            filters: {
+              ...current.etfScreenerParams.filters,
+              ...persistedState?.etfScreenerParams?.filters,
+            },
+          },
         }
       },
       partialize: (state) => ({
@@ -244,6 +290,7 @@ export const useAppStore = create<AppState>()(
         backtestActiveTab: state.backtestActiveTab,
         factorParams: state.factorParams,
         quoteParams: state.quoteParams,
+        etfScreenerParams: state.etfScreenerParams,
         portfolioCodes: state.portfolioCodes,
         // 持久化 LLM 设置
         llmApiKey: state.llmApiKey,
