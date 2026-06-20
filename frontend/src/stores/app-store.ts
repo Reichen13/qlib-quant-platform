@@ -19,6 +19,14 @@ export interface BacktestParams {
   sourceFactor: string
 }
 
+export interface PersistedBacktestResult {
+  task_id: string
+  status: "running" | "completed" | "failed"
+  progress?: number
+  error?: string
+  [key: string]: unknown
+}
+
 export interface FactorParams {
   startDate: string
   endDate: string
@@ -97,8 +105,11 @@ interface AppState {
   // ── 回测页面状态 ──
   backtestParams: BacktestParams
   backtestActiveTab: string
+  backtestTaskId: string | null
+  backtestResult: PersistedBacktestResult | null
   setBacktestParams: (params: BacktestParams) => void
   setBacktestActiveTab: (tab: string) => void
+  setBacktestTaskState: (params: { taskId?: string | null; result?: PersistedBacktestResult | null }) => void
 
   // ── 因子分析页面状态 ──
   factorParams: FactorParams
@@ -241,8 +252,14 @@ export const useAppStore = create<AppState>()(
       // 回测
       backtestParams: createDefaultBacktestParams(),
       backtestActiveTab: "config",
+      backtestTaskId: null,
+      backtestResult: null,
       setBacktestParams: (params) => set({ backtestParams: params }),
       setBacktestActiveTab: (tab) => set({ backtestActiveTab: tab }),
+      setBacktestTaskState: ({ taskId, result }) => set((state) => ({
+        backtestTaskId: taskId !== undefined ? taskId : state.backtestTaskId,
+        backtestResult: result !== undefined ? result : state.backtestResult,
+      })),
 
       // 因子分析
       factorParams: createDefaultFactorParams(),
@@ -304,6 +321,8 @@ export const useAppStore = create<AppState>()(
             ...current.backtestParams,
             ...persistedState?.backtestParams,
           },
+          backtestTaskId: persistedState?.backtestTaskId ?? current.backtestTaskId,
+          backtestResult: persistedState?.backtestResult ?? current.backtestResult,
           etfScreenerParams: {
             ...current.etfScreenerParams,
             ...persistedState?.etfScreenerParams,
@@ -326,6 +345,8 @@ export const useAppStore = create<AppState>()(
         riskInputValue: state.riskInputValue,
         backtestParams: state.backtestParams,
         backtestActiveTab: state.backtestActiveTab,
+        backtestTaskId: state.backtestTaskId,
+        backtestResult: state.backtestResult,
         factorParams: state.factorParams,
         quoteParams: state.quoteParams,
         etfScreenerParams: state.etfScreenerParams,

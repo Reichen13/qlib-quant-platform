@@ -51,46 +51,57 @@ export function BacktestPage() {
   const setActiveTab = useAppStore((s) => s.setBacktestActiveTab)
   const params = useAppStore((s) => s.backtestParams)
   const setParams = useAppStore((s) => s.setBacktestParams)
-  const [result, setResult] = useState<BacktestResult>(emptyResult)
-  const [pollingTaskId, setPollingTaskId] = useState<string | null>(null)
+  const backtestTaskId = useAppStore((s) => s.backtestTaskId)
+  const persistedResult = useAppStore((s) => s.backtestResult)
+  const setBacktestTaskState = useAppStore((s) => s.setBacktestTaskState)
+  const result = (persistedResult as BacktestResult | null) || emptyResult
   const [attributionOpen, setAttributionOpen] = useState(true)
 
   // 运行回测 mutation
   const backtestMutation = useMutation({
     mutationFn: (params: any) => api.backtest.run(params),
     onSuccess: (data) => {
-      setPollingTaskId(data.task_id)
-      setResult({ ...emptyResult, task_id: data.task_id, status: "running", progress: 5 })
+      setBacktestTaskState({
+        taskId: data.task_id,
+        result: { ...emptyResult, task_id: data.task_id, status: "running", progress: 5 },
+      })
       setActiveTab("results")
     },
     onError: (err) => {
-      setResult({ ...emptyResult, status: "failed", error: String(err) })
+      setBacktestTaskState({
+        taskId: null,
+        result: { ...emptyResult, status: "failed", error: String(err) },
+      })
       setActiveTab("results")
     },
   })
 
   // 轮询回测状态
   const pollStatus = useCallback(async () => {
-    if (!pollingTaskId) return
+    if (!backtestTaskId) return
     try {
-      const data = await api.backtest.status(pollingTaskId)
-      setResult(data)
+      const data = await api.backtest.status(backtestTaskId)
       if (data.status === "completed" || data.status === "failed") {
-        setPollingTaskId(null)
+        setBacktestTaskState({ taskId: null, result: data })
+      } else {
+        setBacktestTaskState({ result: data })
       }
     } catch {
-      setPollingTaskId(null)
+      setBacktestTaskState({
+        taskId: null,
+        result: { ...result, status: "failed", error: "无法查询回测任务状态" },
+      })
     }
-  }, [pollingTaskId])
+  }, [backtestTaskId, result, setBacktestTaskState])
 
   useEffect(() => {
-    if (!pollingTaskId) return
+    if (!backtestTaskId) return
     // 立即查询一次
     pollStatus()
     // 每3秒轮询
     const interval = setInterval(pollStatus, 3000)
     return () => clearInterval(interval)
-  }, [pollingTaskId, pollStatus])
+  }, [backtestTaskId, pollStatus])
 
   const runBacktest = () => {
     const snakeParams: Record<string, any> = {
@@ -296,14 +307,14 @@ export function BacktestPage() {
                 <Button
                   className="w-full"
                   onClick={runBacktest}
-                  disabled={backtestMutation.isPending || !!pollingTaskId}
+                  disabled={backtestMutation.isPending || !!backtestTaskId}
                 >
                   {backtestMutation.isPending ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                       提交中...
                     </>
-                  ) : pollingTaskId ? (
+                  ) : backtestTaskId ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                       回测中...
@@ -316,11 +327,11 @@ export function BacktestPage() {
                   )}
                 </Button>
 
-                {backtestMutation.data && !pollingTaskId && (
+                {result.task_id && result.status === "completed" && !backtestTaskId && (
                   <div className="p-3 bg-green-500/10 rounded-lg">
                     <p className="text-sm text-green-600">回测已完成</p>
                     <p className="text-xs text-muted-foreground mt-1">
-                      任务ID: {backtestMutation.data.task_id?.slice(0, 8)}...
+                      任务ID: {result.task_id?.slice(0, 8)}...
                     </p>
                   </div>
                 )}
