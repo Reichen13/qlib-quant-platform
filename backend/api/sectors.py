@@ -11,9 +11,20 @@ from loguru import logger
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
-import yfinance as yf
 import sys
 from pathlib import Path
+
+try:
+    import yfinance as yf
+except ImportError:
+    class _MissingYFinance:
+        def download(self, *args, **kwargs):
+            raise ImportError("yfinance is not installed")
+
+        def Ticker(self, *args, **kwargs):
+            raise ImportError("yfinance is not installed")
+
+    yf = _MissingYFinance()
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 

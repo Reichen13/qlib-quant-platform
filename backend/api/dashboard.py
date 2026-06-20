@@ -55,11 +55,12 @@ async def get_dashboard_summary():
 
     # ── ETF 信号 ──
     try:
-        from api.etf import _get_cached_prices, compute_signal, ETF_LIST
-        all_prices = _get_cached_prices()
-        for code, name in list(ETF_LIST.items())[:6]:
-            prices = all_prices.get(code)
-            if prices is not None and len(prices) >= 10:
+        from api.etf import _get_cached_history, _get_etf_universe, compute_signal
+        all_history = _get_cached_history()
+        for code, name in list(_get_etf_universe().items())[:6]:
+            hist = all_history.get(code)
+            if hist is not None and len(hist) >= 10 and "Close" in hist:
+                prices = hist["Close"].dropna()
                 signal, chg, _ = compute_signal(prices)
                 result["etf_signals"].append({
                     "name": name,
