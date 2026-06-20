@@ -91,6 +91,17 @@ export interface AgentDebateParams {
   memory: string
 }
 
+export interface AiStrategyParams {
+  activeTab: "generate" | "analyze" | "optimize" | "templates"
+  nlInput: string
+  useDeep: boolean
+  generated: unknown | null
+  holdingsInput: string
+  analysis: unknown | null
+  optimizeStrategy: string
+  optimizeResult: unknown | null
+}
+
 interface AppState {
   // 侧边栏状态
   sidebarOpen: boolean
@@ -137,6 +148,9 @@ interface AppState {
 
   agentDebateParams: AgentDebateParams
   setAgentDebateParams: (params: Partial<AgentDebateParams>) => void
+
+  aiStrategyParams: AiStrategyParams
+  setAiStrategyParams: (params: Partial<AiStrategyParams>) => void
 
   // ── 投资组合页面状态 ──
   portfolioCodes: string
@@ -231,6 +245,19 @@ function createDefaultAgentDebateParams(): AgentDebateParams {
   }
 }
 
+function createDefaultAiStrategyParams(): AiStrategyParams {
+  return {
+    activeTab: "generate",
+    nlInput: "",
+    useDeep: false,
+    generated: null,
+    holdingsInput: "",
+    analysis: null,
+    optimizeStrategy: "",
+    optimizeResult: null,
+  }
+}
+
 const DEFAULT_RISK_CODES = ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS", "601012.SS", "300750.SZ", "000002.SZ"]
 
 const DEFAULT_PORTFOLIO_CODES = "600519.SS 000858.SZ 601318.SS 000333.SZ 600036.SS"
@@ -317,6 +344,11 @@ export const useAppStore = create<AppState>()(
       })),
 
       // 投资组合
+      aiStrategyParams: createDefaultAiStrategyParams(),
+      setAiStrategyParams: (params) => set((state) => ({
+        aiStrategyParams: { ...state.aiStrategyParams, ...params },
+      })),
+
       portfolioCodes: DEFAULT_PORTFOLIO_CODES,
       setPortfolioCodes: (codes) => set({ portfolioCodes: codes }),
 
@@ -367,6 +399,10 @@ export const useAppStore = create<AppState>()(
             ...current.agentDebateParams,
             ...persistedState?.agentDebateParams,
           },
+          aiStrategyParams: {
+            ...current.aiStrategyParams,
+            ...persistedState?.aiStrategyParams,
+          },
         }
       },
       partialize: (state) => ({
@@ -384,6 +420,7 @@ export const useAppStore = create<AppState>()(
         etfScreenerParams: state.etfScreenerParams,
         dataManagementParams: state.dataManagementParams,
         agentDebateParams: state.agentDebateParams,
+        aiStrategyParams: state.aiStrategyParams,
         portfolioCodes: state.portfolioCodes,
         // 持久化 LLM 设置
         llmApiKey: state.llmApiKey,

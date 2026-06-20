@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import { useAppStore } from "@/stores/app-store"
 import { Bot, Wand2, Lightbulb, AlertTriangle, ChevronRight, Loader2, Sparkles, Code2, BarChart3, CheckCircle } from "lucide-react"
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -18,18 +19,20 @@ const CATEGORY_LABELS: Record<string, string> = {
 }
 
 export function AiStrategyPage() {
-  const [nlInput, setNlInput] = useState("")
-  const [useDeep, setUseDeep] = useState(false)
+  const { aiStrategyParams, setAiStrategyParams } = useAppStore()
+  const {
+    activeTab,
+    nlInput,
+    useDeep,
+    holdingsInput,
+    optimizeStrategy,
+  } = aiStrategyParams
+  const generated = aiStrategyParams.generated as any
+  const analysis = aiStrategyParams.analysis as any
+  const optimizeResult = aiStrategyParams.optimizeResult as any
   const [generating, setGenerating] = useState(false)
-  const [generated, setGenerated] = useState<any>(null)
-
-  const [holdingsInput, setHoldingsInput] = useState("")
   const [analyzing, setAnalyzing] = useState(false)
-  const [analysis, setAnalysis] = useState<any>(null)
-
-  const [optimizeStrategy, setOptimizeStrategy] = useState("")
   const [optimizing, setOptimizing] = useState(false)
-  const [optimizeResult, setOptimizeResult] = useState<any>(null)
 
   // 获取模板
   const { data: templates } = useQuery({
@@ -41,12 +44,12 @@ export function AiStrategyPage() {
   const handleGenerate = async () => {
     if (!nlInput.trim()) return
     setGenerating(true)
-    setGenerated(null)
+    setAiStrategyParams({ generated: null })
     try {
       const result = await api.aiStrategy.generate(nlInput, useDeep)
-      setGenerated(result)
+      setAiStrategyParams({ generated: result })
     } catch {
-      setGenerated({ error: "生成失败，请检查 LLM 配置" })
+      setAiStrategyParams({ generated: { error: "生成失败，请检查 LLM 配置" } })
     } finally {
       setGenerating(false)
     }
@@ -55,7 +58,7 @@ export function AiStrategyPage() {
   const handleAnalyze = async () => {
     if (!holdingsInput.trim()) return
     setAnalyzing(true)
-    setAnalysis(null)
+    setAiStrategyParams({ analysis: null })
     try {
       // 解析持仓输入: "600519.SS 贵州茅台 0.3, 000858.SZ 五粮液 0.2"
       const holdings = holdingsInput.split(",").map(s => {
@@ -68,9 +71,9 @@ export function AiStrategyPage() {
       }).filter(h => h.code && h.weight > 0)
 
       const result = await api.aiStrategy.analyze(holdings)
-      setAnalysis(result)
+      setAiStrategyParams({ analysis: result })
     } catch {
-      setAnalysis({ error: "分析失败，请检查 LLM 配置" })
+      setAiStrategyParams({ analysis: { error: "分析失败，请检查 LLM 配置" } })
     } finally {
       setAnalyzing(false)
     }
@@ -79,12 +82,12 @@ export function AiStrategyPage() {
   const handleOptimize = async () => {
     if (!optimizeStrategy.trim()) return
     setOptimizing(true)
-    setOptimizeResult(null)
+    setAiStrategyParams({ optimizeResult: null })
     try {
       const result = await api.aiStrategy.optimize(optimizeStrategy)
-      setOptimizeResult(result)
+      setAiStrategyParams({ optimizeResult: result })
     } catch {
-      setOptimizeResult({ error: "优化失败，请检查 LLM 配置" })
+      setAiStrategyParams({ optimizeResult: { error: "优化失败，请检查 LLM 配置" } })
     } finally {
       setOptimizing(false)
     }
@@ -110,7 +113,7 @@ export function AiStrategyPage() {
         <p className="text-muted-foreground">LLM 驱动的策略生成、分析与优化</p>
       </div>
 
-      <Tabs defaultValue="generate" className="space-y-4">
+      <Tabs value={activeTab} onValueChange={(value) => setAiStrategyParams({ activeTab: value as any })} className="space-y-4">
         <TabsList>
           <TabsTrigger value="generate">
             <Wand2 className="h-4 w-4 mr-1" />
@@ -141,7 +144,7 @@ export function AiStrategyPage() {
               <textarea
                 placeholder='例如："买入沪深300中ROE>15%且处于60日均线以上的股票，每月调仓，单票不超过10%，止损-8%"'
                 value={nlInput}
-                onChange={(e) => setNlInput(e.target.value)}
+                onChange={(e) => setAiStrategyParams({ nlInput: e.target.value })}
                 className="min-h-24 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               />
               <div className="flex items-center gap-3">
@@ -157,7 +160,7 @@ export function AiStrategyPage() {
                   <input
                     type="checkbox"
                     checked={useDeep}
-                    onChange={(e) => setUseDeep(e.target.checked)}
+                    onChange={(e) => setAiStrategyParams({ useDeep: e.target.checked })}
                     className="rounded"
                   />
                   深度推理
@@ -231,7 +234,7 @@ export function AiStrategyPage() {
                 <textarea
                   placeholder="600519.SS 贵州茅台 0.25, 000858.SZ 五粮液 0.15, 300750.SZ 宁德时代 0.2, 601318.SS 中国平安 0.1"
                   value={holdingsInput}
-                  onChange={(e) => setHoldingsInput(e.target.value)}
+                  onChange={(e) => setAiStrategyParams({ holdingsInput: e.target.value })}
                   className="min-h-20 w-full rounded-md border border-input bg-transparent px-3 py-2 font-mono text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 />
               </div>
@@ -317,7 +320,7 @@ export function AiStrategyPage() {
                 <Input
                   placeholder="策略类型，如 momentum_breakout 或 均线交叉"
                   value={optimizeStrategy}
-                  onChange={(e) => setOptimizeStrategy(e.target.value)}
+                  onChange={(e) => setAiStrategyParams({ optimizeStrategy: e.target.value })}
                   className="max-w-md"
                 />
                 <Button onClick={handleOptimize} disabled={optimizing || !optimizeStrategy.trim()}>
@@ -387,10 +390,7 @@ export function AiStrategyPage() {
                     size="sm"
                     className="mt-3 w-full"
                     onClick={() => {
-                      setNlInput(t.description)
-                      // Switch to generate tab
-                      const generateTab = document.querySelector('[value="generate"]') as HTMLElement
-                      generateTab?.click()
+                      setAiStrategyParams({ nlInput: t.description, activeTab: "generate" })
                     }}
                   >
                     使用此模板 <ChevronRight className="h-3 w-3 ml-1" />
