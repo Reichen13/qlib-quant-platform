@@ -19,6 +19,7 @@ import { CandlestickChart } from "@/components/charts/candlestick-chart"
 import { InstructionsPanel, commonInstructions } from "@/components/features/instructions-panel"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import { useAppStore } from "@/stores/app-store"
 
 // 热门股票列表（使用 Qlib 代码格式 SH/SZ + 数字）
 const popularStocks = [
@@ -42,14 +43,25 @@ interface SearchResult {
 
 export function QuoteAnalysisPage() {
   const [searchParams] = useSearchParams()
-  const [selectedStock, setSelectedStock] = useState<string | null>(
-    searchParams.get("stock") || "SH600519"
-  )
+  const quoteParams = useAppStore((s) => s.quoteParams)
+  const setQuoteParams = useAppStore((s) => s.setQuoteParams)
+  const selectedStock = quoteParams?.selectedStock || "SH600519"
+  const timeframe = quoteParams?.timeframe || "daily"
+  const showMA = quoteParams?.showMA ?? true
+  const showBollinger = quoteParams?.showBollinger ?? true
+  const showVolume = quoteParams?.showVolume ?? true
   const [searchQuery, setSearchQuery] = useState("")
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [showDropdown, setShowDropdown] = useState(false)
   const searchRef = useRef<HTMLDivElement>(null)
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    const urlCode = searchParams.get("stock") || searchParams.get("code")
+    if (urlCode && urlCode.toUpperCase() !== selectedStock) {
+      setQuoteParams({ selectedStock: urlCode.toUpperCase() })
+    }
+  }, [searchParams, selectedStock, setQuoteParams])
 
   // 点击外部关闭下拉
   useEffect(() => {
@@ -85,20 +97,16 @@ export function QuoteAnalysisPage() {
   }, [])
 
   const selectStock = (code: string) => {
-    setSelectedStock(code)
+    setQuoteParams({ selectedStock: code })
     setSearchQuery("")
     setShowDropdown(false)
   }
-  const [timeframe, setTimeframe] = useState("daily")
-  const [showMA, setShowMA] = useState(true)
-  const [showBollinger, setShowBollinger] = useState(true)
-  const [showVolume, setShowVolume] = useState(true)
-
   // 获取股票行情
   const { data: quoteData, isLoading: quoteLoading } = useQuery({
     queryKey: ["quote", selectedStock, timeframe],
-    queryFn: () => api.quote.getKline(selectedStock!),
+    queryFn: () => api.quote.getKline(selectedStock, timeframe),
     enabled: !!selectedStock,
+    staleTime: 5 * 60 * 1000,
   })
 
   // 转换后端数据格式
@@ -265,6 +273,9 @@ export function QuoteAnalysisPage() {
   const currentBollingerUpper = bollinger.upper[bollinger.upper.length - 1]
   const currentBollingerLower = bollinger.lower[bollinger.lower.length - 1]
   const currentBollingerMiddle = bollinger.middle[bollinger.middle.length - 1]
+  const recent20 = chartData.slice(-20)
+  const high20 = recent20.length > 0 ? Math.max(...recent20.map((d) => d.high)) : null
+  const low20 = recent20.length > 0 ? Math.min(...recent20.map((d) => d.low)) : null
 
   // 趋势判断
   const getTrend = () => {
@@ -386,7 +397,7 @@ export function QuoteAnalysisPage() {
                   key={stock.code}
                   variant={selectedStock === stock.code ? "default" : "outline"}
                   className="cursor-pointer hover:bg-accent"
-                  onClick={() => setSelectedStock(stock.code)}
+                  onClick={() => setQuoteParams({ selectedStock: stock.code })}
                 >
                   {stock.name}
                 </Badge>
@@ -407,7 +418,7 @@ export function QuoteAnalysisPage() {
                   <CardDescription>代码: {selectedStock}</CardDescription>
                 </div>
                 <div className="flex items-center gap-4">
-                  <Tabs value={timeframe} onValueChange={(v) => setTimeframe(v as any)}>
+                  <Tabs value={timeframe} onValueChange={(v) => setQuoteParams({ timeframe: v as "daily" | "weekly" | "monthly" })}>
                     <TabsList>
                       <TabsTrigger value="daily">日K</TabsTrigger>
                       <TabsTrigger value="weekly">周K</TabsTrigger>
@@ -418,21 +429,21 @@ export function QuoteAnalysisPage() {
                     <Badge
                       variant={showMA ? "default" : "outline"}
                       className="cursor-pointer"
-                      onClick={() => setShowMA(!showMA)}
+                      onClick={() => setQuoteParams({ showMA: !showMA })}
                     >
                       MA
                     </Badge>
                     <Badge
                       variant={showBollinger ? "default" : "outline"}
                       className="cursor-pointer"
-                      onClick={() => setShowBollinger(!showBollinger)}
+                      onClick={() => setQuoteParams({ showBollinger: !showBollinger })}
                     >
                       BOLL
                     </Badge>
                     <Badge
                       variant={showVolume ? "default" : "outline"}
                       className="cursor-pointer"
-                      onClick={() => setShowVolume(!showVolume)}
+                      onClick={() => setQuoteParams({ showVolume: !showVolume })}
                     >
                       成交量
                     </Badge>
@@ -722,7 +733,7 @@ export function QuoteAnalysisPage() {
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold text-up">
-                  {Math.max(...chartData.slice(-20).map((d) => d.high)).toFixed(2)}
+                  {high20 != null ? high20.toFixed(2) : "--"}
                 </div>
               </CardContent>
             </Card>
@@ -733,7 +744,7 @@ export function QuoteAnalysisPage() {
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold text-down">
-                  {Math.min(...chartData.slice(-20).map((d) => d.low)).toFixed(2)}
+                  {low20 != null ? low20.toFixed(2) : "--"}
                 </div>
               </CardContent>
             </Card>

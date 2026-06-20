@@ -27,6 +27,21 @@ export interface FactorParams {
   neutralize: string
   selectedFactors: string[]
   activeTab: string
+  selectedCategory: string
+  sortBy: "ic" | "rankIC"
+  selectedFactor: string | null
+  detailTab: "ic_stability" | "factor_series" | "industry_contrib" | "quantile_returns"
+  showDecay: boolean
+  showCombination: boolean
+  showAdvancedStats: boolean
+}
+
+export interface QuoteParams {
+  selectedStock: string
+  timeframe: "daily" | "weekly" | "monthly"
+  showMA: boolean
+  showBollinger: boolean
+  showVolume: boolean
 }
 
 interface AppState {
@@ -58,6 +73,9 @@ interface AppState {
   // ── 因子分析页面状态 ──
   factorParams: FactorParams
   setFactorParams: (params: Partial<FactorParams>) => void
+
+  quoteParams: QuoteParams
+  setQuoteParams: (params: Partial<QuoteParams>) => void
 
   // ── 投资组合页面状态 ──
   portfolioCodes: string
@@ -101,6 +119,23 @@ function createDefaultFactorParams(): FactorParams {
     neutralize: "none",
     selectedFactors: [],
     activeTab: "overview",
+    selectedCategory: "全部",
+    sortBy: "ic",
+    selectedFactor: null,
+    detailTab: "ic_stability",
+    showDecay: false,
+    showCombination: false,
+    showAdvancedStats: false,
+  }
+}
+
+function createDefaultQuoteParams(): QuoteParams {
+  return {
+    selectedStock: "SH600519",
+    timeframe: "daily",
+    showMA: true,
+    showBollinger: true,
+    showVolume: true,
   }
 }
 
@@ -157,6 +192,11 @@ export const useAppStore = create<AppState>()(
         factorParams: { ...state.factorParams, ...params },
       })),
 
+      quoteParams: createDefaultQuoteParams(),
+      setQuoteParams: (params) => set((state) => ({
+        quoteParams: { ...state.quoteParams, ...params },
+      })),
+
       // 投资组合
       portfolioCodes: DEFAULT_PORTFOLIO_CODES,
       setPortfolioCodes: (codes) => set({ portfolioCodes: codes }),
@@ -173,6 +213,25 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "qlib-app-store",
+      merge: (persisted, current) => {
+        const persistedState = persisted as Partial<AppState> | undefined
+        return {
+          ...current,
+          ...persistedState,
+          quoteParams: {
+            ...current.quoteParams,
+            ...persistedState?.quoteParams,
+          },
+          factorParams: {
+            ...current.factorParams,
+            ...persistedState?.factorParams,
+          },
+          backtestParams: {
+            ...current.backtestParams,
+            ...persistedState?.backtestParams,
+          },
+        }
+      },
       partialize: (state) => ({
         theme: state.theme,
         sidebarOpen: state.sidebarOpen,
@@ -182,6 +241,7 @@ export const useAppStore = create<AppState>()(
         backtestParams: state.backtestParams,
         backtestActiveTab: state.backtestActiveTab,
         factorParams: state.factorParams,
+        quoteParams: state.quoteParams,
         portfolioCodes: state.portfolioCodes,
         // 持久化 LLM 设置
         llmApiKey: state.llmApiKey,
