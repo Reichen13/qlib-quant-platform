@@ -92,6 +92,10 @@ export function MeanReversionPage() {
   const overbought = scannedSignals.filter((s: SignalItem) => s.signal === "超买")
   const oversold = scannedSignals.filter((s: SignalItem) => s.signal === "超卖")
   const watch = scannedSignals.filter((s: SignalItem) => s.signal === "关注")
+  const avgRsi = filteredSignals.length > 0
+    ? (filteredSignals.reduce((sum: number, s: SignalItem) => sum + s.rsi, 0) / filteredSignals.length).toFixed(1)
+    : "--"
+  const warning = signalsData?.warning
 
   const handleScan = async () => {
     setIsLoading(true)
@@ -212,6 +216,15 @@ export function MeanReversionPage() {
         </CardContent>
       </Card>
 
+      {warning && (
+        <Card className="border-yellow-500/50 bg-yellow-500/10">
+          <CardContent className="flex items-start gap-2 pt-4 text-sm text-yellow-700 dark:text-yellow-300">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{warning}</span>
+          </CardContent>
+        </Card>
+      )}
+
       {/* 统计概览 */}
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
@@ -260,7 +273,7 @@ export function MeanReversionPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {(filteredSignals.reduce((sum: number, s: SignalItem) => sum + s.rsi, 0) / filteredSignals.length).toFixed(1)}
+              {avgRsi}
             </div>
             <p className="text-xs text-muted-foreground">市场整体水平</p>
           </CardContent>

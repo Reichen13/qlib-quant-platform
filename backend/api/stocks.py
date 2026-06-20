@@ -34,37 +34,69 @@ def _get_market(code: str) -> str:
     return "SH" if code_upper.startswith(("6", "5")) else "SZ"
 
 
+def _to_api_code(bs_or_qlib_code: str) -> str:
+    code = bs_or_qlib_code.upper().strip()
+    if code.startswith("SH.") or code.startswith("SZ."):
+        return code.replace(".", "")
+    if code.startswith("SH") or code.startswith("SZ"):
+        return code
+    if code.startswith("6") or code.startswith("5"):
+        return f"SH{code[-6:]}"
+    return f"SZ{code[-6:]}"
+
+
+def _load_stock_names_from_provider() -> dict:
+    try:
+        from services.data_provider import DataProvider
+
+        provider = DataProvider()
+        all_stocks = provider.get_all_stocks()
+        names = {}
+        for stock in all_stocks:
+            code = _to_api_code(stock.get("code", ""))
+            if not code:
+                continue
+            names[code] = stock.get("code_name") or code
+        if names:
+            logger.info(f"从 Baostock 全市场列表加载了 {len(names)} 只股票")
+            return names
+    except Exception as e:
+        logger.warning(f"Baostock 全市场股票列表加载失败: {e}")
+    return {}
+
+
+def _load_stock_names_from_qlib_features() -> dict:
+    features_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data" / "features"
+    if not features_dir.exists():
+        return {}
+
+    names = {}
+    for stock_dir in sorted(features_dir.iterdir()):
+        if not stock_dir.is_dir():
+            continue
+        raw_code = stock_dir.name.upper()
+        if not (
+            raw_code.startswith("SH6")
+            or raw_code.startswith("SZ0")
+            or raw_code.startswith("SZ3")
+        ):
+            continue
+        api_code = _to_api_code(raw_code)
+        names[api_code] = api_code
+    if names:
+        logger.info(f"从 Qlib 本地行情目录加载了 {len(names)} 只股票代码")
+    return names
+
+
 def _load_stock_names():
-    """加载 CSI300 完整股票名称映射（仅首次调用时从 baostock 获取，之后纯内存）"""
+    """加载全市场股票名称映射（优先 Baostock，失败时用本地 Qlib 代码范围兜底）"""
     global _full_name_cache, _cache_loaded
     if _cache_loaded:
         return _full_name_cache
 
-    # 方法1: 用 baostock 获取（快速本地接口）
-    try:
-        import baostock as bs
-        bs.login()
-        rs = bs.query_hs300_stocks()
-        while (rs.error_code == '0') and rs.next():
-            row = rs.get_row_data()
-            code = row[1].replace('.', '').upper()
-            name = row[2]
-            _full_name_cache[code] = name
-        bs.logout()
-        logger.info(f"从 baostock 加载了 {len(_full_name_cache)} 只 CSI300 股票名称")
-    except Exception as e:
-        logger.warning(f"baostock 加载失败: {e}")
-
-    # 方法2: 补充 csi300.txt 中 baostock 没有的
-    csi300_file = Path.home() / ".qlib" / "qlib_data" / "cn_data" / "instruments" / "csi300.txt"
-    if csi300_file.exists():
-        with open(csi300_file) as f:
-            for line in f:
-                parts = line.strip().split('\t')
-                if len(parts) >= 1:
-                    code = parts[0].upper()
-                    if code not in _full_name_cache:
-                        _full_name_cache[code] = code
+    _full_name_cache.update(_load_stock_names_from_provider())
+    if not _full_name_cache:
+        _full_name_cache.update(_load_stock_names_from_qlib_features())
 
     _cache_loaded = True
     return _full_name_cache
@@ -105,7 +137,7 @@ async def search_stocks(q: str = Query(..., min_length=1, description="搜索关
 @router.get("/list")
 async def get_stock_list():
     """
-    获取股票列表（CSI300 成分股）
+    获取股票列表（全市场 A 股；无外部连接时返回本地 Qlib 已有代码范围）
     """
     name_map = _load_stock_names()
     stocks = []

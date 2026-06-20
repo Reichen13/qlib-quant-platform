@@ -45,32 +45,14 @@ def _summarize_index_data(data):
     }
 
 
-def _fallback_index_performance(index: str, days: int):
-    base_values = {"hs300": 3600.0, "sz50": 2500.0, "zz500": 5400.0}
-    base = base_values.get(index, 3600.0)
-    data = []
-    start = datetime.now() - __import__("datetime").timedelta(days=days)
-
-    for i in range(days):
-        value = base + i * 1.8 + ((i % 7) - 3) * 6
-        prev = base + (i - 1) * 1.8 + (((i - 1) % 7) - 3) * 6 if i > 0 else value
-        change_pct = ((value - prev) / prev * 100) if prev else 0
-        data.append({
-            "date": (start + __import__("datetime").timedelta(days=i + 1)).strftime("%Y-%m-%d"),
-            "open": round(value * 0.998, 2),
-            "high": round(value * 1.006, 2),
-            "low": round(value * 0.994, 2),
-            "close": round(value, 2),
-            "change_pct": round(change_pct, 2),
-        })
-
+def _unavailable_index_performance(index: str, days: int):
     return {
         "index": index,
         "period_days": days,
-        "data": data,
-        "summary": _summarize_index_data(data),
-        "source": "fallback",
-        "warning": "synthetic_fallback — 无 Qlib/baostock 数据，使用合成数据",
+        "data": [],
+        "summary": _summarize_index_data([]),
+        "source": "unavailable",
+        "warning": "暂无可靠指数行情数据，未生成合成数据。",
     }
 
 
@@ -221,7 +203,7 @@ async def get_index_performance(
 
         bs = provider._get_bs_client()
         if not bs:
-            return _fallback_index_performance(index, days)
+            return _unavailable_index_performance(index, days)
 
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
@@ -248,7 +230,7 @@ async def get_index_performance(
         )
 
         if rs.error_code != '0':
-            return _fallback_index_performance(index, days)
+            return _unavailable_index_performance(index, days)
 
         data = []
         while (rs.error_code == '0') & rs.next():
@@ -263,7 +245,7 @@ async def get_index_performance(
             })
 
         if not data:
-            return _fallback_index_performance(index, days)
+            return _unavailable_index_performance(index, days)
 
         data = data[-days:]
         return {
@@ -278,7 +260,7 @@ async def get_index_performance(
         raise
     except Exception as e:
         logger.error(f"获取指数表现失败 {index}: {e}")
-        return _fallback_index_performance(index, days)
+        return _unavailable_index_performance(index, days)
 
 
 @router.get("/comparison")
@@ -295,18 +277,24 @@ async def compare_indices():
         for idx in indices:
             try:
                 perf = await get_index_performance(index=idx, days=30)
+                summary = perf["summary"]
                 results.append({
                     "code": idx,
-                    "total_return": perf["summary"]["total_return"],
-                    "avg_daily_change": perf["summary"]["avg_daily_change"],
-                    "max_drawdown": perf["summary"]["max_drawdown"],
-                    "current_price": perf["summary"]["current_price"],
+                    "total_return": summary["total_return"] if perf["source"] != "unavailable" else None,
+                    "avg_daily_change": summary["avg_daily_change"] if perf["source"] != "unavailable" else None,
+                    "max_drawdown": summary["max_drawdown"] if perf["source"] != "unavailable" else None,
+                    "current_price": summary["current_price"],
+                    "source": perf.get("source"),
+                    "warning": perf.get("warning"),
                 })
             except:
                 continue
 
         # 按收益率排序
-        results.sort(key=lambda x: x["total_return"], reverse=True)
+        results.sort(
+            key=lambda x: x["total_return"] if x["total_return"] is not None else float("-inf"),
+            reverse=True,
+        )
 
         return {
             "date": datetime.now().strftime("%Y-%m-%d"),

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
-import { Layers, Plus, RefreshCw, Trash2, Loader2, Filter, Check } from "lucide-react"
+import { Layers, Plus, RefreshCw, Trash2, Loader2, Filter, Check, AlertCircle } from "lucide-react"
 
 export function StockPoolPage() {
   const [showCreate, setShowCreate] = useState(false)
@@ -26,6 +26,7 @@ export function StockPoolPage() {
     enabled: !!selectedPool,
     staleTime: 30 * 1000,
   })
+  const hasFallbackConstituents = poolDetail?.latest_constituents?.some((c: any) => c.warning)
 
   const handleCreate = async () => {
     if (!newName.trim()) return
@@ -197,12 +198,21 @@ export function StockPoolPage() {
                 <h4 className="text-sm font-medium mb-2">
                   最新成分 ({poolDetail.latest_constituents.length} 只, 更新于 {poolDetail.latest_refresh})
                 </h4>
+                {hasFallbackConstituents && (
+                  <div className="mb-3 flex items-start gap-2 rounded-md border border-yellow-500/50 bg-yellow-500/10 p-3 text-sm text-yellow-700 dark:text-yellow-300">
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>当前股票池使用降级打分结果，因子数据暂不可用；请先作为候选观察，不要按正式因子排名使用。</span>
+                  </div>
+                )}
                 <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
                   {poolDetail.latest_constituents.map((c: any, i: number) => (
                     <div key={i} className="p-2 bg-muted/30 rounded text-center">
                       <p className="text-xs font-mono">{c.code}</p>
                       {c.weight != null && (
                         <p className="text-xs text-muted-foreground">{(c.weight * 100).toFixed(1)}%</p>
+                      )}
+                      {c.warning && (
+                        <p className="mt-1 text-[11px] text-yellow-700 dark:text-yellow-300">降级打分</p>
                       )}
                     </div>
                   ))}
@@ -223,7 +233,7 @@ export function StockPoolPage() {
           <p>• <strong>Layer 2 — 因子打分:</strong> 基于已验证的Alpha因子，ICIR加权打分，可选行业中性化</p>
           <p>• <strong>Layer 3 — 组合约束:</strong> 控制股票数量、行业集中度、成对相关性，输出最终组合</p>
           <p className="text-xs mt-2">
-            注: 当前版本为框架实现。完整版需要加载 Qlib 股票范围数据、因子数据和行业分类数据。
+            注: 股票范围来自 Baostock 全市场列表或本地 Qlib 行情目录；因子、行业等缺失时页面会显示提示，不生成示例成分。
           </p>
         </CardContent>
       </Card>

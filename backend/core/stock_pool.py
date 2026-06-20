@@ -303,6 +303,7 @@ class StockPoolEngine:
             import qlib
             from qlib.data import D
             import numpy as np
+            import pandas as pd
             from datetime import datetime
 
             instruments = []
@@ -320,7 +321,8 @@ class StockPoolEngine:
 
             prices = D.features(instruments, ["$close"], start, end)
             if prices is None or prices.empty:
-                return [{"code": c, "score": 0.5, "rank": i + 1, "warning": "no_data"} for i, c in enumerate(codes)]
+                logger.warning("Layer2 简化动量打分无真实价格数据，返回空结果")
+                return []
 
             scores = {}
             for inst in instruments:
@@ -337,8 +339,9 @@ class StockPoolEngine:
             ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
             return [{"code": c, "score": round(s, 4), "rank": i + 1} for i, (c, s) in enumerate(ranked)]
 
-        except Exception:
-            return [{"code": c, "score": 0.5, "rank": i + 1, "warning": "stub_fallback"} for i, c in enumerate(codes)]
+        except Exception as e:
+            logger.warning(f"Layer2 简化动量打分失败，未生成降级评分: {e}")
+            return []
 
     def execute_layer3(self, scored_stocks: list[dict], config: Layer3PortfolioConstraints) -> list[dict]:
         """组合约束: 控制股票数、行业集中度、相关性"""
@@ -389,30 +392,23 @@ class StockPoolEngine:
         l2 = Layer2FactorScoring(**config.get("layer2", {}))
         l3 = Layer3PortfolioConstraints(**config.get("layer3", {}))
 
-        # 从真实数据获取初始股票范围
+        # 从真实数据获取初始股票范围：默认使用全市场 A 股，而不是固定沪深300。
         provider = self._get_provider()
-        index_stocks = provider.get_index_stocks("hs300")
-        if index_stocks:
-            codes = [self._bs_to_yf(s["code"]) for s in index_stocks]
+        all_stocks = provider.get_all_stocks()
+        if all_stocks:
+            codes = [self._bs_to_yf(s["code"]) for s in all_stocks]
         else:
-            # 降级：从全量股票列表中获取
-            all_stocks = provider.get_all_stocks()
-            if all_stocks:
-                codes = [self._bs_to_yf(s["code"]) for s in all_stocks[:300]]
-            else:
-                # 最终降级：使用示例代码
-                logger.warning("无法获取真实股票数据，使用示例代码")
-                codes = [f"{i:06d}.{'SS' if i >= 600000 else 'SZ'}" for i in range(1, 31)]
-                codes[0] = "600519.SS"
-                codes[1] = "000858.SZ"
-                codes[2] = "601318.SS"
-                codes[3] = "000333.SZ"
-                codes[4] = "600036.SS"
-                codes[5] = "300750.SZ"
+            logger.warning("无法获取真实股票范围，未生成示例股票池")
+            codes = []
 
         filtered = self.execute_layer1(codes, l1)
         scored = self.execute_layer2(filtered, l2)
         constituents = self.execute_layer3(scored, l3)
+        warning = None
+        if not codes:
+            warning = "暂无可靠股票范围数据，未生成示例股票池。"
+        elif filtered and not scored:
+            warning = "因子/动量打分暂无可靠数据，未生成股票池成分。"
 
         # 保存历史
         today = date.today().isoformat()
@@ -433,11 +429,12 @@ class StockPoolEngine:
             "date": today,
             "constituents": constituents,
             "stats": {
-                "input_count": len(sample_codes),
+                "input_count": len(codes),
                 "post_layer1": len(filtered),
                 "post_layer2": len(scored),
                 "post_layer3": len(constituents),
             },
+            "warning": warning,
         }
 
 

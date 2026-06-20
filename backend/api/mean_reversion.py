@@ -208,48 +208,16 @@ async def scan_signals(
 
     except Exception as e:
         logger.error(f"扫描信号失败: {e}")
-        # 返回模拟数据而不是报错
-        return generate_mock_signals(rsi_threshold)
-
-
-def generate_mock_signals(rsi_threshold: int = 70) -> Dict:
-    """生成模拟信号数据"""
-    import random
-
-    mock_signals = [
-        {"code": "SH600519", "name": "贵州茅台", "rsi": 78.5, "bollingerPosition": 0.85, "signal": "超买", "score": 85, "strength": "强"},
-        {"code": "SZ000858", "name": "五粮液", "rsi": 75.2, "bollingerPosition": 0.72, "signal": "超买", "score": 82, "strength": "强"},
-        {"code": "SH600036", "name": "招商银行", "rsi": 28.5, "bollingerPosition": 0.15, "signal": "超卖", "score": 75, "strength": "强"},
-        {"code": "SZ000001", "name": "平安银行", "rsi": 25.8, "bollingerPosition": 0.12, "signal": "超卖", "score": 78, "strength": "强"},
-        {"code": "SH600000", "name": "浦发银行", "rsi": 72.5, "bollingerPosition": 0.65, "signal": "超买", "score": 70, "strength": "中"},
-        {"code": "SH601318", "name": "中国平安", "rsi": 30.2, "bollingerPosition": 0.22, "signal": "超卖", "score": 72, "strength": "中"},
-        {"code": "SZ000002", "name": "万科A", "rsi": 22.5, "bollingerPosition": 0.08, "signal": "超卖", "score": 80, "strength": "强"},
-        {"code": "SH600276", "name": "恒瑞医药", "rsi": 76.8, "bollingerPosition": 0.78, "signal": "超买", "score": 77, "strength": "强"},
-        {"code": "SZ000333", "name": "美的集团", "rsi": 26.5, "bollingerPosition": 0.18, "signal": "超卖", "score": 74, "strength": "中"},
-        {"code": "SH600887", "name": "伊利股份", "rsi": 73.5, "bollingerPosition": 0.68, "signal": "超买", "score": 71, "strength": "中"},
-        {"code": "SZ002594", "name": "比亚迪", "rsi": 68.5, "bollingerPosition": 0.55, "signal": "关注", "score": 65, "strength": "弱"},
-        {"code": "SZ300750", "name": "宁德时代", "rsi": 65.2, "bollingerPosition": 0.48, "signal": "关注", "score": 62, "strength": "弱"},
-    ]
-
-    # 根据 RSI 阈值调整信号
-    for s in mock_signals:
-        if s["rsi"] > rsi_threshold:
-            s["signal"] = "超买"
-        elif s["rsi"] < (100 - rsi_threshold):
-            s["signal"] = "超卖"
-        else:
-            s["signal"] = "关注"
-
-    return {
-        "signals": mock_signals,
-        "total": len(mock_signals),
-        "overbought": len([s for s in mock_signals if s["signal"] == "超买"]),
-        "oversold": len([s for s in mock_signals if s["signal"] == "超卖"]),
-        "watch": len([s for s in mock_signals if s["signal"] == "关注"]),
-        "date": datetime.now().strftime("%Y-%m-%d"),
-        "warning": "mock_data — Qlib 数据源不可用，返回缓存示例数据",
-    }
-
+        return {
+            "signals": [],
+            "total": 0,
+            "overbought": 0,
+            "oversold": 0,
+            "watch": 0,
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "data_status": "unavailable",
+            "warning": "Qlib 数据源暂时不可用，未返回示例或模拟信号。",
+        }
 
 @router.get("/stock/{code}")
 async def get_stock_signal(

@@ -91,7 +91,7 @@ export function FactorAnalysisPage() {
       top_k: 158,
       neutralize: neutralize !== "none" ? neutralize : undefined,
     }),
-    enabled: true,
+    enabled: false,
     retry: false,
     staleTime: Infinity,
     gcTime: Infinity,
@@ -207,6 +207,7 @@ export function FactorAnalysisPage() {
   const selectedFactorObj = filteredFactors.find((f) => f.name === selectedFactor) || null
 
   const avgIC = factors.length > 0 ? factors.reduce((sum, f) => sum + Math.abs(f.ic), 0) / factors.length : 0
+  const icStd = factors.length > 0 ? Math.sqrt(factors.reduce((sum, f) => sum + Math.pow(f.ic - avgIC, 2), 0) / factors.length) : 0
   const maxIC = factors.length > 0 ? Math.max(...factors.map((f) => Math.abs(f.ic))) : 0
   const positiveCount = factors.filter((f) => f.ic > 0).length
   const negativeCount = factors.filter((f) => f.ic < 0).length
@@ -307,8 +308,8 @@ export function FactorAnalysisPage() {
 
             <div className="space-y-2">
               <Label>&nbsp;</Label>
-              <Button onClick={() => refetch()} disabled={isLoading} className="w-full">
-                {isLoading ? (
+              <Button onClick={() => refetch()} disabled={isFetching} className="w-full">
+                {isFetching ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     分析中
@@ -375,7 +376,7 @@ export function FactorAnalysisPage() {
           <CardContent className="py-8 text-center">
             <p className="text-lg font-medium">暂无因子分析结果</p>
             <p className="text-sm text-muted-foreground mt-1">
-              请选择日期范围后点击"运行分析"按钮，或等待自动分析完成
+              请选择日期范围后点击"运行分析"按钮
             </p>
           </CardContent>
         </Card>
@@ -487,7 +488,7 @@ export function FactorAnalysisPage() {
           description="所有因子 IC 值的分布情况"
           height={350}
           mean={avgIC}
-          std={Math.sqrt(factors.reduce((sum, f) => sum + Math.pow(f.ic - avgIC, 2), 0) / factors.length)}
+          std={icStd}
         />
       </div>
 

@@ -11,6 +11,7 @@ services:
       - /home/ubuntu/.qlib/qlib_data:/root/.qlib/qlib_data
     environment:
       - PYTHONUNBUFFERED=1
+      - API_KEY=${API_KEY:-}
     mem_limit: 1200m
     cpus: 1.5
     healthcheck:

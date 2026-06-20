@@ -5,6 +5,7 @@
 
 from typing import List, Optional, Dict, Any
 from datetime import date, datetime, timedelta
+from pathlib import Path
 import pandas as pd
 from loguru import logger
 
@@ -327,35 +328,97 @@ class DataProvider:
 
     # ==================== 股票列表 ====================
 
+    @staticmethod
+    def _latest_qlib_trade_date() -> Optional[str]:
+        """Return latest local Qlib calendar date not after today."""
+        cal_path = Path.home() / ".qlib" / "qlib_data" / "cn_data" / "calendars" / "day.txt"
+        if not cal_path.exists():
+            return None
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            dates = [line.strip() for line in cal_path.read_text().splitlines() if line.strip()]
+            for trade_date in reversed(dates):
+                if trade_date <= today:
+                    return trade_date
+        except Exception as e:
+            logger.debug(f"读取 Qlib 交易日历失败: {e}")
+        return None
+
+    @staticmethod
+    def _stock_query_dates(date: str | None) -> List[str]:
+        if date:
+            return [date]
+
+        candidates: list[str] = []
+        qlib_date = DataProvider._latest_qlib_trade_date()
+        if qlib_date:
+            candidates.append(qlib_date)
+
+        today = datetime.now()
+        for offset in range(0, 10):
+            day = (today - timedelta(days=offset)).strftime("%Y-%m-%d")
+            if day not in candidates:
+                candidates.append(day)
+        return candidates
+
     def get_all_stocks(self, date: str = None) -> List[Dict]:
         """
         获取所有股票列表
         """
         bs = self._get_bs_client()
         if not bs:
+            return self._get_all_stocks_from_qlib_features()
+
+        for query_date in self._stock_query_dates(date):
+            try:
+                rs = bs.query_all_stock(day=query_date)
+                stocks = []
+                while (rs.error_code == '0') & rs.next():
+                    row = rs.get_row_data()
+                    # 只返回沪深 A 股，排除指数和基金；科创/创业板在上层筛选配置里决定是否排除
+                    if row[0].startswith("sh.6") or row[0].startswith("sz.0") or row[0].startswith("sz.3"):
+                        stocks.append({
+                            "code": row[0],  # sh.600000
+                            "code_name": row[2],  # 股票名称
+                            "trade_status": row[1],  # 交易状态
+                            "date": query_date,
+                        })
+                if stocks:
+                    if query_date != date:
+                        logger.info(f"获取全市场股票列表成功: {query_date}, {len(stocks)} 只")
+                    return stocks
+            except Exception as e:
+                logger.warning(f"获取股票列表失败 {query_date}: {e}")
+
+        return self._get_all_stocks_from_qlib_features()
+
+    @staticmethod
+    def _get_all_stocks_from_qlib_features() -> List[Dict]:
+        """Use local Qlib feature directories as a true offline stock universe fallback."""
+        features_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data" / "features"
+        if not features_dir.exists():
             return []
 
-        if date is None:
-            date = datetime.now().strftime("%Y-%m-%d")
-
-        try:
-            rs = bs.query_all_stock(day=date)
-            stocks = []
-            while (rs.error_code == '0') & rs.next():
-                row = rs.get_row_data()
-                # 只返回股票，排除指数
-                if row[0].startswith("sh.6") or row[0].startswith("sz.0") or row[0].startswith("sz.3"):
-                    stocks.append({
-                        "code": row[0],  # sh.600000
-                        "code_name": row[2],  # 股票名称
-                        "trade_status": row[1],  # 交易状态
-                    })
-            return stocks
-
-        except Exception as e:
-            logger.warning(f"获取股票列表失败: {e}")
-
-        return []
+        stocks = []
+        for stock_dir in sorted(features_dir.iterdir()):
+            if not stock_dir.is_dir():
+                continue
+            raw = stock_dir.name.lower()
+            if raw.startswith("sh6"):
+                code = f"sh.{raw[2:8]}"
+            elif raw.startswith("sz0") or raw.startswith("sz3"):
+                code = f"sz.{raw[2:8]}"
+            else:
+                continue
+            stocks.append({
+                "code": code,
+                "code_name": code.replace(".", "").upper(),
+                "trade_status": "1",
+                "source": "qlib_features",
+            })
+        if stocks:
+            logger.info(f"从 Qlib 本地行情目录加载股票范围: {len(stocks)} 只")
+        return stocks
 
     # ==================== 辅助方法 ====================
 

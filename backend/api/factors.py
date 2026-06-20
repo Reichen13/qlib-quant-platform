@@ -66,7 +66,7 @@ from core.compat import fix_parallel_ext
 
 
 @router.post("/analyze")
-async def analyze_factors(params: FactorAnalysisRequest):
+def analyze_factors(params: FactorAnalysisRequest):
     """
     因子 IC 分析 - 完整 Alpha158 因子 (Qlib 原生)
 
@@ -324,7 +324,7 @@ async def list_factors():
 
 
 @router.post("/correlation")
-async def factor_correlation(request: FactorAnalysisRequest):
+def factor_correlation(request: FactorAnalysisRequest):
     """
     因子相关性分析
     计算因子 IC 序列之间的相关性矩阵，用于识别冗余因子
@@ -446,7 +446,7 @@ async def factor_correlation(request: FactorAnalysisRequest):
 
 
 @router.get("/{factor_name}/quantile-returns")
-async def factor_quantile_returns(
+def factor_quantile_returns(
     factor_name: str,
     start_date: str,
     end_date: str,
@@ -593,7 +593,7 @@ async def factor_quantile_returns(
 
 
 @router.post("/decay")
-async def factor_decay(request: FactorAnalysisRequest):
+def factor_decay(request: FactorAnalysisRequest):
     """
     因子 IC 衰减分析 - 计算不同预测周期下的 IC 变化
     多周期: 1, 3, 5, 10, 20 日
@@ -715,7 +715,7 @@ async def factor_decay(request: FactorAnalysisRequest):
 
 
 @router.post("/combine")
-async def combine_signals(request: FactorAnalysisRequest):
+def combine_signals(request: FactorAnalysisRequest):
     """
     信号组合 - 从 Top N 因子构建 IC 加权复合评分
     """
@@ -859,7 +859,7 @@ async def combine_signals(request: FactorAnalysisRequest):
 
 
 @router.get("/{factor_name}/detail")
-async def factor_detail(factor_name: str, start_date: str, end_date: str, predict_period: int = 5):
+def factor_detail(factor_name: str, start_date: str, end_date: str, predict_period: int = 5):
     """
     单因子详情 - 每日 IC 序列和因子暴露时序
     """

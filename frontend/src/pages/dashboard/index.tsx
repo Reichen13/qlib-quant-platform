@@ -44,6 +44,19 @@ function buildMarketTrend(data: Array<{ date: string; close: number | null }>) {
     })
 }
 
+function formatSignedPercent(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${value >= 0 ? "+" : ""}${value}%`
+    : "--"
+}
+
+function trendClass(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "text-muted-foreground"
+  }
+  return value >= 0 ? "text-up" : "text-down"
+}
+
 export function DashboardPage() {
   const [strategies, setStrategies] = useState(strategySliders)
 
@@ -69,7 +82,7 @@ export function DashboardPage() {
     refetchInterval: 300000,
   })
 
-  const { data: indexComparison } = useQuery({
+  const { data: indexComparison, isLoading: indexComparisonLoading } = useQuery({
     queryKey: ["index", "comparison"],
     queryFn: () => api.index.comparison(),
     refetchInterval: 300000,
@@ -86,6 +99,9 @@ export function DashboardPage() {
   const sectorsCount = sectorsData?.sectors?.length || 0
   const marketTrend = marketPerformance?.data?.length
     ? buildMarketTrend(marketPerformance.data)
+    : []
+  const indexComparisonItems = Array.isArray(indexComparison?.comparison)
+    ? indexComparison.comparison
     : []
 
   const latestTrend = marketTrend[marketTrend.length - 1]
@@ -376,37 +392,51 @@ export function DashboardPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-3 grid-cols-1 sm:grid-cols-3">
-            {(indexComparison?.comparison || []).map((index: any) => {
+          {indexComparisonItems.length > 0 ? (
+            <div className="grid gap-3 grid-cols-1 sm:grid-cols-3">
+              {indexComparisonItems.map((index: any) => {
               const indexNames: Record<string, string> = {
                 "hs300": "沪深300",
                 "sz50": "上证50",
                 "zz500": "中证500"
               }
               const name = indexNames[index.code] || index.code
+              const unavailable = index.source === "unavailable" || index.total_return === null
               return (
                 <div key={index.code} className="rounded-lg bg-muted/40 p-4 space-y-2.5">
-                  <p className="text-sm font-medium">{name}</p>
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-medium">{name}</p>
+                    {unavailable && (
+                      <Badge variant="outline" className="text-[11px]">暂无可靠数据</Badge>
+                    )}
+                  </div>
                   <div className="flex items-baseline justify-between">
                     <span className="text-xs text-muted-foreground">区间收益</span>
-                    <span className={`text-lg font-bold tabular-nums ${index.total_return >= 0 ? "text-up" : "text-down"}`}>
-                      {index.total_return >= 0 ? "+" : ""}{index.total_return}%
+                    <span className={`text-lg font-bold tabular-nums ${trendClass(index.total_return)}`}>
+                      {formatSignedPercent(index.total_return)}
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-y-1.5 text-xs">
                     <span className="text-muted-foreground">日均</span>
-                    <span className={`text-right tabular-nums ${index.avg_daily_change >= 0 ? "text-up" : "text-down"}`}>
-                      {index.avg_daily_change >= 0 ? "+" : ""}{index.avg_daily_change}%
+                    <span className={`text-right tabular-nums ${trendClass(index.avg_daily_change)}`}>
+                      {formatSignedPercent(index.avg_daily_change)}
                     </span>
                     <span className="text-muted-foreground">回撤</span>
-                    <span className="text-right text-down tabular-nums">{index.max_drawdown}%</span>
+                    <span className={`text-right tabular-nums ${trendClass(index.max_drawdown)}`}>
+                      {typeof index.max_drawdown === "number" ? `${index.max_drawdown}%` : "--"}
+                    </span>
                     <span className="text-muted-foreground">点位</span>
                     <span className="text-right font-medium tabular-nums">{index.current_price?.toFixed(2) || "--"}</span>
                   </div>
                 </div>
               )
-            })}
-          </div>
+              })}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+              {indexComparisonLoading ? "正在加载指数对比数据..." : "暂无可靠指数对比数据"}
+            </div>
+          )}
         </CardContent>
       </Card>
 

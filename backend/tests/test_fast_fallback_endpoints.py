@@ -44,13 +44,58 @@ class FastFallbackEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(response["pairs"]), 0)
         self.assertEqual(response["total"], len(response["pairs"]))
 
-    async def test_index_performance_returns_fallback_when_data_source_unavailable(self):
-        with patch.object(index.provider, "_get_bs_client", return_value=None):
+    async def test_index_performance_reports_unavailable_when_data_source_unavailable(self):
+        with patch.object(index.provider, "_get_bs_client", return_value=None), \
+             patch.object(index, "_qlib_index_performance", return_value=None):
             response = await index.get_index_performance(index="hs300", days=30)
 
         self.assertEqual(response["index"], "hs300")
-        self.assertGreater(len(response["data"]), 0)
-        self.assertIn("current_price", response["summary"])
+        self.assertEqual(response["data"], [])
+        self.assertIsNone(response["summary"]["current_price"])
+        self.assertEqual(response["source"], "unavailable")
+        self.assertIn("未生成合成数据", response["warning"])
+
+    async def test_index_comparison_marks_unavailable_without_zero_filling(self):
+        async def fake_performance(index: str, days: int):
+            if index == "sz50":
+                return index_module_unavailable(index, days)
+            return {
+                "index": index,
+                "period_days": days,
+                "data": [{"close": 1}],
+                "summary": {
+                    "total_return": 1.2,
+                    "avg_daily_change": 0.1,
+                    "max_drawdown": -0.5,
+                    "current_price": 100.0,
+                },
+                "source": "qlib",
+            }
+
+        def index_module_unavailable(idx: str, days: int):
+            return {
+                "index": idx,
+                "period_days": days,
+                "data": [],
+                "summary": {
+                    "total_return": 0,
+                    "avg_daily_change": 0,
+                    "max_drawdown": 0,
+                    "current_price": None,
+                },
+                "source": "unavailable",
+                "warning": "暂无可靠指数行情数据，未生成合成数据。",
+            }
+
+        with patch.object(index, "get_index_performance", side_effect=fake_performance):
+            response = await index.compare_indices()
+
+        sz50 = next(item for item in response["comparison"] if item["code"] == "sz50")
+        self.assertIsNone(sz50["total_return"])
+        self.assertIsNone(sz50["avg_daily_change"])
+        self.assertIsNone(sz50["max_drawdown"])
+        self.assertEqual(sz50["source"], "unavailable")
+        self.assertIn("未生成合成数据", sz50["warning"])
 
 
 if __name__ == "__main__":

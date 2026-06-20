@@ -19,14 +19,14 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Target, Search, Filter, Loader2, Download } from "lucide-react"
+import { Target, Search, Filter, Loader2, Download, AlertCircle } from "lucide-react"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { Heatmap } from "@/components/charts/heatmap"
 import { BarChart } from "@/components/charts/bar-chart"
 import { InstructionsPanel } from "@/components/features/instructions-panel"
 
-const categories = ["全部", "科技", "新能源", "医药", "消费", "金融", "国防", "地产", "资源"]
+const categories = ["全部", "宽基", "科技", "新能源", "医药", "消费", "金融", "国防", "资源", "其他"]
 
 const sortOptions = [
   { value: "change-desc", label: "涨跌幅（高→低）" },
@@ -35,7 +35,6 @@ const sortOptions = [
   { value: "size-asc", label: "规模（小→大）" },
   { value: "volume-desc", label: "成交额（高→低）" },
   { value: "sharpe-desc", label: "夏普（高→低）" },
-  { value: "pe-asc", label: "市盈率（低→高）" },
 ]
 
 export function EtfScreenerPage() {
@@ -51,24 +50,34 @@ export function EtfScreenerPage() {
     queryFn: () => api.etf.all(),
   })
 
-  // 转换后端数据或使用模拟数据
+  // 转换后端真实数据；缺失指标保持为空，不再填默认值
   let etfData: any[] = []
 
   if (etfResponse?.etfs && etfResponse.etfs.length > 0) {
     etfData = etfResponse.etfs.map((e: any) => ({
       code: e.code,
       name: e.name || e.code,
-      category: e.category || "其他",
-      pe: e.pe || 30,
-      size: e.size || 100,
-      change: e.change_pct || 0,
-      volume: e.volume || 10,
-      sharpe: e.sharpe || 0.8,
-      calmar: e.calmar || 0.5,
-      aboveMA20: e.above_ma20 || 0.5,
-      excessReturn: e.excess_return || 0,
+      category: e.type || e.category || "其他",
+      pe: e.pe ?? null,
+      size: e.size ?? null,
+      change: e.change_pct ?? null,
+      volume: e.amount ?? null,
+      sharpe: e.sharpe ?? null,
+      calmar: e.calmar ?? null,
+      aboveMA20: e.above_ma20 ?? null,
+      excessReturn: e.excess_return ?? null,
+      warning: e.warning,
+      dataStatus: e.data_status || "ok",
     }))
   }
+
+  const formatNumber = (value: number | null | undefined, digits = 1) =>
+    typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "--"
+
+  const numericValue = (value: number | null | undefined, fallback: number) =>
+    typeof value === "number" && Number.isFinite(value) ? value : fallback
+  const finiteNumber = (value: number | null | undefined): value is number =>
+    typeof value === "number" && Number.isFinite(value)
 
   // 筛选和排序
   let filteredEtfs = etfData.filter((etf) => {
@@ -78,9 +87,9 @@ export function EtfScreenerPage() {
       selectedCategory === "全部" || etf.category === selectedCategory
 
     let matchFilters = true
-    if (filters.minPe) matchFilters = matchFilters && etf.pe >= parseFloat(filters.minPe)
-    if (filters.maxPe) matchFilters = matchFilters && etf.pe <= parseFloat(filters.maxPe)
-    if (filters.minSize) matchFilters = matchFilters && etf.size >= parseFloat(filters.minSize)
+    if (filters.minPe) matchFilters = matchFilters && typeof etf.pe === "number" && etf.pe >= parseFloat(filters.minPe)
+    if (filters.maxPe) matchFilters = matchFilters && typeof etf.pe === "number" && etf.pe <= parseFloat(filters.maxPe)
+    if (filters.minSize) matchFilters = matchFilters && typeof etf.size === "number" && etf.size >= parseFloat(filters.minSize)
 
     return matchSearch && matchCategory && matchFilters
   })
@@ -90,36 +99,42 @@ export function EtfScreenerPage() {
     const [field, order] = sortBy.split("-")
     const multiplier = order === "desc" ? -1 : 1
 
-    if (field === "change") return (a.change - b.change) * multiplier
-    if (field === "size") return (a.size - b.size) * multiplier
-    if (field === "volume") return (a.volume - b.volume) * multiplier
-    if (field === "pe") return (a.pe - b.pe) * multiplier
-    if (field === "sharpe") return ((a.sharpe || 0) - (b.sharpe || 0)) * multiplier
+    if (field === "change") return (numericValue(a.change, -Infinity) - numericValue(b.change, -Infinity)) * multiplier
+    if (field === "size") return (numericValue(a.size, -Infinity) - numericValue(b.size, -Infinity)) * multiplier
+    if (field === "volume") return (numericValue(a.volume, -Infinity) - numericValue(b.volume, -Infinity)) * multiplier
+    if (field === "sharpe") return (numericValue(a.sharpe, -Infinity) - numericValue(b.sharpe, -Infinity)) * multiplier
     return 0
   })
 
+  const sharpeValues = filteredEtfs.map((e) => e.sharpe).filter((v) => typeof v === "number")
+  const sizeValues = filteredEtfs.map((e) => e.size).filter((v) => typeof v === "number")
+
   const stats = {
     total: filteredEtfs.length,
-    avgPe: (filteredEtfs.reduce((sum, e) => sum + e.pe, 0) / filteredEtfs.length || 0).toFixed(1),
-    avgSharpe: (filteredEtfs.reduce((sum, e) => sum + (e.sharpe || 0), 0) / filteredEtfs.length || 0).toFixed(2),
-    totalSize: (filteredEtfs.reduce((sum, e) => sum + e.size, 0)).toFixed(0),
-    upCount: filteredEtfs.filter((e) => e.change > 0).length,
-    aboveMA20: (filteredEtfs.filter((e) => (e.aboveMA20 || 0) > 0.5).length),
+    avgSharpe: sharpeValues.length ? (sharpeValues.reduce((sum, v) => sum + v, 0) / sharpeValues.length).toFixed(2) : "--",
+    totalSize: sizeValues.length ? sizeValues.reduce((sum, v) => sum + v, 0).toFixed(0) : "--",
+    upCount: filteredEtfs.filter((e) => typeof e.change === "number" && e.change > 0).length,
+    aboveMA20: (filteredEtfs.filter((e) => e.aboveMA20 === 1).length),
   }
 
   // 准备 TOP 10 评分柱状图数据
-  const top10Data = filteredEtfs.slice(0, 10).map((etf) => ({
+  const rankedBySharpe = filteredEtfs.filter((etf) => finiteNumber(etf.sharpe))
+  const top10Data = rankedBySharpe.slice(0, 10).map((etf) => ({
     name: etf.name,
-    评分: etf.sharpe ? Math.round(etf.sharpe * 20 + 50) : 60,
+    评分: Math.max(0, Math.min(100, Math.round(etf.sharpe * 20 + 50))),
   }))
 
   // 准备热力图数据
   const heatmapData: Array<{ row: string; col: string; value: number; label?: string }> = []
   categories.slice(1).forEach((cat) => {
     const catEtfs = filteredEtfs.filter((e) => e.category === cat)
-    const avgChange = catEtfs.reduce((sum, e) => sum + e.change, 0) / (catEtfs.length || 1)
-    heatmapData.push({ row: cat, col: "涨跌幅", value: avgChange, label: `${avgChange.toFixed(1)}%` })
+    const changes = catEtfs.map((e) => e.change).filter((v) => typeof v === "number")
+    if (changes.length > 0) {
+      const avgChange = changes.reduce((sum, v) => sum + v, 0) / changes.length
+      heatmapData.push({ row: cat, col: "涨跌幅", value: avgChange, label: `${avgChange.toFixed(1)}%` })
+    }
   })
+  const heatmapRows = [...new Set(heatmapData.map((item) => item.row))]
 
   // 导出 CSV
   const handleExportCSV = () => {
@@ -129,11 +144,11 @@ export function EtfScreenerPage() {
         e.code,
         e.name,
         e.category,
-        e.pe.toFixed(1),
-        e.size.toFixed(1),
-        e.change.toFixed(2),
-        e.volume.toFixed(1),
-        (e.sharpe || 0).toFixed(2),
+        formatNumber(e.pe, 1),
+        formatNumber(e.size, 1),
+        formatNumber(e.change, 2),
+        formatNumber(e.volume, 1),
+        formatNumber(e.sharpe, 2),
       ]),
     ]
       .map((row) => row.join(","))
@@ -159,6 +174,22 @@ export function EtfScreenerPage() {
       </div>
 
       {/* 统计概览 */}
+      {etfResponse?.warning && (
+        <Card className="border-yellow-500/50 bg-yellow-500/10">
+          <CardContent className="flex items-start gap-2 pt-4 text-sm text-yellow-700 dark:text-yellow-300">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{etfResponse.warning}</span>
+          </CardContent>
+        </Card>
+      )}
+
+      <Card className="border-blue-500/40 bg-blue-500/5">
+        <CardContent className="flex items-start gap-2 pt-4 text-sm text-muted-foreground">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
+          <span>本页只展示后端可获取或可由行情计算的真实指标；PE、基金规模等暂未取得可靠来源时显示为 --。</span>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 md:grid-cols-5">
         <Card>
           <CardHeader className="pb-2">
@@ -199,7 +230,7 @@ export function EtfScreenerPage() {
           <CardContent>
             <div className="text-2xl font-bold text-up">{stats.upCount}</div>
             <p className="text-xs text-muted-foreground">
-              占比 {((stats.upCount / stats.total) * 100).toFixed(0)}%
+              占比 {stats.total ? ((stats.upCount / stats.total) * 100).toFixed(0) : "--"}%
             </p>
           </CardContent>
         </Card>
@@ -211,7 +242,7 @@ export function EtfScreenerPage() {
           <CardContent>
             <div className="text-2xl font-bold text-up">{stats.aboveMA20}</div>
             <p className="text-xs text-muted-foreground">
-              占比 {((stats.aboveMA20 / stats.total) * 100).toFixed(0)}%
+              占比 {stats.total ? ((stats.aboveMA20 / stats.total) * 100).toFixed(0) : "--"}%
             </p>
           </CardContent>
         </Card>
@@ -252,7 +283,7 @@ export function EtfScreenerPage() {
         {/* 分类动量热力图 */}
         <Heatmap
           data={heatmapData}
-          rowLabels={categories.slice(1)}
+          rowLabels={heatmapRows}
           colLabels={["涨跌幅"]}
           title="分类动量热力图"
           description="各分类涨跌幅分布"
@@ -385,23 +416,23 @@ export function EtfScreenerPage() {
                   <TableCell>
                     <Badge variant="outline">{etf.category}</Badge>
                   </TableCell>
-                  <TableCell className="text-right">{etf.pe.toFixed(1)}</TableCell>
-                  <TableCell className="text-right">{etf.size.toFixed(1)}</TableCell>
-                  <TableCell className={`text-right ${etf.change >= 0 ? "text-up" : "text-down"}`}>
-                    {etf.change >= 0 ? "+" : ""}{etf.change}%
+                  <TableCell className="text-right">{formatNumber(etf.pe, 1)}</TableCell>
+                  <TableCell className="text-right">{formatNumber(etf.size, 1)}</TableCell>
+                  <TableCell className={`text-right ${(etf.change ?? 0) >= 0 ? "text-up" : "text-down"}`}>
+                    {typeof etf.change === "number" ? `${etf.change >= 0 ? "+" : ""}${etf.change.toFixed(2)}%` : "--"}
                   </TableCell>
                   <TableCell className="text-right">
                     <Badge variant={(etf.sharpe || 0) > 1 ? "default" : "outline"}>
-                      {(etf.sharpe || 0).toFixed(2)}
+                      {formatNumber(etf.sharpe, 2)}
                     </Badge>
                   </TableCell>
                   <TableCell className="text-right">
-                    <Badge variant={(etf.aboveMA20 || 0) > 0.5 ? "default" : "outline"}>
-                  {((etf.aboveMA20 || 0) * 100).toFixed(0)}%
+                    <Badge variant={etf.aboveMA20 === 1 ? "default" : "outline"}>
+                      {typeof etf.aboveMA20 === "number" ? `${(etf.aboveMA20 * 100).toFixed(0)}%` : "--"}
                     </Badge>
                   </TableCell>
-                  <TableCell className={`text-right ${(etf.excessReturn || 0) >= 0 ? "text-up" : "text-down"}`}>
-                    {(etf.excessReturn || 0) >= 0 ? "+" : ""}{(etf.excessReturn || 0).toFixed(1)}%
+                  <TableCell className={`text-right ${(etf.excessReturn ?? 0) >= 0 ? "text-up" : "text-down"}`}>
+                    {typeof etf.excessReturn === "number" ? `${etf.excessReturn >= 0 ? "+" : ""}${etf.excessReturn.toFixed(1)}%` : "--"}
                   </TableCell>
                   <TableCell className="text-right">
                     <Button variant="ghost" size="sm">
@@ -426,8 +457,10 @@ export function EtfScreenerPage() {
           <div className="grid gap-4 md:grid-cols-4">
             {categories.slice(1).map((cat) => {
               const catEtfs = filteredEtfs.filter((e) => e.category === cat)
-              const avgChange = catEtfs.reduce((sum, e) => sum + e.change, 0) / (catEtfs.length || 1)
-              const avgSharpe = catEtfs.reduce((sum, e) => sum + (e.sharpe || 0), 0) / (catEtfs.length || 1)
+              const catChanges = catEtfs.map((e) => e.change).filter((v) => typeof v === "number")
+              const catSharpes = catEtfs.map((e) => e.sharpe).filter((v) => typeof v === "number")
+              const avgChange = catChanges.length ? catChanges.reduce((sum, v) => sum + v, 0) / catChanges.length : null
+              const avgSharpe = catSharpes.length ? catSharpes.reduce((sum, v) => sum + v, 0) / catSharpes.length : null
               return (
                 <Card key={cat}>
                   <CardContent className="pt-4">
@@ -435,11 +468,11 @@ export function EtfScreenerPage() {
                       <span className="font-medium">{cat}</span>
                       <Badge variant="outline">{catEtfs.length}</Badge>
                     </div>
-                    <div className={`text-sm ${avgChange >= 0 ? "text-up" : "text-down"}`}>
-                      平均涨跌: {avgChange >= 0 ? "+" : ""}{avgChange.toFixed(1)}%
+                    <div className={`text-sm ${avgChange == null ? "text-muted-foreground" : avgChange >= 0 ? "text-up" : "text-down"}`}>
+                      平均涨跌: {avgChange == null ? "--" : `${avgChange >= 0 ? "+" : ""}${avgChange.toFixed(1)}%`}
                     </div>
                     <div className="text-xs text-muted-foreground">
-                      夏普: {avgSharpe.toFixed(2)}
+                      夏普: {avgSharpe == null ? "--" : avgSharpe.toFixed(2)}
                     </div>
                   </CardContent>
                 </Card>

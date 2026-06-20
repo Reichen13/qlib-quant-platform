@@ -21,7 +21,7 @@ import { InstructionsPanel } from "@/components/features/instructions-panel"
 interface SectorItem {
   name: string
   change: number
-  volume: number
+  volume: number | null
   stocks: number
   factorScore?: number
   advice?: string
@@ -45,7 +45,7 @@ export function HotSectorsPage() {
     enabled: !!expandedSector,
   })
 
-  // 转换后端数据格式或使用模拟数据
+  // 转换后端真实数据；后端没有返回的指标保持为空
   let sectors: SectorItem[] = []
   let apiError = false
 
@@ -53,9 +53,9 @@ export function HotSectorsPage() {
     sectors = sectorData.sectors.map((s: any) => ({
       name: s.industry,
       change: s.change_pct,
-      volume: 0, // API 不返回成交额
+      volume: null,
       stocks: s.stock_count,
-      factorScore: Math.round(50 + s.change_pct * 5),
+      factorScore: undefined,
       advice: s.change_pct > 2 ? "强势" : s.change_pct > 0 ? "关注" : s.change_pct > -2 ? "观望" : "规避",
     }))
   } else if (isError) {
@@ -182,9 +182,9 @@ export function HotSectorsPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {sectors.reduce((sum, s) => sum + s.volume, 0).toFixed(0)}亿
+              --
             </div>
-            <p className="text-xs text-muted-foreground">全市场成交</p>
+            <p className="text-xs text-muted-foreground">暂无可靠成交额</p>
           </CardContent>
         </Card>
 
@@ -273,7 +273,9 @@ export function HotSectorsPage() {
                       }`}>
                         {sector.change >= 0 ? "+" : ""}{sector.change.toFixed(2)}%
                       </TableCell>
-                      <TableCell className="text-right">{sector.volume.toFixed(1)}</TableCell>
+                      <TableCell className="text-right">
+                        {typeof sector.volume === "number" ? sector.volume.toFixed(1) : "--"}
+                      </TableCell>
                       <TableCell className="text-right">{sector.stocks}</TableCell>
                       <TableCell className="text-right">
                         {sector.factorScore !== undefined ? (

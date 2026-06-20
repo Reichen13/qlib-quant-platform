@@ -45,7 +45,7 @@ def get_stock_name_from_file(code: str) -> str:
         return code
 
 
-def calc_correlation_from_qlib(code1: str, code2: str, days: int = 60) -> float:
+def calc_correlation_from_qlib(code1: str, code2: str, days: int = 60) -> float | None:
     """使用 Qlib 数据计算两只股票的相关性"""
     try:
         import qlib
@@ -138,8 +138,19 @@ def _compute_pair_metrics(pair_def: dict) -> dict:
 
     correlation = calc_correlation_from_qlib(code1, code2)
     zscore = calc_zscore_from_qlib(code1, code2)
-    if zscore is None:
-        zscore = 0.0
+    if correlation is None or zscore is None:
+        result = {
+            **pair_def,
+            "correlation": None,
+            "pValue": None,
+            "zScore": None,
+            "signal": "数据不足",
+            "status": "不可用",
+            "data_status": "unavailable",
+            "warning": "Qlib 数据不足，未生成模拟配对指标。",
+        }
+        _pair_cache[ck] = (now, result)
+        return result
 
     # 信号判定
     if zscore > 2:
@@ -181,7 +192,7 @@ def calc_spread_data(code1: str, code2: str, days: int = 60) -> List[Dict]:
         df2 = D.features([qlib_code2], ["$close"], start_time=start_date, end_time=end_date)
 
         if df1.empty or df2.empty:
-            return _mock_spread_data()
+            return []
 
         p1 = df1.xs(qlib_code1, level=1)["$close"]
         p2 = df2.xs(qlib_code2, level=1)["$close"]
@@ -190,7 +201,7 @@ def calc_spread_data(code1: str, code2: str, days: int = 60) -> List[Dict]:
         p1, p2 = p1.loc[common], p2.loc[common]
 
         if len(p1) < 2:
-            return _mock_spread_data()
+            return []
 
         beta = np.cov(p1, p2)[0, 1] / np.var(p2) if np.var(p2) > 0 else 1.0
         spread = p1 - beta * p2
@@ -209,29 +220,11 @@ def calc_spread_data(code1: str, code2: str, days: int = 60) -> List[Dict]:
                     "lower": -2.0,
                 })
 
-        return result[-60:] if len(result) >= 10 else _mock_spread_data()
+        return result[-60:] if len(result) >= 10 else []
 
     except Exception as e:
         logger.warning(f"计算价差数据失败 {code1}/{code2}: {e}")
-        return _mock_spread_data()
-
-
-def _mock_spread_data() -> List[Dict]:
-    """模拟价差数据（最后降级方案）"""
-    import random
-    result = []
-    base_date = datetime.now() - timedelta(days=60)
-    spread = 0.5
-    for i in range(60):
-        spread += random.uniform(-0.3, 0.3)
-        spread = max(-3, min(3, spread))
-        result.append({
-            "date": (base_date + timedelta(days=i)).strftime("%Y-%m-%d"),
-            "spread": round(spread, 2),
-            "upper": 2.0,
-            "lower": -2.0,
-        })
-    return result
+        return []
 
 
 @router.get("/list")
@@ -249,7 +242,16 @@ async def list_pairs():
                 updated_pairs.append(metrics)
             except Exception as e:
                 logger.warning(f"跳过配对 {pair_def['pair']}: {e}")
-                updated_pairs.append({**pair_def, "correlation": 0, "pValue": 1.0, "zScore": 0.0, "signal": "数据异常", "status": "不可用"})
+                updated_pairs.append({
+                    **pair_def,
+                    "correlation": None,
+                    "pValue": None,
+                    "zScore": None,
+                    "signal": "数据异常",
+                    "status": "不可用",
+                    "data_status": "unavailable",
+                    "warning": "Qlib 数据不足，未生成模拟配对指标。",
+                })
 
         return {
             "pairs": updated_pairs,
@@ -277,6 +279,8 @@ async def get_spread(
             "stock2": stock2,
             "pair": f"{get_stock_name_from_file(stock1)} / {get_stock_name_from_file(stock2)}",
             "data": spread_data,
+            "data_status": "ok" if spread_data else "unavailable",
+            "warning": None if spread_data else "Qlib 价差数据不足，未生成模拟曲线。",
         }
 
     except Exception as e:
@@ -293,10 +297,23 @@ async def analyze_pair(
     try:
         correlation = calc_correlation_from_qlib(stock1, stock2)
         zscore = calc_zscore_from_qlib(stock1, stock2)
-        if zscore is None:
-            zscore = 0.0
 
         spread_data = calc_spread_data(stock1, stock2)
+
+        if correlation is None or zscore is None:
+            return {
+                "pair": f"{get_stock_name_from_file(stock1)} / {get_stock_name_from_file(stock2)}",
+                "stock1": stock1,
+                "stock2": stock2,
+                "correlation": None,
+                "pValue": None,
+                "zScore": None,
+                "signal": "数据不足",
+                "status": "不可用",
+                "spread_data": spread_data,
+                "data_status": "unavailable",
+                "warning": "Qlib 数据不足，未生成模拟配对分析。",
+            }
 
         if zscore > 2:
             signal, status = "做空价差", "开仓机会"
@@ -319,6 +336,8 @@ async def analyze_pair(
             "signal": signal,
             "status": status,
             "spread_data": spread_data,
+            "data_status": "ok" if spread_data else "partial",
+            "warning": None if spread_data else "Qlib 价差数据不足，未生成模拟曲线。",
         }
 
     except Exception as e:

@@ -5,6 +5,7 @@ Qlib 量化平台 - FastAPI 后端
 
 import os
 import sys
+import threading
 from pathlib import Path
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -61,6 +62,28 @@ def init_qlib():
         return False
 
 
+def _preload_industry_mapping_background():
+    """后台预热行业映射，避免 Baostock 网络请求阻塞服务启动。"""
+    def worker():
+        try:
+            from qlib.data import D
+            instruments = D.instruments("csi300")
+            codes = D.list_instruments(instruments, as_list=True)
+            from core.factor_utils import load_industry_mapping
+            load_industry_mapping(codes)
+            logger.info(f"✅ 行业映射后台预加载完成: {len(codes)} 只 CSI300 成分股")
+        except Exception as e:
+            logger.warning(f"⚠️ 行业映射后台预加载跳过（非致命）: {e}")
+
+    thread = threading.Thread(
+        target=worker,
+        name="industry-mapping-preload",
+        daemon=True,
+    )
+    thread.start()
+    logger.info("行业映射预加载已转入后台，不阻塞服务启动")
+
+
 
 
 # ── 应用生命周期 ──
@@ -112,16 +135,8 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"⚠️ 数据库初始化跳过（非致命）: {e}")
 
-    # ── 预加载行业映射（避免首次因子分析请求耗时 16 秒）──
-    try:
-        from qlib.data import D
-        instruments = D.instruments("csi300")
-        codes = D.list_instruments(instruments, as_list=True)
-        from core.factor_utils import load_industry_mapping
-        load_industry_mapping(codes)
-        logger.info(f"✅ 行业映射预加载完成: {len(codes)} 只 CSI300 成分股")
-    except Exception as e:
-        logger.warning(f"⚠️ 行业映射预加载跳过（非致命）: {e}")
+    # ── 预加载行业映射（后台执行，避免 Baostock 慢请求阻塞健康检查）──
+    _preload_industry_mapping_background()
 
     yield
 

@@ -248,9 +248,23 @@ class ETFInfo(BaseModel):
     """ETF 信息"""
     code: str
     name: str
+    type: str = "其他"
     price: float
     change_pct: float
     volume: float
+    amount: Optional[float] = None
+    change_5d: Optional[float] = None
+    change_10d: Optional[float] = None
+    change_20d: Optional[float] = None
+    sharpe: Optional[float] = None
+    above_ma20: Optional[float] = None
+    volatility: Optional[float] = None
+    momentum_score: Optional[float] = None
+    pe: Optional[float] = None
+    size: Optional[float] = None
+    excess_return: Optional[float] = None
+    data_status: str = "ok"
+    warning: Optional[str] = None
     signal: str  # buy, hold, sell
 
 
@@ -260,6 +274,7 @@ class ETFSignalResponse(BaseModel):
     etfs: List[ETFInfo]
     top_buy: List[str]
     top_sell: List[str]
+    warning: Optional[str] = None
 
 
 # ── 数据状态模型 ──

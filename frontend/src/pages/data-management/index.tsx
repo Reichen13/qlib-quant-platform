@@ -3,6 +3,7 @@ import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Input } from "@/components/ui/input"
 import {
   Table,
   TableBody,
@@ -12,7 +13,7 @@ import {
   TableRow,
 } from "@/components/ui/table"
 import { Database, RefreshCw, CheckCircle, XCircle, Clock, Loader2, AlertCircle } from "lucide-react"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { UpdateProgress } from "@/components/features/update-progress"
 
@@ -20,6 +21,8 @@ export function DataManagementPage() {
   const [isUpdating, setIsUpdating] = useState(false)
   const [updateSteps, setUpdateSteps] = useState<any[]>([])
   const [overallProgress, setOverallProgress] = useState(0)
+  const [adminApiKey, setAdminApiKey] = useState(() => localStorage.getItem("qlib-admin-api-key") || "")
+  const queryClient = useQueryClient()
 
   // 获取数据状态
   const { data: dataStatus, isLoading, refetch } = useQuery({
@@ -39,6 +42,15 @@ export function DataManagementPage() {
     refetch()
   }
 
+  const handleAdminKeyChange = (value: string) => {
+    setAdminApiKey(value)
+    if (value) {
+      localStorage.setItem("qlib-admin-api-key", value)
+    } else {
+      localStorage.removeItem("qlib-admin-api-key")
+    }
+  }
+
   const handleUpdate = async (type: "stocks" | "etf" | "index" | "all") => {
     setIsUpdating(true)
     setUpdateSteps([
@@ -50,15 +62,59 @@ export function DataManagementPage() {
 
     try {
       const result = await api.data.update(type)
+      const taskId = result.task_id
       setUpdateSteps([
-        { id: "request", name: "发送更新请求", status: "completed", progress: 100, message: "更新请求已发送", startTime: new Date(Date.now() - 2000).toISOString(), endTime: new Date().toISOString() },
-        { id: "process", name: "处理数据", status: "completed", progress: 100, message: result.message || "数据处理完成", startTime: new Date(Date.now() - 1000).toISOString(), endTime: new Date().toISOString() },
-        { id: "save", name: "保存到数据库", status: "completed", progress: 100, message: "数据已保存", startTime: new Date(Date.now() - 500).toISOString(), endTime: new Date().toISOString() },
+        { id: "request", name: "发送更新请求", status: "completed", progress: 100, message: "更新任务已启动", startTime: new Date(Date.now() - 1000).toISOString(), endTime: new Date().toISOString() },
+        { id: "process", name: "处理数据", status: "running", progress: result.progress || 5, message: result.message || "正在更新 Qlib 数据", startTime: new Date().toISOString() },
+        { id: "save", name: "保存到数据库", status: "pending", progress: 0 },
       ])
+      setOverallProgress(result.progress || 5)
+
+      for (let attempt = 0; attempt < 720; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5000))
+        const progress = await api.data.updateProgress(taskId)
+        setOverallProgress(progress.progress || 30)
+
+        if (progress.status === "completed") {
+          setUpdateSteps([
+            { id: "request", name: "发送更新请求", status: "completed", progress: 100, message: "更新任务已启动", endTime: new Date().toISOString() },
+            { id: "process", name: "处理数据", status: "completed", progress: 100, message: "数据处理完成", endTime: new Date().toISOString() },
+            { id: "save", name: "保存到数据库", status: "completed", progress: 100, message: progress.message || "数据已保存到 Qlib 目录", endTime: new Date().toISOString() },
+          ])
+          setOverallProgress(100)
+          await Promise.all([
+            refetch(),
+            queryClient.invalidateQueries({ queryKey: ["data", "logs"] }),
+          ])
+          return
+        }
+
+        if (progress.status === "failed") {
+          setUpdateSteps([
+            { id: "request", name: "发送更新请求", status: "completed", progress: 100, message: "更新任务已启动", endTime: new Date().toISOString() },
+            { id: "process", name: "处理数据", status: "failed", progress: 100, message: progress.message || "数据处理失败", endTime: new Date().toISOString() },
+            { id: "save", name: "保存到数据库", status: "pending", progress: 0 },
+          ])
+          setOverallProgress(100)
+          return
+        }
+
+        setUpdateSteps((prev) => prev.map((s: any) => (
+          s.id === "process"
+            ? { ...s, status: "running" as const, progress: progress.progress || s.progress, message: progress.message || s.message }
+            : s
+        )))
+      }
+
+      setUpdateSteps((prev) => prev.map((s: any) => (
+        s.status === "running" ? { ...s, status: "failed" as const, message: "更新任务超时，请到服务器查看日志" } : s
+      )))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "更新失败"
+      setUpdateSteps((prev) => prev.map((s: any) => (
+        s.status === "running" ? { ...s, status: "failed" as const, message } : s
+      )))
       setOverallProgress(100)
-      refetch()
-    } catch {
-      setUpdateSteps((prev) => prev.map((s: any) => s.status === "running" ? { ...s, status: "error" as const, message: "更新失败" } : s))
     } finally {
       setIsUpdating(false)
     }
@@ -123,20 +179,36 @@ export function DataManagementPage() {
           ) : (
             <>
               <Database className="mr-2 h-4 w-4" />
-              全量更新
+              更新 Qlib 数据
             </>
           )}
         </Button>
         <Button variant="outline" onClick={() => handleUpdate("stocks")} disabled={isUpdating}>
           更新股票数据
         </Button>
-        <Button variant="outline" onClick={() => handleUpdate("etf")} disabled={isUpdating}>
-          更新 ETF 数据
+        <Button variant="outline" onClick={() => handleUpdate("etf")} disabled={true}>
+          ETF 更新未接入
         </Button>
-        <Button variant="outline" onClick={() => handleUpdate("index")} disabled={isUpdating}>
-          更新指数数据
+        <Button variant="outline" onClick={() => handleUpdate("index")} disabled={true}>
+          指数更新未接入
         </Button>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">服务器管理 Key</CardTitle>
+          <CardDescription>用于数据更新、回测、风险管理等受保护操作；不会用于 LLM 模型调用。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Input
+            type="password"
+            value={adminApiKey}
+            onChange={(event) => handleAdminKeyChange(event.target.value)}
+            placeholder="请输入服务器 API_KEY"
+            autoComplete="off"
+          />
+        </CardContent>
+      </Card>
 
       {/* 更新进度 */}
       {(isUpdating || overallProgress === 100) && (
@@ -144,7 +216,6 @@ export function DataManagementPage() {
           steps={updateSteps}
           overallProgress={overallProgress}
           isRunning={isUpdating}
-          onCancel={() => setIsUpdating(false)}
           onRetry={() => handleUpdate("all")}
         />
       )}
@@ -181,7 +252,7 @@ export function DataManagementPage() {
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">数据来源</span>
-                <span className="font-medium">yfinance</span>
+                <span className="font-medium">Qlib 本地数据</span>
               </div>
             </div>
           </CardContent>
@@ -215,7 +286,7 @@ export function DataManagementPage() {
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">数据来源</span>
-                <span className="font-medium">yfinance</span>
+                <span className="font-medium">Qlib 状态代理</span>
               </div>
             </div>
           </CardContent>
@@ -249,7 +320,7 @@ export function DataManagementPage() {
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">数据来源</span>
-                <span className="font-medium">yfinance</span>
+                <span className="font-medium">Qlib 状态代理</span>
               </div>
             </div>
           </CardContent>
@@ -275,21 +346,21 @@ export function DataManagementPage() {
             <TableBody>
               <TableRow>
                 <TableCell>股票行情</TableCell>
-                <TableCell>yfinance</TableCell>
+                <TableCell>Qlib cn_data</TableCell>
                 <TableCell>交易日收盘后</TableCell>
                 <TableCell>A股全市场 (3800+)</TableCell>
                 <TableCell>2020年起</TableCell>
               </TableRow>
               <TableRow>
                 <TableCell>ETF 行情</TableCell>
-                <TableCell>yfinance</TableCell>
+                <TableCell>暂未接入独立更新</TableCell>
                 <TableCell>交易日收盘后</TableCell>
                 <TableCell>全市场 ETF (300+)</TableCell>
                 <TableCell>2020年起</TableCell>
               </TableRow>
               <TableRow>
                 <TableCell>指数行情</TableCell>
-                <TableCell>yfinance</TableCell>
+                <TableCell>暂未接入独立更新</TableCell>
                 <TableCell>交易日收盘后</TableCell>
                 <TableCell>主要指数 (12个)</TableCell>
                 <TableCell>2020年起</TableCell>
@@ -350,7 +421,7 @@ export function DataManagementPage() {
           <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-0.5">
               <p className="text-sm text-muted-foreground">API 端点</p>
-              <p className="font-medium text-xs">http://localhost:8000</p>
+              <p className="font-medium text-xs">当前站点 /api</p>
             </div>
             <div className="space-y-0.5">
               <p className="text-sm text-muted-foreground">API 服务状态</p>
@@ -377,9 +448,9 @@ export function DataManagementPage() {
           <CardTitle>使用说明</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2 text-sm text-muted-foreground">
-          <p>• <strong>数据来源：</strong>yfinance（Yahoo Finance）免费数据接口</p>
+          <p>• <strong>数据来源：</strong>Qlib 本地 cn_data；当前网页更新只接入股票日线数据</p>
           <p>• <strong>更新时间：</strong>建议在交易日收盘后（15:30 之后）更新数据</p>
-          <p>• <strong>数据范围：</strong>A股全市场、全市场 ETF、主要指数</p>
+          <p>• <strong>数据范围：</strong>A股股票日线；ETF、指数暂按 Qlib 状态代理展示，尚未接入独立更新</p>
           <p>• <strong>历史数据：</strong>支持从 2020-01-01 起的历史回测</p>
           <p>• <strong>命令行更新：</strong>也可以使用 Python 脚本手动更新数据</p>
         </CardContent>

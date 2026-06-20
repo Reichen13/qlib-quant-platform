@@ -27,8 +27,9 @@ async function apiFetch(input: RequestInfo | URL, init: ApiRequestInit = {}): Pr
     }
   }
 
-  // 注入 API Key 和 Base URL（如果已配置）
-  const apiKey = localStorage.getItem("qlib-api-key")
+  // 注入服务器管理 Key 和 LLM Base URL（如果已配置）。
+  // LLM API Key 只通过相关请求体传递，避免误当作服务器管理 Key。
+  const apiKey = localStorage.getItem("qlib-admin-api-key")
   const baseUrl = localStorage.getItem("qlib-llm-base-url")
   const headers = { ...(requestInit.headers as Record<string, string> || {}) }
   if (apiKey) {
@@ -521,7 +522,7 @@ export const api = {
   // 数据管理
   data: {
     status: async () => {
-      const health = await fetch(`${API_BASE}/api/data/health`).then(r => handleResponse<any>(r))
+      const health = await fetch(`${API_BASE}/api/data/health`, { timeoutMs: 30_000 }).then(r => handleResponse<any>(r))
       const src = health.sources
       return {
         stocks: src.stocks,
@@ -530,11 +531,16 @@ export const api = {
       }
     },
     logs: () =>
-      fetch(`${API_BASE}/api/data/logs`).then(r => handleResponse<DataLogsResponse>(r)),
-    update: async (_type: "stocks" | "etf" | "index" | "all") =>
-      fetch(`${API_BASE}/api/data/health`).then(r => handleResponse<any>(r)),
-    updateProgress: (_taskId: string) =>
-      fetch(`${API_BASE}/api/data/health`).then(r => handleResponse<any>(r)),
+      fetch(`${API_BASE}/api/data/logs`, { timeoutMs: 30_000 }).then(r => handleResponse<DataLogsResponse>(r)),
+    update: async (type: "stocks" | "etf" | "index" | "all") =>
+      fetch(`${API_BASE}/api/data/update`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type }),
+        timeoutMs: 30_000,
+      }).then(r => handleResponse<DataUpdateResponse>(r)),
+    updateProgress: (taskId: string) =>
+      fetch(`${API_BASE}/api/data/update/${taskId}`).then(r => handleResponse<DataUpdateResponse>(r)),
   },
 
   // 配对交易
@@ -615,9 +621,9 @@ export const api = {
     list: () =>
       fetch(`${API_BASE}/api/index/list`).then(r => handleResponse<any>(r)),
     performance: (index: string = "hs300", days: number = 30) =>
-      fetch(`${API_BASE}/api/index/performance?index=${index}&days=${days}`).then(r => handleResponse<any>(r)),
+      fetch(`${API_BASE}/api/index/performance?index=${index}&days=${days}`, { timeoutMs: 30_000 }).then(r => handleResponse<any>(r)),
     comparison: () =>
-      fetch(`${API_BASE}/api/index/comparison`).then(r => handleResponse<any>(r)),
+      fetch(`${API_BASE}/api/index/comparison`, { timeoutMs: 30_000 }).then(r => handleResponse<any>(r)),
   },
 
   // 风险管理

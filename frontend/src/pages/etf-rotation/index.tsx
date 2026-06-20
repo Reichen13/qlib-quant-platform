@@ -9,7 +9,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { RefreshCw, Star, AlertTriangle, Loader2 } from "lucide-react"
+import { RefreshCw, Star, AlertTriangle, Loader2, AlertCircle } from "lucide-react"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { BarChart } from "@/components/charts/bar-chart"
@@ -17,7 +17,7 @@ import { RadarChart } from "@/components/charts/radar-chart"
 import { InstructionsPanel, commonInstructions } from "@/components/features/instructions-panel"
 
 export function EtfRotationPage() {
-  const { data: etfData = { etfs: [] }, isLoading } = useQuery({
+  const { data: etfData = { etfs: [] }, isLoading, error } = useQuery({
     queryKey: ["etf", "signals"],
     queryFn: () => api.etf.signals(20),
     refetchInterval: 60000, // 每分钟刷新一次
@@ -30,22 +30,42 @@ export function EtfRotationPage() {
     sell: 40,
   }
 
-  // 转换后端数据或使用模拟数据
+  const clampScore = (value: number) => Math.max(0, Math.min(100, Math.round(value)))
+
+  // 转换后端真实数据，缺失指标保持为空
   let etfSignals: any[] = []
+
+  const finiteNumber = (value: number | null | undefined): value is number =>
+    typeof value === "number" && Number.isFinite(value)
+  const formatPercent = (value: number | null | undefined) =>
+    finiteNumber(value) ? `${value >= 0 ? "+" : ""}${value.toFixed(2)}%` : "--"
 
   if (etfData.etfs && etfData.etfs.length > 0) {
     etfSignals = etfData.etfs.map((e: any) => {
-      const changePct = e.change_pct ?? 0
-      const score = e.score ?? signalToScore[e.signal] ?? 50
+      const changePct = finiteNumber(e.change_pct) ? e.change_pct : null
+      const score = finiteNumber(e.score)
+        ? e.score
+        : e.signal && signalToScore[e.signal]
+          ? signalToScore[e.signal]
+          : null
+      const volatilityScore = typeof e.volatility === "number" ? clampScore(100 - e.volatility * 100) : null
+      const volumeScore = typeof e.amount === "number" ? clampScore(Math.log10(Math.max(e.amount, 1)) * 25) : null
       return {
         name: e.name || e.code,
         code: e.code,
         score,
         signal: e.signal || "hold",
         change: changePct,
-        momentum: changePct > 2 ? "强势" : changePct < -2 ? "弱势" : "中性",
-        trendScore: Math.round(score * 0.7 + (changePct > 0 ? 10 : -10)),
-        rsiScore: Math.round(score * 0.9),
+        change5d: e.change_5d ?? null,
+        change10d: e.change_10d ?? null,
+        change20d: e.change_20d ?? changePct,
+        amount: e.amount ?? null,
+        volatility: e.volatility ?? null,
+        momentum: changePct == null ? "--" : changePct > 2 ? "强势" : changePct < -2 ? "弱势" : "中性",
+        trendScore: score == null || changePct == null ? null : clampScore(score * 0.7 + (changePct > 0 ? 10 : -10)),
+        momentumScore: typeof e.momentum_score === "number" ? clampScore(e.momentum_score * 20 + 50) : null,
+        volumeScore,
+        volatilityScore,
       }
     })
   }
@@ -54,39 +74,50 @@ export function EtfRotationPage() {
   const avoidPicks = etfSignals.filter((e) => e.signal === "sell")
 
   // 准备雷达图数据 - 取前5只ETF
-  const topEtfs = etfSignals.slice(0, 5)
+  const radarEtfs = etfSignals.filter((item: any) =>
+    finiteNumber(item.trendScore)
+    && finiteNumber(item.momentumScore)
+    && finiteNumber(item.volumeScore)
+    && finiteNumber(item.volatilityScore)
+  ).slice(0, 2)
   const radarSeries = [
     {
-      name: topEtfs[0]?.name || "ETF1",
+      name: radarEtfs[0]?.name || "暂无数据",
       data: {
-        趋势得分: topEtfs[0]?.trendScore || 80,
-        RSI修正: topEtfs[0]?.rsiScore || 75,
-        动量: topEtfs[0]?.change * 10 + 50 || 70,
-        成交量: 85,
-        波动率: 60,
+        趋势得分: radarEtfs[0]?.trendScore ?? 0,
+        动量: radarEtfs[0]?.momentumScore ?? 0,
+        成交额: radarEtfs[0]?.volumeScore ?? 0,
+        波动率: radarEtfs[0]?.volatilityScore ?? 0,
       },
       color: "var(--color-primary)",
     },
     {
-      name: topEtfs[1]?.name || "ETF2",
+      name: radarEtfs[1]?.name || "暂无数据",
       data: {
-        趋势得分: topEtfs[1]?.trendScore || 75,
-        RSI修正: topEtfs[1]?.rsiScore || 80,
-        动量: topEtfs[1]?.change * 10 + 50 || 65,
-        成交量: 70,
-        波动率: 55,
+        趋势得分: radarEtfs[1]?.trendScore ?? 0,
+        动量: radarEtfs[1]?.momentumScore ?? 0,
+        成交额: radarEtfs[1]?.volumeScore ?? 0,
+        波动率: radarEtfs[1]?.volatilityScore ?? 0,
       },
       color: "var(--color-up)",
     },
-  ]
+  ].filter((item) => item.name !== "暂无数据")
 
   // 准备动量柱状图数据 - 从真实 ETF 数据派生
-  const momentumChartData = etfSignals.slice(0, 8).map((item: any) => ({
+  const momentumChartData = etfSignals.filter((item: any) =>
+    finiteNumber(item.change5d) && finiteNumber(item.change10d) && finiteNumber(item.change20d)
+  ).slice(0, 8).map((item: any) => ({
     name: item.name,
-    "5日": +(item.change || 0).toFixed(1),
-    "10日": +((item.change || 0) * 0.8).toFixed(1),
-    "20日": +((item.change || 0) * 0.5).toFixed(1),
+    "5日": +item.change5d.toFixed(1),
+    "10日": +item.change10d.toFixed(1),
+    "20日": +item.change20d.toFixed(1),
   }))
+  const avgScore = etfSignals.length
+    ? (() => {
+        const scores = etfSignals.map((e) => e.score).filter(finiteNumber)
+        return scores.length ? (scores.reduce((sum, value) => sum + value, 0) / scores.length).toFixed(0) : "--"
+      })()
+    : "--"
 
   return (
     <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[1400px] mx-auto">
@@ -100,6 +131,24 @@ export function EtfRotationPage() {
       </div>
 
       {/* 统计概览 */}
+      {(etfData as any)?.warning && (
+        <Card className="border-yellow-500/50 bg-yellow-500/10">
+          <CardContent className="flex items-start gap-2 pt-4 text-sm text-yellow-700 dark:text-yellow-300">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{(etfData as any).warning}</span>
+          </CardContent>
+        </Card>
+      )}
+
+      {error && (
+        <Card className="border-destructive/50 bg-destructive/10">
+          <CardContent className="flex items-start gap-2 pt-4 text-sm text-destructive">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>ETF 真实行情接口暂时不可用，页面未使用模拟数据。</span>
+          </CardContent>
+        </Card>
+      )}
+
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
@@ -110,7 +159,7 @@ export function EtfRotationPage() {
               {topPicks.length}
             </div>
             <p className="text-xs text-muted-foreground">
-              占比 {((topPicks.length / etfSignals.length) * 100).toFixed(0)}%
+              占比 {etfSignals.length ? ((topPicks.length / etfSignals.length) * 100).toFixed(0) : "--"}%
             </p>
           </CardContent>
         </Card>
@@ -121,7 +170,7 @@ export function EtfRotationPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {etfSignals[0]?.score || "--"}
+              {etfSignals[0]?.score ?? "--"}
             </div>
             <p className="text-xs text-muted-foreground">
               {etfSignals[0]?.name || "--"}
@@ -135,7 +184,7 @@ export function EtfRotationPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {(etfSignals.reduce((sum, e) => sum + (e.score || 50), 0) / etfSignals.length).toFixed(0)}
+              {avgScore}
             </div>
             <p className="text-xs text-muted-foreground">市场整体热度</p>
           </CardContent>
@@ -195,7 +244,7 @@ export function EtfRotationPage() {
                     <div className="space-y-0.5">
                       <span className="text-muted-foreground">涨跌幅</span>
                       <div className={`font-medium ${etf.change >= 0 ? "text-up" : "text-down"}`}>
-                        {etf.change >= 0 ? "+" : ""}{etf.change}%
+                        {formatPercent(etf.change)}
                       </div>
                     </div>
                     <div className="space-y-0.5">
@@ -217,7 +266,7 @@ export function EtfRotationPage() {
         {/* 多维度雷达图 */}
         <RadarChart
           series={radarSeries}
-          dimensions={["趋势得分", "RSI修正", "动量", "成交量", "波动率"]}
+          dimensions={["趋势得分", "动量", "成交额", "波动率"]}
           height={320}
           title="Top ETF 多维度对比"
           description="综合技术因子评分对比"
@@ -230,7 +279,7 @@ export function EtfRotationPage() {
         <CardHeader>
           <CardTitle>ETF 轮动评分</CardTitle>
           <CardDescription>
-            综合技术指标 (70%) + RSI修正 (30%) 计算得出
+            基于真实行情计算的风险调整动量、趋势与成交额指标
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -248,13 +297,20 @@ export function EtfRotationPage() {
                   <TableHead className="text-right">综合评分</TableHead>
                   <TableHead>信号</TableHead>
                   <TableHead className="text-right">趋势得分</TableHead>
-                  <TableHead className="text-right">RSI修正</TableHead>
+                  <TableHead className="text-right">成交额(亿)</TableHead>
                   <TableHead className="text-right">涨跌幅</TableHead>
                   <TableHead>动量</TableHead>
                   <TableHead className="text-right">操作</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
+                {etfSignals.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
+                      暂无可靠 ETF 行情数据，未生成模拟轮动结果。
+                    </TableCell>
+                  </TableRow>
+                )}
                 {etfSignals.map((etf, index) => (
                   <TableRow key={etf.code}>
                     <TableCell className="font-medium">
@@ -271,7 +327,7 @@ export function EtfRotationPage() {
                       <Badge
                         variant={etf.score >= 80 ? "default" : etf.score >= 60 ? "secondary" : "outline"}
                       >
-                        {etf.score}
+                        {etf.score ?? "--"}
                       </Badge>
                     </TableCell>
                     <TableCell>
@@ -290,13 +346,13 @@ export function EtfRotationPage() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right text-sm">
-                      {etf.trendScore || "--"}
+                      {etf.trendScore ?? "--"}
                     </TableCell>
                     <TableCell className="text-right text-sm">
-                      {etf.rsiScore || "--"}
+                      {typeof etf.amount === "number" ? etf.amount.toFixed(1) : "--"}
                     </TableCell>
-                    <TableCell className={`text-right ${etf.change >= 0 ? "text-up" : "text-down"}`}>
-                      {etf.change >= 0 ? "+" : ""}{etf.change}%
+                    <TableCell className={`text-right ${typeof etf.change !== "number" ? "text-muted-foreground" : etf.change >= 0 ? "text-up" : "text-down"}`}>
+                      {formatPercent(etf.change)}
                     </TableCell>
                     <TableCell className={
                       etf.momentum === "强势" ? "text-up" :

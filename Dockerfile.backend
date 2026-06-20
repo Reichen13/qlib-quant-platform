@@ -19,6 +19,7 @@ RUN pip install --no-cache-dir baostock scikit-learn
 # Copy application code
 COPY backend/ ./backend/
 COPY stock_names.py .
+COPY update_cn_data.py .
 
 # Qlib data directory (bind-mounted at runtime)
 RUN mkdir -p /root/.qlib/qlib_data

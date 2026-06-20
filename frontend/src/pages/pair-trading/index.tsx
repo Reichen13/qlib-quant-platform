@@ -11,7 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
-import { Link2, Loader2, Activity } from "lucide-react"
+import { Link2, Loader2, Activity, AlertCircle } from "lucide-react"
 import { LineChartComponent } from "@/components/charts/line-chart"
 import { InstructionsPanel, commonInstructions } from "@/components/features/instructions-panel"
 import { useQuery } from "@tanstack/react-query"
@@ -36,6 +36,8 @@ export function PairTradingPage() {
 
   // 从响应中提取数据数组
   const spreadData = spreadResponse?.data || []
+  const pairWarning = pairsData?.pairs?.find((p: any) => p.warning)?.warning
+  const spreadWarning = spreadResponse?.warning
 
   // 转换后端数据
   let pairs: any[] = []
@@ -50,8 +52,16 @@ export function PairTradingPage() {
     : pairs.filter((p: any) => p.category === selectedCategory)
 
   const categories = ["全部", ...Array.from(new Set(pairs.map((p: any) => p.category)))]
+  const availablePairs = pairs.filter((p: any) => p.data_status !== "unavailable")
+  const avgCorrelation = availablePairs.length > 0
+    ? (availablePairs.reduce((sum: number, p: any) => sum + (p.correlation ?? 0), 0) / availablePairs.length).toFixed(2)
+    : "--"
 
-  const getZScoreColor = (zScore: number) => {
+  const formatNumber = (value: number | null | undefined, digits = 2) =>
+    typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "--"
+
+  const getZScoreColor = (zScore: number | null | undefined) => {
+    if (typeof zScore !== "number") return "text-muted-foreground"
     if (zScore > 2) return "text-down"
     if (zScore < -2) return "text-up"
     return "text-foreground"
@@ -63,7 +73,8 @@ export function PairTradingPage() {
     return "outline"
   }
 
-  const getCointegrationBadge = (pValue: number) => {
+  const getCointegrationBadge = (pValue: number | null | undefined) => {
+    if (typeof pValue !== "number") return <Badge variant="outline">无可靠数据</Badge>
     if (pValue < 0.01) return <Badge variant="default">强协整</Badge>
     if (pValue < 0.05) return <Badge className="bg-blue-600">协整</Badge>
     return <Badge variant="outline">弱协整</Badge>
@@ -80,6 +91,15 @@ export function PairTradingPage() {
         <p className="text-muted-foreground">统计套利策略 - 协整关系与价差分析</p>
       </div>
 
+      {(pairWarning || spreadWarning) && (
+        <Card className="border-yellow-500/50 bg-yellow-500/10">
+          <CardContent className="flex items-start gap-2 pt-4 text-sm text-yellow-700 dark:text-yellow-300">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{spreadWarning || pairWarning}</span>
+          </CardContent>
+        </Card>
+      )}
+
       {/* 统计概览 */}
       <div className="grid gap-4 md:grid-cols-5">
         <Card>
@@ -87,8 +107,8 @@ export function PairTradingPage() {
             <CardTitle className="text-sm font-medium">有效配对</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{pairs.length}</div>
-            <p className="text-xs text-muted-foreground">协整关系稳定</p>
+            <div className="text-2xl font-bold">{availablePairs.length}</div>
+            <p className="text-xs text-muted-foreground">有可靠指标</p>
           </CardContent>
         </Card>
 
@@ -98,7 +118,7 @@ export function PairTradingPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {(pairs.reduce((sum: number, p: any) => sum + p.correlation, 0) / pairs.length).toFixed(2)}
+              {avgCorrelation}
             </div>
             <p className="text-xs text-muted-foreground">价格相关系数</p>
           </CardContent>
@@ -132,7 +152,7 @@ export function PairTradingPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              {pairs.filter((p: any) => p.pValue < 0.01).length}
+              {availablePairs.filter((p: any) => typeof p.pValue === "number" && p.pValue < 0.01).length}
             </div>
             <p className="text-xs text-muted-foreground">p &lt; 0.01</p>
           </CardContent>
@@ -202,13 +222,13 @@ export function PairTradingPage() {
                           <Badge variant="outline">{pair.category}</Badge>
                         </TableCell>
                         <TableCell className="text-right">
-                          {pair.correlation.toFixed(2)}
+                          {formatNumber(pair.correlation)}
                         </TableCell>
                         <TableCell className="text-right">
                           {getCointegrationBadge(pair.pValue)}
                         </TableCell>
                         <TableCell className={`text-right font-medium ${getZScoreColor(pair.zScore)}`}>
-                          {pair.zScore.toFixed(2)}
+                          {formatNumber(pair.zScore)}
                         </TableCell>
                         <TableCell>
                           <Badge variant={getSignalVariant(pair.signal) as any}>
@@ -261,16 +281,16 @@ export function PairTradingPage() {
               <div className="pt-4 border-t space-y-3">
                 <div className="flex justify-between">
                   <span className="text-sm text-muted-foreground">相关性</span>
-                  <span className="font-medium">{selectedPair.correlation.toFixed(2)}</span>
+                  <span className="font-medium">{formatNumber(selectedPair.correlation)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-sm text-muted-foreground">协整 p-value</span>
-                  <span className="font-medium">{selectedPair.pValue.toFixed(3)}</span>
+                  <span className="font-medium">{formatNumber(selectedPair.pValue, 3)}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-sm text-muted-foreground">Z-Score</span>
                   <span className={`font-medium ${getZScoreColor(selectedPair.zScore)}`}>
-                    {selectedPair.zScore.toFixed(2)}
+                    {formatNumber(selectedPair.zScore)}
                   </span>
                 </div>
                 <div className="flex justify-between">
@@ -305,6 +325,11 @@ export function PairTradingPage() {
                       当前价差处于正常范围，建议等待更好时机
                     </p>
                   )}
+                  {selectedPair.status === "不可用" && (
+                    <p className="text-muted-foreground">
+                      当前配对缺少可靠行情或价差数据，暂不生成交易建议。
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -334,16 +359,22 @@ export function PairTradingPage() {
               <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
             </div>
           ) : (
-            <LineChartComponent
-              data={spreadData}
-              lines={[
-                { dataKey: "spread", name: "价差", color: "var(--color-primary)" },
-                { dataKey: "upper", name: "上界 (+2σ)", color: "var(--color-down)" },
-                { dataKey: "lower", name: "下界 (-2σ)", color: "var(--color-up)" },
-              ]}
-              xKey="date"
-              height={300}
-            />
+            spreadData.length > 0 ? (
+              <LineChartComponent
+                data={spreadData}
+                lines={[
+                  { dataKey: "spread", name: "价差", color: "var(--color-primary)" },
+                  { dataKey: "upper", name: "上界 (+2σ)", color: "var(--color-down)" },
+                  { dataKey: "lower", name: "下界 (-2σ)", color: "var(--color-up)" },
+                ]}
+                xKey="date"
+                height={300}
+              />
+            ) : (
+              <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
+                暂无可靠价差数据
+              </div>
+            )
           )}
         </CardContent>
       </Card>

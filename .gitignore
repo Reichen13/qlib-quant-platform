@@ -40,6 +40,11 @@ Thumbs.db
 *.log
 logs/
 
+# Local automation artifacts
+.playwright-mcp/
+server_merge_work/
+homepage-after-frontend-deploy.png
+
 # CSV data exports
 *.csv
 
