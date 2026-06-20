@@ -116,6 +116,12 @@ export interface MeanReversionParams {
   activeTab: "overbought" | "oversold" | "watch"
 }
 
+export interface DlModelsParams {
+  trainingModelId: string | null
+  trainingTaskId: string | null
+  trainResult: unknown | null
+}
+
 interface AppState {
   // 侧边栏状态
   sidebarOpen: boolean
@@ -174,6 +180,9 @@ interface AppState {
 
   meanReversionParams: MeanReversionParams
   setMeanReversionParams: (params: Partial<MeanReversionParams>) => void
+
+  dlModelsParams: DlModelsParams
+  setDlModelsParams: (params: Partial<DlModelsParams>) => void
 
   // ── LLM 设置页面状态 ──
   llmApiKey: string
@@ -295,6 +304,14 @@ function createDefaultMeanReversionParams(): MeanReversionParams {
   }
 }
 
+function createDefaultDlModelsParams(): DlModelsParams {
+  return {
+    trainingModelId: null,
+    trainingTaskId: null,
+    trainResult: null,
+  }
+}
+
 const DEFAULT_RISK_CODES = ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS", "601012.SS", "300750.SZ", "000002.SZ"]
 
 const DEFAULT_PORTFOLIO_CODES = "600519.SS 000858.SZ 601318.SS 000333.SZ 600036.SS"
@@ -399,6 +416,11 @@ export const useAppStore = create<AppState>()(
         meanReversionParams: { ...state.meanReversionParams, ...params },
       })),
 
+      dlModelsParams: createDefaultDlModelsParams(),
+      setDlModelsParams: (params) => set((state) => ({
+        dlModelsParams: { ...state.dlModelsParams, ...params },
+      })),
+
       llmApiKey: "",
       llmBaseUrl: "",
       llmQuickModel: "",
@@ -457,6 +479,10 @@ export const useAppStore = create<AppState>()(
             ...current.meanReversionParams,
             ...persistedState?.meanReversionParams,
           },
+          dlModelsParams: {
+            ...current.dlModelsParams,
+            ...persistedState?.dlModelsParams,
+          },
         }
       },
       partialize: (state) => ({
@@ -478,6 +504,7 @@ export const useAppStore = create<AppState>()(
         portfolioParams: state.portfolioParams,
         portfolioCodes: state.portfolioCodes,
         meanReversionParams: state.meanReversionParams,
+        dlModelsParams: state.dlModelsParams,
         // 持久化 LLM 设置
         llmApiKey: state.llmApiKey,
         llmBaseUrl: state.llmBaseUrl,

@@ -1,10 +1,11 @@
 // 深度学习模型页面 - 模型选择、训练、对比
-import { useState } from "react"
+import { useEffect } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import { useAppStore } from "@/stores/app-store"
 import { Brain, Loader2, CheckCircle, BarChart3, Cpu, Layers, GitGraph, ArrowRightLeft } from "lucide-react"
 
 const CATEGORY_ICONS: Record<string, any> = {
@@ -16,8 +17,10 @@ const CATEGORY_ICONS: Record<string, any> = {
 }
 
 export function DlModelsPage() {
-  const [training, setTraining] = useState<string | null>(null)
-  const [trainResult, setTrainResult] = useState<any>(null)
+  const { dlModelsParams, setDlModelsParams } = useAppStore()
+  const { trainingModelId, trainingTaskId } = dlModelsParams
+  const trainResult = dlModelsParams.trainResult as any
+  const trainStatus = trainResult?.status
 
   const { data } = useQuery({
     queryKey: ["dl-models", "list"],
@@ -26,17 +29,43 @@ export function DlModelsPage() {
   })
 
   const handleTrain = async (modelId: string) => {
-    setTraining(modelId)
-    setTrainResult(null)
+    setDlModelsParams({ trainingModelId: modelId, trainingTaskId: null, trainResult: null })
     try {
       const result = await api.dlModels.train(modelId)
-      setTrainResult(result)
+      setDlModelsParams({
+        trainingModelId: result.status === "running" ? modelId : null,
+        trainingTaskId: result.task_id || null,
+        trainResult: result,
+      })
     } catch {
-      setTrainResult({ error: "训练失败" })
-    } finally {
-      setTraining(null)
+      setDlModelsParams({ trainingModelId: null, trainingTaskId: null, trainResult: { error: "训练失败" } })
     }
   }
+
+  useEffect(() => {
+    if (!trainingTaskId || trainStatus !== "running") return
+
+    const pollStatus = async () => {
+      try {
+        const result = await api.dlModels.status(trainingTaskId)
+        setDlModelsParams({
+          trainingModelId: result.status === "running" ? result.model || trainingModelId : null,
+          trainingTaskId: result.status === "running" ? trainingTaskId : null,
+          trainResult: result,
+        })
+      } catch {
+        setDlModelsParams({
+          trainingModelId: null,
+          trainingTaskId: null,
+          trainResult: { ...trainResult, status: "failed", error: "无法查询训练任务状态" },
+        })
+      }
+    }
+
+    pollStatus()
+    const interval = setInterval(pollStatus, 3000)
+    return () => clearInterval(interval)
+  }, [trainingModelId, trainingTaskId, trainStatus, setDlModelsParams])
 
   return (
     <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[1400px] mx-auto">
@@ -86,12 +115,12 @@ export function DlModelsPage() {
                 </div>
                 <Button
                   onClick={() => handleTrain(m.id)}
-                  disabled={training === m.id}
+                  disabled={trainingModelId === m.id}
                   variant={m.is_trained ? "outline" : "default"}
                   className="w-full"
                   size="sm"
                 >
-                  {training === m.id ? (
+                  {trainingModelId === m.id ? (
                     <Loader2 className="h-3 w-3 animate-spin mr-1" />
                   ) : m.is_trained ? (
                     <CheckCircle className="h-3 w-3 mr-1" />
