@@ -1,5 +1,5 @@
 // 因子分析页面 - Alpha158 因子 IC 分析
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { useAppStore } from "@/stores/app-store"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -80,6 +80,8 @@ export function FactorAnalysisPage() {
   const showDecay = factorParams.showDecay || false
   const showCombination = factorParams.showCombination || false
   const showAdvancedStats = factorParams.showAdvancedStats || false
+  const analysisTaskId = factorParams.analysisTaskId || null
+  const [submitError, setSubmitError] = useState<unknown>(null)
 
   const setSelectedCategory = (value: string) => setFactorParams({ selectedCategory: value })
   const setSortBy = (value: "ic" | "rankIC") => setFactorParams({ sortBy: value })
@@ -89,20 +91,52 @@ export function FactorAnalysisPage() {
   const setShowCombination = (value: boolean) => setFactorParams({ showCombination: value })
   const setShowAdvancedStats = (value: boolean) => setFactorParams({ showAdvancedStats: value })
 
-  const { data: analyzeData, isLoading, isFetching, error, refetch } = useQuery({
-    queryKey: ["factors", "analyze", predictPeriod, startDate, endDate, neutralize],
-    queryFn: () => api.factors.analyze({
-      start_date: startDate,
-      end_date: endDate,
-      predict_period: parseInt(predictPeriod),
-      top_k: 158,
-      neutralize: neutralize !== "none" ? neutralize : undefined,
-    }),
-    enabled: false,
+  const {
+    data: analysisStatus,
+    isLoading: isStatusLoading,
+    error: statusError,
+  } = useQuery({
+    queryKey: ["factors", "analyze-status", analysisTaskId],
+    queryFn: () => api.factors.analysisStatus(analysisTaskId!),
+    enabled: !!analysisTaskId,
     retry: false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      return status === "running" ? 3000 : false
+    },
     staleTime: Infinity,
     gcTime: Infinity,
   })
+
+  const analyzeData = analysisStatus?.result
+  const isAnalysisRunning = analysisStatus?.status === "running"
+  const isAnalysisLoading = isStatusLoading || isAnalysisRunning
+  const analysisProgress = analysisStatus?.progress ?? (analysisTaskId ? 5 : 0)
+  const error = submitError || statusError || (analysisStatus?.status === "failed" ? analysisStatus?.error : null)
+
+  const analysisParams = () => ({
+    start_date: startDate,
+    end_date: endDate,
+    predict_period: parseInt(predictPeriod),
+    top_k: 158,
+    neutralize: neutralize !== "none" ? neutralize : undefined,
+  })
+
+  const clearAnalysisTask = () => setFactorParams({ analysisTaskId: null })
+
+  const handleRunAnalysis = async () => {
+    setSubmitError(null)
+    try {
+      const result = await api.factors.submitAnalysis(analysisParams())
+      setFactorParams({ analysisTaskId: result.task_id })
+    } catch (err) {
+      setSubmitError(err)
+    }
+  }
+
+  const handleAnalysisParamChange = (params: Partial<typeof factorParams>) => {
+    setFactorParams({ ...params, analysisTaskId: null })
+  }
 
   // 获取因子列表（用于动态分类）
   const { data: factorListData } = useQuery({
@@ -181,7 +215,7 @@ export function FactorAnalysisPage() {
   const handleDateRangeChange = (value: string) => {
     const range = dateRanges.find((item) => item.value === value)
     if (range && range.value !== "custom") {
-      setFactorParams({ startDate: range.start, endDate: range.end })
+      handleAnalysisParamChange({ startDate: range.start, endDate: range.end })
     }
   }
 
@@ -246,7 +280,7 @@ export function FactorAnalysisPage() {
           <div className="grid gap-4 md:grid-cols-6">
             <div className="space-y-2">
               <Label>预测周期</Label>
-              <Select value={predictPeriod} onValueChange={(v) => setFactorParams({ predictPeriod: Number(v) })}>
+              <Select value={predictPeriod} onValueChange={(v) => handleAnalysisParamChange({ predictPeriod: Number(v) })}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -278,7 +312,7 @@ export function FactorAnalysisPage() {
 
             <div className="space-y-2">
               <Label>行业中性化</Label>
-              <Select value={neutralize} onValueChange={(v) => setFactorParams({ neutralize: v })}>
+              <Select value={neutralize} onValueChange={(v) => handleAnalysisParamChange({ neutralize: v })}>
                 <SelectTrigger>
                   <SelectValue placeholder="无" />
                 </SelectTrigger>
@@ -297,7 +331,7 @@ export function FactorAnalysisPage() {
                 type="date"
                 value={startDate}
                 onChange={(event) => {
-                  setFactorParams({ startDate: event.target.value })
+                  handleAnalysisParamChange({ startDate: event.target.value })
                 }}
               />
             </div>
@@ -308,15 +342,15 @@ export function FactorAnalysisPage() {
                 type="date"
                 value={endDate}
                 onChange={(event) => {
-                  setFactorParams({ endDate: event.target.value })
+                  handleAnalysisParamChange({ endDate: event.target.value })
                 }}
               />
             </div>
 
             <div className="space-y-2">
               <Label>&nbsp;</Label>
-              <Button onClick={() => refetch()} disabled={isFetching} className="w-full">
-                {isFetching ? (
+              <Button onClick={handleRunAnalysis} disabled={isAnalysisRunning} className="w-full">
+                {isAnalysisRunning ? (
                   <>
                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                     分析中
@@ -346,7 +380,7 @@ export function FactorAnalysisPage() {
       </Card>
 
       {/* 加载中提示 */}
-      {isFetching && (
+      {isAnalysisRunning && (
         <Card className="border-yellow-600/50 bg-yellow-600/5">
           <CardContent className="py-4">
             <div className="flex items-center gap-3">
@@ -354,7 +388,7 @@ export function FactorAnalysisPage() {
               <div className="space-y-0.5">
                 <p className="font-medium">Alpha158 因子分析中...</p>
                 <p className="text-sm text-muted-foreground">
-                  正在计算 158 个因子的 IC 值，首次分析需要 1-3 分钟，请耐心等待
+                  正在计算 158 个因子的 IC 值，当前进度 {analysisProgress}%，切换菜单后再回来也会继续显示
                 </p>
               </div>
             </div>
@@ -363,22 +397,27 @@ export function FactorAnalysisPage() {
       )}
 
       {/* 错误提示 */}
-      {error && !isFetching && (
+      {error && !isAnalysisRunning && (
         <Card className="border-destructive/50 bg-destructive/5">
           <CardContent className="py-6 text-center space-y-2">
             <p className="text-lg font-medium text-destructive">因子分析失败</p>
             <p className="text-sm text-muted-foreground">
               {String(error).includes("超时") ? "请求超时，请尝试缩短日期范围（如 3 个月）" : String(error)}
             </p>
-            <Button variant="outline" size="sm" onClick={() => refetch()}>
+            <Button variant="outline" size="sm" onClick={handleRunAnalysis}>
               重新分析
             </Button>
+            {analysisTaskId && (
+              <Button variant="ghost" size="sm" onClick={clearAnalysisTask}>
+                清除任务
+              </Button>
+            )}
           </CardContent>
         </Card>
       )}
 
       {/* 无数据提示 */}
-      {!isFetching && !error && factors.length === 0 && (
+      {!isAnalysisRunning && !error && factors.length === 0 && (
         <Card>
           <CardContent className="py-8 text-center">
             <p className="text-lg font-medium">暂无因子分析结果</p>
@@ -545,7 +584,7 @@ export function FactorAnalysisPage() {
                 ))}
               </div>
 
-              {isLoading && !analyzeData ? (
+              {isAnalysisLoading && !analyzeData ? (
                 <div className="flex items-center justify-center py-12">
                   <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
                 </div>

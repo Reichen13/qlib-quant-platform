@@ -466,6 +466,17 @@ export const api = {
         body: JSON.stringify(params),
         timeoutMs: 300_000, // 5 分钟超时
       }).then(r => handleResponse<any>(r)),
+    submitAnalysis: (params: { start_date: string; end_date: string; predict_period: number; top_k: number; neutralize?: string }) =>
+      fetch(`${API_BASE}/api/factors/analyze/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+        timeoutMs: 60_000,
+      }).then(r => handleResponse<{ task_id: string; status: string; progress?: number; message?: string }>(r)),
+    analysisStatus: (taskId: string) =>
+      fetch(`${API_BASE}/api/factors/analyze/status/${taskId}`, {
+        timeoutMs: 30_000,
+      }).then(r => handleResponse<any>(r)),
     list: () => fetch(`${API_BASE}/api/factors/list`).then(r => handleResponse<any>(r)),
     decay: (params: { start_date: string; end_date: string; predict_period: number; top_k: number }) =>
       fetch(`${API_BASE}/api/factors/decay`, {

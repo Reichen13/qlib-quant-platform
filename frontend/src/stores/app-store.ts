@@ -34,6 +34,7 @@ export interface FactorParams {
   showDecay: boolean
   showCombination: boolean
   showAdvancedStats: boolean
+  analysisTaskId: string | null
 }
 
 export interface QuoteParams {
@@ -126,6 +127,7 @@ function createDefaultFactorParams(): FactorParams {
     showDecay: false,
     showCombination: false,
     showAdvancedStats: false,
+    analysisTaskId: null,
   }
 }
 

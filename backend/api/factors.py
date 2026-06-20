@@ -3,13 +3,14 @@
 """
 
 import os
+import uuid
 from pathlib import Path
 from datetime import date, datetime, timedelta
 from typing import List
 import pandas as pd
 import numpy as np
 import random
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from loguru import logger
 
 from models.schemas import FactorAnalysisRequest, FactorAnalysisResponse, FactorIC
@@ -21,8 +22,10 @@ from core.factor_utils import (
     cluster_factors_by_ic,
 )
 from core.alpha158_cache import load_cached_features, save_features_cache
+from db.task_store import TaskStore
 
 router = APIRouter()
+factor_task_store = TaskStore(Path.home() / ".qlib" / "factor_analysis_tasks.db", table_name="factor_analysis_tasks")
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -65,8 +68,7 @@ def _sample_stocks(codes: list, n: int = 150) -> list:
 from core.compat import fix_parallel_ext
 
 
-@router.post("/analyze")
-def analyze_factors(params: FactorAnalysisRequest):
+def _run_factor_analysis(params: FactorAnalysisRequest):
     """
     因子 IC 分析 - 完整 Alpha158 因子 (Qlib 原生)
 
@@ -286,6 +288,83 @@ def analyze_factors(params: FactorAnalysisRequest):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"因子分析失败: {str(e)}")
+
+
+@router.post("/analyze")
+def analyze_factors(params: FactorAnalysisRequest):
+    """
+    兼容旧前端的同步因子分析接口。
+    新前端优先使用 /analyze/submit + /analyze/status/{task_id}。
+    """
+    return _run_factor_analysis(params)
+
+
+def _run_factor_analysis_task(task_id: str, params: FactorAnalysisRequest):
+    try:
+        factor_task_store.create_task(task_id, params.model_dump_json())
+        factor_task_store.update_progress(task_id, 20)
+        result = _run_factor_analysis(params)
+        factor_task_store.set_completed(task_id, result.model_dump_json())
+    except HTTPException as e:
+        detail = e.detail if isinstance(e.detail, str) else str(e.detail)
+        factor_task_store.set_failed(task_id, detail)
+    except Exception as e:
+        logger.error(f"因子分析任务 {task_id} 失败: {e}")
+        factor_task_store.set_failed(task_id, str(e))
+
+
+@router.post("/analyze/submit")
+def submit_factor_analysis(params: FactorAnalysisRequest, background_tasks: BackgroundTasks):
+    """提交因子分析后台任务，避免页面切换导致长请求丢失。"""
+    try:
+        factor_task_store.init_db()
+    except Exception as e:
+        logger.warning(f"因子任务库初始化失败: {e}")
+
+    task_id = str(uuid.uuid4())
+    factor_task_store.create_task(task_id, params.model_dump_json())
+    background_tasks.add_task(_run_factor_analysis_task, task_id, params)
+
+    return {
+        "task_id": task_id,
+        "status": "running",
+        "progress": 5,
+        "message": "因子分析任务已启动",
+    }
+
+
+@router.get("/analyze/status/{task_id}")
+def get_factor_analysis_status(task_id: str):
+    """查询因子分析后台任务状态。"""
+    try:
+        factor_task_store.init_db()
+    except Exception as e:
+        logger.warning(f"因子任务库初始化失败: {e}")
+
+    task = factor_task_store.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    if task["status"] == "completed" and task["result_json"]:
+        return {
+            "task_id": task_id,
+            "status": "completed",
+            "progress": 100,
+            "result": FactorAnalysisResponse.model_validate_json(task["result_json"]),
+        }
+    if task["status"] == "failed":
+        return {
+            "task_id": task_id,
+            "status": "failed",
+            "progress": 0,
+            "error": task["error"],
+        }
+
+    return {
+        "task_id": task_id,
+        "status": "running",
+        "progress": task["progress"],
+    }
 
 
 @router.get("/list")

@@ -18,16 +18,19 @@ DEFAULT_DB_PATH = Path.home() / ".qlib" / "backtest_tasks.db"
 class TaskStore:
     """回测任务持久化存储"""
 
-    def __init__(self, db_path: Path | str = DEFAULT_DB_PATH):
+    def __init__(self, db_path: Path | str = DEFAULT_DB_PATH, table_name: str = "backtest_tasks"):
         self._db_path = str(db_path)
+        if not table_name.replace("_", "").isalnum():
+            raise ValueError("table_name must contain only letters, numbers, and underscores")
+        self._table_name = table_name
         self._lock = threading.Lock()
 
     def init_db(self) -> None:
         """初始化数据库表"""
         with self._lock:
             conn = sqlite3.connect(self._db_path)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS backtest_tasks (
+            conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS {self._table_name} (
                     task_id TEXT PRIMARY KEY,
                     status TEXT NOT NULL DEFAULT 'pending',
                     progress INTEGER DEFAULT 0,
@@ -38,9 +41,9 @@ class TaskStore:
                     updated_at TEXT NOT NULL
                 )
             """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_tasks_created
-                ON backtest_tasks(created_at DESC)
+            conn.execute(f"""
+                CREATE INDEX IF NOT EXISTS idx_{self._table_name}_created
+                ON {self._table_name}(created_at DESC)
             """)
             conn.commit()
             conn.close()
@@ -54,7 +57,7 @@ class TaskStore:
         with self._lock:
             conn = sqlite3.connect(self._db_path)
             conn.execute(
-                "INSERT OR REPLACE INTO backtest_tasks (task_id, status, progress, params_json, created_at, updated_at) VALUES (?, 'running', 5, ?, ?, ?)",
+                f"INSERT OR REPLACE INTO {self._table_name} (task_id, status, progress, params_json, created_at, updated_at) VALUES (?, 'running', 5, ?, ?, ?)",
                 (task_id, params_json, now, now),
             )
             conn.commit()
@@ -64,7 +67,7 @@ class TaskStore:
         with self._lock:
             conn = sqlite3.connect(self._db_path)
             conn.execute(
-                "UPDATE backtest_tasks SET progress = ?, updated_at = ? WHERE task_id = ?",
+                f"UPDATE {self._table_name} SET progress = ?, updated_at = ? WHERE task_id = ?",
                 (progress, self._now(), task_id),
             )
             conn.commit()
@@ -74,7 +77,7 @@ class TaskStore:
         with self._lock:
             conn = sqlite3.connect(self._db_path)
             conn.execute(
-                "UPDATE backtest_tasks SET status = 'completed', progress = 100, result_json = ?, updated_at = ? WHERE task_id = ?",
+                f"UPDATE {self._table_name} SET status = 'completed', progress = 100, result_json = ?, updated_at = ? WHERE task_id = ?",
                 (result_json, self._now(), task_id),
             )
             conn.commit()
@@ -84,7 +87,7 @@ class TaskStore:
         with self._lock:
             conn = sqlite3.connect(self._db_path)
             conn.execute(
-                "UPDATE backtest_tasks SET status = 'failed', progress = 0, error = ?, updated_at = ? WHERE task_id = ?",
+                f"UPDATE {self._table_name} SET status = 'failed', progress = 0, error = ?, updated_at = ? WHERE task_id = ?",
                 (error, self._now(), task_id),
             )
             conn.commit()
@@ -94,7 +97,7 @@ class TaskStore:
         with self._lock:
             conn = sqlite3.connect(self._db_path)
             conn.row_factory = sqlite3.Row
-            row = conn.execute("SELECT * FROM backtest_tasks WHERE task_id = ?", (task_id,)).fetchone()
+            row = conn.execute(f"SELECT * FROM {self._table_name} WHERE task_id = ?", (task_id,)).fetchone()
             conn.close()
             if row is None:
                 return None
@@ -103,7 +106,7 @@ class TaskStore:
     def delete_task(self, task_id: str) -> None:
         with self._lock:
             conn = sqlite3.connect(self._db_path)
-            conn.execute("DELETE FROM backtest_tasks WHERE task_id = ?", (task_id,))
+            conn.execute(f"DELETE FROM {self._table_name} WHERE task_id = ?", (task_id,))
             conn.commit()
             conn.close()
 
@@ -112,7 +115,7 @@ class TaskStore:
             conn = sqlite3.connect(self._db_path)
             conn.row_factory = sqlite3.Row
             rows = conn.execute(
-                "SELECT task_id, status, progress, params_json, error, created_at, updated_at FROM backtest_tasks ORDER BY created_at DESC LIMIT ?",
+                f"SELECT task_id, status, progress, params_json, error, created_at, updated_at FROM {self._table_name} ORDER BY created_at DESC LIMIT ?",
                 (limit,),
             ).fetchall()
             conn.close()
@@ -124,7 +127,7 @@ class TaskStore:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age_hours)).isoformat()
         with self._lock:
             conn = sqlite3.connect(self._db_path)
-            count = conn.execute("DELETE FROM backtest_tasks WHERE created_at < ?", (cutoff,)).rowcount
+            count = conn.execute(f"DELETE FROM {self._table_name} WHERE created_at < ?", (cutoff,)).rowcount
             conn.commit()
             conn.close()
         if count:
