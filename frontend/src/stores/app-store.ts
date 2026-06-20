@@ -57,6 +57,23 @@ export interface EtfScreenerParams {
   dataSource: "core" | "all"
 }
 
+export interface DataUpdateStep {
+  id: string
+  name: string
+  status: "pending" | "running" | "completed" | "failed"
+  progress: number
+  message?: string
+  startTime?: string
+  endTime?: string
+}
+
+export interface DataManagementParams {
+  updateTaskId: string | null
+  isUpdating: boolean
+  updateSteps: DataUpdateStep[]
+  overallProgress: number
+}
+
 interface AppState {
   // 侧边栏状态
   sidebarOpen: boolean
@@ -94,6 +111,9 @@ interface AppState {
   setEtfScreenerParams: (params: Partial<Omit<EtfScreenerParams, "filters">> & {
     filters?: Partial<EtfScreenerParams["filters"]>
   }) => void
+
+  dataManagementParams: DataManagementParams
+  setDataManagementParams: (params: Partial<DataManagementParams>) => void
 
   // ── 投资组合页面状态 ──
   portfolioCodes: string
@@ -168,6 +188,15 @@ function createDefaultEtfScreenerParams(): EtfScreenerParams {
   }
 }
 
+function createDefaultDataManagementParams(): DataManagementParams {
+  return {
+    updateTaskId: null,
+    isUpdating: false,
+    updateSteps: [],
+    overallProgress: 0,
+  }
+}
+
 const DEFAULT_RISK_CODES = ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS", "601012.SS", "300750.SZ", "000002.SZ"]
 
 const DEFAULT_PORTFOLIO_CODES = "600519.SS 000858.SZ 601318.SS 000333.SZ 600036.SS"
@@ -237,6 +266,11 @@ export const useAppStore = create<AppState>()(
         },
       })),
 
+      dataManagementParams: createDefaultDataManagementParams(),
+      setDataManagementParams: (params) => set((state) => ({
+        dataManagementParams: { ...state.dataManagementParams, ...params },
+      })),
+
       // 投资组合
       portfolioCodes: DEFAULT_PORTFOLIO_CODES,
       setPortfolioCodes: (codes) => set({ portfolioCodes: codes }),
@@ -278,6 +312,10 @@ export const useAppStore = create<AppState>()(
               ...persistedState?.etfScreenerParams?.filters,
             },
           },
+          dataManagementParams: {
+            ...current.dataManagementParams,
+            ...persistedState?.dataManagementParams,
+          },
         }
       },
       partialize: (state) => ({
@@ -291,6 +329,7 @@ export const useAppStore = create<AppState>()(
         factorParams: state.factorParams,
         quoteParams: state.quoteParams,
         etfScreenerParams: state.etfScreenerParams,
+        dataManagementParams: state.dataManagementParams,
         portfolioCodes: state.portfolioCodes,
         // 持久化 LLM 设置
         llmApiKey: state.llmApiKey,

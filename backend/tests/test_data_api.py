@@ -1,5 +1,7 @@
 import sys
+import json
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -12,10 +14,34 @@ for path in (str(project_root), str(backend_dir)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
+if "loguru" not in sys.modules:
+    logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+        exception=lambda *args, **kwargs: None,
+    )
+    sys.modules["loguru"] = types.SimpleNamespace(logger=logger)
+
 from backend.api import data
+from backend.db.task_store import TaskStore
 
 
 class DataApiTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.tmp_dir = tempfile.TemporaryDirectory()
+        self.store = TaskStore(Path(self.tmp_dir.name) / "data_update_tasks.db", table_name="data_update_tasks_test")
+        self.store.init_db()
+        self.store_patch = patch.object(data, "data_update_task_store", self.store)
+        self.store_patch.start()
+        data._update_tasks.clear()
+
+    async def asyncTearDown(self):
+        data._update_tasks.clear()
+        self.store_patch.stop()
+        self.tmp_dir.cleanup()
+
     async def test_health_does_not_call_baostock_by_default(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             qlib_dir = Path(tmpdir) / ".qlib" / "qlib_data" / "cn_data"
@@ -162,6 +188,20 @@ class DataApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["status"], "running")
         self.assertIn(response["task_id"], data._update_tasks)
         start_thread.assert_called_once()
+
+    async def test_start_update_persists_task_status(self):
+        with patch.object(data, "_resolve_update_script", return_value=Path(__file__)), \
+             patch.object(data, "_start_update_thread"):
+            response = await data.start_data_update(
+                data.DataUpdateRequest(type="stocks", max_stocks=1)
+            )
+
+        persisted = self.store.get_task(response["task_id"])
+
+        self.assertIsNotNone(persisted)
+        self.assertEqual(persisted["status"], "running")
+        self.assertEqual(persisted["progress"], 5)
+        self.assertIn("数据更新任务已排队", json.loads(persisted["result_json"])["message"])
 
     async def test_start_update_uses_actual_stock_latest_date_by_default(self):
         data._update_tasks.clear()

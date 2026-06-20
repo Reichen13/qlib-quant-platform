@@ -3,6 +3,7 @@
 """
 
 import os
+import json
 import subprocess
 import sys
 import threading
@@ -17,6 +18,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from auth import verify_api_key
+from db.task_store import TaskStore
 
 router = APIRouter()
 _MAX_FEATURE_DATE_SAMPLE = 300
@@ -33,6 +35,7 @@ class DataUpdateRequest(BaseModel):
 
 _update_tasks: dict[str, dict] = {}
 _tasks_lock = threading.Lock()
+data_update_task_store = TaskStore(Path.home() / ".qlib" / "data_update_tasks.db", table_name="data_update_tasks")
 
 
 async def require_data_update_key(_=Depends(verify_api_key)):
@@ -303,7 +306,65 @@ def _find_running_update() -> dict | None:
         for task in _update_tasks.values():
             if task.get("status") == "running":
                 return task.copy()
+    try:
+        data_update_task_store.init_db()
+        for task in data_update_task_store.list_tasks(limit=20):
+            if task.get("status") == "running":
+                full_task = _get_persisted_task(task["task_id"])
+                return full_task or task
+    except Exception as e:
+        logger.warning(f"读取持久化数据更新任务失败，回退内存状态: {e}")
     return None
+
+
+def _persist_task(task_id: str, task: dict):
+    data_update_task_store.init_db()
+    if task.get("status") == "completed":
+        data_update_task_store.set_completed(task_id, json.dumps(task, ensure_ascii=False))
+    elif task.get("status") == "failed":
+        data_update_task_store.set_failed(
+            task_id,
+            task.get("message") or task.get("error") or "数据更新失败",
+            json.dumps({**task, "status": "failed"}, ensure_ascii=False),
+        )
+    else:
+        if data_update_task_store.get_task(task_id) is None:
+            data_update_task_store.create_task(task_id, json.dumps({
+                "type": task.get("type"),
+                "command_preview": task.get("command_preview"),
+            }, ensure_ascii=False))
+        data_update_task_store.set_running(
+            task_id,
+            int(task.get("progress") or 5),
+            json.dumps(task, ensure_ascii=False),
+        )
+
+
+def _get_persisted_task(task_id: str) -> dict | None:
+    task = data_update_task_store.get_task(task_id)
+    if task is None:
+        return None
+    payload = {}
+    if task.get("result_json"):
+        try:
+            payload = json.loads(task["result_json"])
+        except Exception:
+            payload = {}
+    elif task.get("params_json"):
+        try:
+            payload = json.loads(task["params_json"])
+        except Exception:
+            payload = {}
+    return {
+        **payload,
+        "task_id": task_id,
+        "status": payload.get("status") or task.get("status"),
+        "progress": payload.get("progress") if payload.get("progress") is not None else task.get("progress"),
+        "message": payload.get("message") or task.get("error") or "数据更新任务运行中",
+        "error": task.get("error"),
+        "created_at": task.get("created_at"),
+        "updated_at": task.get("updated_at"),
+    }
 
 
 def _save_task(update_task_id: str, **updates):
@@ -311,6 +372,8 @@ def _save_task(update_task_id: str, **updates):
         current = _update_tasks.get(update_task_id, {})
         current.update(updates)
         _update_tasks[update_task_id] = current
+        task_snapshot = current.copy()
+    _persist_task(update_task_id, task_snapshot)
 
 
 def _run_update_process(task_id: str, command: list[str]):

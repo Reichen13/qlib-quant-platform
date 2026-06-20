@@ -28,6 +28,7 @@ class TaskStore:
     def init_db(self) -> None:
         """初始化数据库表"""
         with self._lock:
+            Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(self._db_path)
             conn.execute(f"""
                 CREATE TABLE IF NOT EXISTS {self._table_name} (
@@ -73,6 +74,22 @@ class TaskStore:
             conn.commit()
             conn.close()
 
+    def set_running(self, task_id: str, progress: int, result_json: str | None = None) -> None:
+        with self._lock:
+            conn = sqlite3.connect(self._db_path)
+            if result_json is None:
+                conn.execute(
+                    f"UPDATE {self._table_name} SET status = 'running', progress = ?, updated_at = ? WHERE task_id = ?",
+                    (progress, self._now(), task_id),
+                )
+            else:
+                conn.execute(
+                    f"UPDATE {self._table_name} SET status = 'running', progress = ?, result_json = ?, updated_at = ? WHERE task_id = ?",
+                    (progress, result_json, self._now(), task_id),
+                )
+            conn.commit()
+            conn.close()
+
     def set_completed(self, task_id: str, result_json: str) -> None:
         with self._lock:
             conn = sqlite3.connect(self._db_path)
@@ -83,13 +100,19 @@ class TaskStore:
             conn.commit()
             conn.close()
 
-    def set_failed(self, task_id: str, error: str) -> None:
+    def set_failed(self, task_id: str, error: str, result_json: str | None = None) -> None:
         with self._lock:
             conn = sqlite3.connect(self._db_path)
-            conn.execute(
-                f"UPDATE {self._table_name} SET status = 'failed', progress = 0, error = ?, updated_at = ? WHERE task_id = ?",
-                (error, self._now(), task_id),
-            )
+            if result_json is None:
+                conn.execute(
+                    f"UPDATE {self._table_name} SET status = 'failed', progress = 0, error = ?, updated_at = ? WHERE task_id = ?",
+                    (error, self._now(), task_id),
+                )
+            else:
+                conn.execute(
+                    f"UPDATE {self._table_name} SET status = 'failed', progress = 100, error = ?, result_json = ?, updated_at = ? WHERE task_id = ?",
+                    (error, result_json, self._now(), task_id),
+                )
             conn.commit()
             conn.close()
 

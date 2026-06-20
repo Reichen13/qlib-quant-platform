@@ -15,12 +15,16 @@ import {
 import { Database, RefreshCw, CheckCircle, XCircle, Clock, Loader2, AlertCircle } from "lucide-react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import { useAppStore } from "@/stores/app-store"
 import { UpdateProgress } from "@/components/features/update-progress"
 
 export function DataManagementPage() {
-  const [isUpdating, setIsUpdating] = useState(false)
-  const [updateSteps, setUpdateSteps] = useState<any[]>([])
-  const [overallProgress, setOverallProgress] = useState(0)
+  const dataManagementParams = useAppStore((s) => s.dataManagementParams)
+  const setDataManagementParams = useAppStore((s) => s.setDataManagementParams)
+  const isUpdating = dataManagementParams.isUpdating
+  const updateSteps = dataManagementParams.updateSteps
+  const overallProgress = dataManagementParams.overallProgress
+  const updateTaskId = dataManagementParams.updateTaskId
   const [adminApiKey, setAdminApiKey] = useState(() => localStorage.getItem("qlib-admin-api-key") || "")
   const queryClient = useQueryClient()
 
@@ -38,6 +42,56 @@ export function DataManagementPage() {
     staleTime: 2 * 60 * 1000,
   })
 
+  const buildUpdateSteps = (status: any) => {
+    const progress = status?.progress ?? 5
+    const message = status?.message || "正在更新 Qlib 数据"
+    if (status?.status === "completed") {
+      return [
+        { id: "request", name: "发送更新请求", status: "completed" as const, progress: 100, message: "更新任务已启动", endTime: status.started_at },
+        { id: "process", name: "处理数据", status: "completed" as const, progress: 100, message: "数据处理完成", endTime: status.finished_at },
+        { id: "save", name: "保存到数据库", status: "completed" as const, progress: 100, message, endTime: status.finished_at },
+      ]
+    }
+    if (status?.status === "failed") {
+      return [
+        { id: "request", name: "发送更新请求", status: "completed" as const, progress: 100, message: "更新任务已启动", endTime: status.started_at },
+        { id: "process", name: "处理数据", status: "failed" as const, progress: 100, message, endTime: status.finished_at },
+        { id: "save", name: "保存到数据库", status: "pending" as const, progress: 0 },
+      ]
+    }
+    return [
+      { id: "request", name: "发送更新请求", status: "completed" as const, progress: 100, message: "更新任务已启动", startTime: status?.started_at },
+      { id: "process", name: "处理数据", status: "running" as const, progress, message, startTime: status?.started_at },
+      { id: "save", name: "保存到数据库", status: "pending" as const, progress: 0 },
+    ]
+  }
+
+  useQuery({
+    queryKey: ["data", "update-progress", updateTaskId],
+    queryFn: async () => {
+      const progress = await api.data.updateProgress(updateTaskId!)
+      const done = progress.status === "completed" || progress.status === "failed"
+      setDataManagementParams({
+        isUpdating: progress.status === "running",
+        overallProgress: progress.progress ?? (done ? 100 : 5),
+        updateSteps: buildUpdateSteps(progress),
+      })
+      if (done) {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: ["data", "status"] }),
+          queryClient.invalidateQueries({ queryKey: ["data", "logs"] }),
+        ])
+      }
+      return progress
+    },
+    enabled: !!updateTaskId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      return status === "running" ? 5000 : false
+    },
+    retry: false,
+  })
+
   const handleCheckStatus = () => {
     refetch()
   }
@@ -52,71 +106,46 @@ export function DataManagementPage() {
   }
 
   const handleUpdate = async (type: "stocks" | "etf" | "index" | "all") => {
-    setIsUpdating(true)
-    setUpdateSteps([
+    setDataManagementParams({
+      updateTaskId: null,
+      isUpdating: true,
+      updateSteps: [
       { id: "request", name: "发送更新请求", status: "running", progress: 30, message: `正在请求${type === 'all' ? '全量' : type}数据更新...`, startTime: new Date().toISOString() },
       { id: "process", name: "处理数据", status: "pending", progress: 0 },
       { id: "save", name: "保存到数据库", status: "pending", progress: 0 },
-    ])
-    setOverallProgress(10)
+      ],
+      overallProgress: 10,
+    })
 
     try {
       const result = await api.data.update(type)
       const taskId = result.task_id
-      setUpdateSteps([
+      setDataManagementParams({
+        updateTaskId: taskId,
+        isUpdating: true,
+        updateSteps: [
         { id: "request", name: "发送更新请求", status: "completed", progress: 100, message: "更新任务已启动", startTime: new Date(Date.now() - 1000).toISOString(), endTime: new Date().toISOString() },
         { id: "process", name: "处理数据", status: "running", progress: result.progress || 5, message: result.message || "正在更新 Qlib 数据", startTime: new Date().toISOString() },
         { id: "save", name: "保存到数据库", status: "pending", progress: 0 },
-      ])
-      setOverallProgress(result.progress || 5)
-
-      for (let attempt = 0; attempt < 720; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 5000))
-        const progress = await api.data.updateProgress(taskId)
-        setOverallProgress(progress.progress || 30)
-
-        if (progress.status === "completed") {
-          setUpdateSteps([
-            { id: "request", name: "发送更新请求", status: "completed", progress: 100, message: "更新任务已启动", endTime: new Date().toISOString() },
-            { id: "process", name: "处理数据", status: "completed", progress: 100, message: "数据处理完成", endTime: new Date().toISOString() },
-            { id: "save", name: "保存到数据库", status: "completed", progress: 100, message: progress.message || "数据已保存到 Qlib 目录", endTime: new Date().toISOString() },
-          ])
-          setOverallProgress(100)
-          await Promise.all([
-            refetch(),
-            queryClient.invalidateQueries({ queryKey: ["data", "logs"] }),
-          ])
-          return
-        }
-
-        if (progress.status === "failed") {
-          setUpdateSteps([
-            { id: "request", name: "发送更新请求", status: "completed", progress: 100, message: "更新任务已启动", endTime: new Date().toISOString() },
-            { id: "process", name: "处理数据", status: "failed", progress: 100, message: progress.message || "数据处理失败", endTime: new Date().toISOString() },
-            { id: "save", name: "保存到数据库", status: "pending", progress: 0 },
-          ])
-          setOverallProgress(100)
-          return
-        }
-
-        setUpdateSteps((prev) => prev.map((s: any) => (
-          s.id === "process"
-            ? { ...s, status: "running" as const, progress: progress.progress || s.progress, message: progress.message || s.message }
-            : s
-        )))
-      }
-
-      setUpdateSteps((prev) => prev.map((s: any) => (
-        s.status === "running" ? { ...s, status: "failed" as const, message: "更新任务超时，请到服务器查看日志" } : s
-      )))
+        ],
+        overallProgress: result.progress || 5,
+      })
     } catch (error) {
       const message = error instanceof Error ? error.message : "更新失败"
-      setUpdateSteps((prev) => prev.map((s: any) => (
-        s.status === "running" ? { ...s, status: "failed" as const, message } : s
-      )))
-      setOverallProgress(100)
-    } finally {
-      setIsUpdating(false)
+      const failedSteps = updateSteps.length > 0
+        ? updateSteps
+        : [
+          { id: "request", name: "发送更新请求", status: "failed" as const, progress: 100, message },
+          { id: "process", name: "处理数据", status: "pending" as const, progress: 0 },
+          { id: "save", name: "保存到数据库", status: "pending" as const, progress: 0 },
+        ]
+      setDataManagementParams({
+        isUpdating: false,
+        overallProgress: 100,
+        updateSteps: failedSteps.map((s: any) => (
+          s.status === "running" ? { ...s, status: "failed" as const, message } : s
+        )),
+      })
     }
   }
 
