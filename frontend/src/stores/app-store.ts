@@ -102,6 +102,12 @@ export interface AiStrategyParams {
   optimizeResult: unknown | null
 }
 
+export interface PortfolioParams {
+  method: string
+  maxWeight: number
+  turnoverLambda: number
+}
+
 interface AppState {
   // 侧边栏状态
   sidebarOpen: boolean
@@ -153,7 +159,9 @@ interface AppState {
   setAiStrategyParams: (params: Partial<AiStrategyParams>) => void
 
   // ── 投资组合页面状态 ──
+  portfolioParams: PortfolioParams
   portfolioCodes: string
+  setPortfolioParams: (params: Partial<PortfolioParams>) => void
   setPortfolioCodes: (codes: string) => void
 
   // ── LLM 设置页面状态 ──
@@ -258,6 +266,14 @@ function createDefaultAiStrategyParams(): AiStrategyParams {
   }
 }
 
+function createDefaultPortfolioParams(): PortfolioParams {
+  return {
+    method: "max_sharpe",
+    maxWeight: 30,
+    turnoverLambda: 0,
+  }
+}
+
 const DEFAULT_RISK_CODES = ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS", "601012.SS", "300750.SZ", "000002.SZ"]
 
 const DEFAULT_PORTFOLIO_CODES = "600519.SS 000858.SZ 601318.SS 000333.SZ 600036.SS"
@@ -349,7 +365,11 @@ export const useAppStore = create<AppState>()(
         aiStrategyParams: { ...state.aiStrategyParams, ...params },
       })),
 
+      portfolioParams: createDefaultPortfolioParams(),
       portfolioCodes: DEFAULT_PORTFOLIO_CODES,
+      setPortfolioParams: (params) => set((state) => ({
+        portfolioParams: { ...state.portfolioParams, ...params },
+      })),
       setPortfolioCodes: (codes) => set({ portfolioCodes: codes }),
 
       // LLM 设置
@@ -403,6 +423,10 @@ export const useAppStore = create<AppState>()(
             ...current.aiStrategyParams,
             ...persistedState?.aiStrategyParams,
           },
+          portfolioParams: {
+            ...current.portfolioParams,
+            ...persistedState?.portfolioParams,
+          },
         }
       },
       partialize: (state) => ({
@@ -421,6 +445,7 @@ export const useAppStore = create<AppState>()(
         dataManagementParams: state.dataManagementParams,
         agentDebateParams: state.agentDebateParams,
         aiStrategyParams: state.aiStrategyParams,
+        portfolioParams: state.portfolioParams,
         portfolioCodes: state.portfolioCodes,
         // 持久化 LLM 设置
         llmApiKey: state.llmApiKey,

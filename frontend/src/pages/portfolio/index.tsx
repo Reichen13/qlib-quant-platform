@@ -33,10 +33,10 @@ const METHODS = [
 export function PortfolioPage() {
   const portfolioCodesStr = useAppStore((s) => s.portfolioCodes)
   const setPortfolioCodes = useAppStore((s) => s.setPortfolioCodes)
+  const portfolioParams = useAppStore((s) => s.portfolioParams)
+  const setPortfolioParams = useAppStore((s) => s.setPortfolioParams)
   const codes = portfolioCodesStr.split(/[\s,]+/).filter(Boolean)
-  const [method, setMethod] = useState("max_sharpe")
-  const [maxWeight, setMaxWeight] = useState(30)
-  const [turnoverLambda, setTurnoverLambda] = useState(0)
+  const { method, maxWeight, turnoverLambda } = portfolioParams
   const [optimizeEnabled, setOptimizeEnabled] = useState(false)
 
   const { data, isLoading, isError, error, refetch } = useQuery({
@@ -151,7 +151,7 @@ export function PortfolioPage() {
             <div className="space-y-3">
               <div className="space-y-1.5">
                 <Label className="text-xs">优化方法</Label>
-                <Select value={method} onValueChange={setMethod}>
+                <Select value={method} onValueChange={(value) => setPortfolioParams({ method: value })}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -175,7 +175,7 @@ export function PortfolioPage() {
                 </div>
                 <Slider
                   value={[maxWeight]}
-                  onValueChange={([v]) => setMaxWeight(v)}
+                  onValueChange={([v]) => setPortfolioParams({ maxWeight: v })}
                   min={5}
                   max={100}
                   step={5}
@@ -189,7 +189,7 @@ export function PortfolioPage() {
                 </div>
                 <Slider
                   value={[turnoverLambda]}
-                  onValueChange={([v]) => setTurnoverLambda(v)}
+                  onValueChange={([v]) => setPortfolioParams({ turnoverLambda: v })}
                   min={0}
                   max={100}
                   step={5}
