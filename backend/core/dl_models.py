@@ -21,8 +21,10 @@ from typing import Optional
 
 from loguru import logger
 from pydantic import BaseModel, Field
+from db.task_store import TaskStore
 
 MODEL_BASE = Path.home() / ".qlib" / "dl_models"
+dl_training_task_store = TaskStore(Path.home() / ".qlib" / "dl_training_tasks.db", table_name="dl_training_tasks")
 
 MODEL_REGISTRY: dict = {
     "alstm": {
@@ -117,6 +119,91 @@ _training_tasks: dict = {}
 _training_lock = threading.Lock()
 
 
+def _progress_to_percent(progress) -> int:
+    try:
+        value = float(progress)
+    except (TypeError, ValueError):
+        return 0
+    if value <= 1:
+        value *= 100
+    return max(0, min(100, int(round(value))))
+
+
+def _persist_training_task(task_id: str, task: dict) -> None:
+    dl_training_task_store.init_db()
+    if dl_training_task_store.get_task(task_id) is None:
+        dl_training_task_store.create_task(
+            task_id,
+            json.dumps({
+                "model": task.get("model"),
+                "config": task.get("config", {}),
+                "started_at": task.get("started_at"),
+            }, ensure_ascii=False),
+        )
+
+    payload = json.dumps(task, ensure_ascii=False)
+    status = task.get("status")
+    if status == "completed":
+        dl_training_task_store.set_completed(task_id, payload)
+    elif status == "failed":
+        dl_training_task_store.set_failed(
+            task_id,
+            task.get("error") or task.get("message") or "DL training failed",
+            payload,
+        )
+    else:
+        dl_training_task_store.set_running(
+            task_id,
+            _progress_to_percent(task.get("progress", 0)),
+            payload,
+        )
+
+
+def _save_training_task(task_id: str, **updates) -> dict:
+    with _training_lock:
+        current = _training_tasks.get(task_id, {})
+        current.update(updates)
+        _training_tasks[task_id] = current
+        task_snapshot = current.copy()
+    _persist_training_task(task_id, task_snapshot)
+    return task_snapshot
+
+
+def _get_persisted_training_task(task_id: str) -> dict | None:
+    try:
+        dl_training_task_store.init_db()
+        row = dl_training_task_store.get_task(task_id)
+    except Exception as e:
+        logger.warning(f"Failed to load persisted DL training task {task_id}: {e}")
+        return None
+
+    if row is None:
+        return None
+
+    payload = {}
+    for field in ("result_json", "params_json"):
+        if row.get(field):
+            try:
+                payload = json.loads(row[field])
+                break
+            except Exception:
+                payload = {}
+
+    progress = payload.get("progress")
+    if progress is None:
+        progress = (row.get("progress") or 0) / 100
+
+    return {
+        **payload,
+        "status": payload.get("status") or row.get("status"),
+        "progress": progress,
+        "message": payload.get("message") or row.get("error") or "DL training task is running",
+        "error": payload.get("error") or row.get("error"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
 def get_available_models() -> list[dict]:
     """获取可用模型列表"""
     models = []
@@ -162,6 +249,10 @@ def start_training(model_name: str, config: dict | None = None) -> str:
         }
 
     # 在后台线程中运行训练
+    with _training_lock:
+        task_snapshot = _training_tasks[task_id].copy()
+    _persist_training_task(task_id, task_snapshot)
+
     thread = threading.Thread(
         target=_run_training,
         args=(task_id, model_name, merged_config, model_dir),
@@ -190,6 +281,8 @@ def _run_training(task_id: str, model_name: str, config: dict, model_dir: Path):
             with _training_lock:
                 _training_tasks[task_id]["message"] = msg
                 _training_tasks[task_id]["progress"] = min(progress, 1.0)
+                task_snapshot = _training_tasks[task_id].copy()
+            _persist_training_task(task_id, task_snapshot)
 
         _update("正在准备数据...", 0.05)
 
@@ -282,6 +375,8 @@ def _run_training(task_id: str, model_name: str, config: dict, model_dir: Path):
                 "message": f"{model_info['full_name']} 训练完成",
                 "model_path": str(model_path),
             })
+            task_snapshot = _training_tasks[task_id].copy()
+        _persist_training_task(task_id, task_snapshot)
 
         logger.info(f"DL 训练完成: {model_name} (task={task_id})")
 
@@ -293,6 +388,8 @@ def _run_training(task_id: str, model_name: str, config: dict, model_dir: Path):
                 "progress": 0.0,
                 "message": f"缺少依赖: {e}. 请安装 PyTorch + Qlib 完整版。",
             })
+            task_snapshot = _training_tasks[task_id].copy()
+        _persist_training_task(task_id, task_snapshot)
     except Exception as e:
         logger.error(f"DL 训练失败 ({model_name}): {e}")
         with _training_lock:
@@ -301,8 +398,14 @@ def _run_training(task_id: str, model_name: str, config: dict, model_dir: Path):
                 "progress": 0.0,
                 "message": f"训练失败: {e}",
             })
+            task_snapshot = _training_tasks[task_id].copy()
+        _persist_training_task(task_id, task_snapshot)
 
 
 def get_training_status(task_id: str) -> dict | None:
     """获取训练任务状态"""
-    return _training_tasks.get(task_id)
+    with _training_lock:
+        task = _training_tasks.get(task_id)
+        if task is not None:
+            return task.copy()
+    return _get_persisted_training_task(task_id)
