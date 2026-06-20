@@ -1,10 +1,11 @@
 // 多智能体辩论页面 - 5阶段分析管道可视化
-import { useState, useEffect, useRef } from "react"
+import { useCallback, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { api } from "@/lib/api"
+import { useAppStore } from "@/stores/app-store"
 import { MessageSquare, Search, Loader2, TrendingUp, AlertTriangle, Shield, Target, CheckCircle, XCircle } from "lucide-react"
 
 const STAGES = [
@@ -24,60 +25,64 @@ const RATING_COLORS: Record<string, string> = {
 }
 
 export function AgentDebatePage() {
-  const [code, setCode] = useState("")
-  const [, setTaskId] = useState("")
-  const [status, setStatus] = useState<string>("idle")
-  const [report, setReport] = useState<any>(null)
-  const [activeStage, setActiveStage] = useState(0)
-  const pollRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
+  const { agentDebateParams, setAgentDebateParams } = useAppStore()
+  const { code, agentDebateTaskId, status, activeStage, memory } = agentDebateParams
+  const report = agentDebateParams.report as any
+
+  const pollReport = useCallback(async () => {
+    if (!agentDebateTaskId) return
+    try {
+      const r = await api.agent.report(agentDebateTaskId)
+      if (r.status === "completed" || r.status === "failed") {
+        setAgentDebateParams({
+          status: r.status,
+          report: r.report || null,
+          activeStage: r.report ? 5 : activeStage,
+          agentDebateTaskId: null,
+        })
+      } else {
+        setAgentDebateParams({ activeStage: Math.min(activeStage + 1, 4) })
+      }
+    } catch {
+      // Keep polling; transient report lookups can fail while the task is still starting.
+    }
+  }, [activeStage, agentDebateTaskId, setAgentDebateParams])
 
   useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-    }
-  }, [])
+    if (status !== "running" || !agentDebateTaskId) return
+    pollReport()
+    const interval = setInterval(pollReport, 2000)
+    return () => clearInterval(interval)
+  }, [agentDebateTaskId, pollReport, status])
 
   const handleAnalyze = async () => {
     if (!code.trim()) return
-    setStatus("running")
-    setReport(null)
-    setActiveStage(0)
+    setAgentDebateParams({
+      status: "running",
+      report: null,
+      activeStage: 0,
+      agentDebateTaskId: null,
+    })
 
     try {
       const result = await api.agent.analyze(code.trim(), true)
-      setTaskId(result.task_id)
-
-      // 轮询报告
-      pollRef.current = setInterval(async () => {
-        try {
-          const r = await api.agent.report(result.task_id)
-          if (r.status === "completed" || r.status === "failed") {
-            clearInterval(pollRef.current)
-            setStatus(r.status)
-            if (r.report) {
-              setReport(r.report)
-              setActiveStage(5)
-            }
-          } else {
-            // 仍在运行，推进阶段指示器
-            setActiveStage((prev) => Math.min(prev + 1, 4))
-          }
-        } catch {
-          // 继续轮询
-        }
-      }, 2000)
+      setAgentDebateParams({
+        agentDebateTaskId: result.task_id,
+        status: result.status || "running",
+        report: result.report || null,
+        activeStage: result.report ? 5 : 0,
+      })
     } catch {
-      setStatus("error")
+      setAgentDebateParams({ status: "error", agentDebateTaskId: null })
     }
   }
 
   // 也获取历史记忆
-  const [memory, setMemory] = useState("")
   const handleLoadMemory = async () => {
     if (!code.trim()) return
     try {
       const result = await api.agent.memory(code.trim())
-      setMemory(result.memory || "")
+      setAgentDebateParams({ memory: result.memory || "" })
     } catch { /* ignore */ }
   }
 
@@ -98,7 +103,7 @@ export function AgentDebatePage() {
             <Input
               placeholder="输入股票代码如 600519.SS 或 SH600519"
               value={code}
-              onChange={(e) => setCode(e.target.value)}
+              onChange={(e) => setAgentDebateParams({ code: e.target.value })}
               onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
               className="max-w-sm font-mono"
               disabled={status === "running"}
