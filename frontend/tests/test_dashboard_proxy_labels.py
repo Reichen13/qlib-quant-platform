@@ -14,6 +14,7 @@ class DashboardProxyLabelTests(unittest.TestCase):
         self.assertIn("板块代理", page_source)
         self.assertNotIn("|| 28", page_source)
         self.assertNotIn("|| 320", page_source)
+        self.assertNotIn("etf.price ?? 1", page_source)
 
 
 if __name__ == "__main__":

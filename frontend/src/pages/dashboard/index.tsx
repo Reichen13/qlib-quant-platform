@@ -327,7 +327,7 @@ export function DashboardPage() {
               </TableHeader>
               <TableBody>
                 {(etfData?.etfs || []).slice(0, 8).map((etf: any) => {
-                  const price = etf.price ?? 1
+                  const price = etf.price
                   const change = etf.change_pct ?? etf.change ?? 0
                   const signal = etf.signal ?? "hold"
                   return (
@@ -361,7 +361,7 @@ export function DashboardPage() {
           {/* 移动端卡片列表 */}
           <div className="md:hidden space-y-2">
             {(etfData?.etfs || []).slice(0, 6).map((etf: any) => {
-              const price = etf.price ?? 1
+              const price = etf.price
               const change = etf.change_pct ?? etf.change ?? 0
               return (
                 <a key={etf.code} href={`/quote?code=${etf.code}`} className="block">
