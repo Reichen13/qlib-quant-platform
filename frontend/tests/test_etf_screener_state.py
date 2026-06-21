@@ -23,5 +23,13 @@ class EtfScreenerStateTests(unittest.TestCase):
         self.assertNotIn('useState<"core" | "all">("core")', page_source)
 
 
+    def test_etf_screener_does_not_overclaim_unavailable_universe_size(self):
+        page_source = (ROOT / "src" / "pages" / "etf-screener" / "index.tsx").read_text(encoding="utf-8")
+
+        self.assertNotIn("全量300+", page_source)
+        self.assertNotIn("核心50", page_source)
+        self.assertIn("可计算", page_source)
+
+
 if __name__ == "__main__":
     unittest.main()

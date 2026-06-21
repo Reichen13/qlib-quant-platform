@@ -44,11 +44,10 @@ export function EtfScreenerPage() {
   const selectedCategory = etfScreenerParams.selectedCategory
   const sortBy = etfScreenerParams.sortBy
   const filters = etfScreenerParams.filters
-  const dataSource = etfScreenerParams.dataSource
 
   // 从后端获取ETF信号数据
   const { data: etfResponse, isLoading } = useQuery({
-    queryKey: ["etf", "screener", dataSource],
+    queryKey: ["etf", "screener"],
     queryFn: () => api.etf.all(),
   })
 
@@ -172,7 +171,7 @@ export function EtfScreenerPage() {
           <Target className="h-8 w-8 text-rose-600" />
           ETF 筛选
         </h1>
-        <p className="text-muted-foreground">全量 ETF 筛选分析 - {dataSource === "core" ? "核心50只" : "全量300+只"}</p>
+        <p className="text-muted-foreground">本地可计算 ETF 筛选分析</p>
       </div>
 
       {/* 统计概览 */}
@@ -200,7 +199,7 @@ export function EtfScreenerPage() {
           <CardContent>
             <div className="text-2xl font-bold">{stats.total}</div>
             <p className="text-xs text-muted-foreground">
-              {dataSource === "core" ? "核心50" : "全量300+"}
+              可计算样本
             </p>
           </CardContent>
         </Card>
@@ -248,26 +247,6 @@ export function EtfScreenerPage() {
             </p>
           </CardContent>
         </Card>
-      </div>
-
-      {/* 数据源切换 */}
-      <div className="flex items-center gap-4">
-        <div className="flex gap-2">
-          <Badge
-            variant={dataSource === "core" ? "default" : "outline"}
-            className="cursor-pointer"
-            onClick={() => setEtfScreenerParams({ dataSource: "core" })}
-          >
-            核心50只
-          </Badge>
-          <Badge
-            variant={dataSource === "all" ? "default" : "outline"}
-            className="cursor-pointer"
-            onClick={() => setEtfScreenerParams({ dataSource: "all" })}
-          >
-            全量300+
-          </Badge>
-        </div>
       </div>
 
       {/* 图表区域 */}
@@ -489,7 +468,7 @@ export function EtfScreenerPage() {
       {/* 使用说明 */}
       <InstructionsPanel
         title="ETF 筛选说明"
-        description="全市场 ETF 多维度筛选指标解读"
+        description="本地可计算 ETF 多维度筛选指标解读"
         icon="info"
         defaultExpanded={false}
         variant="compact"
