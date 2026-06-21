@@ -174,6 +174,7 @@ async def get_memory(code: str):
     try:
         from core.multi_agent import get_orchestrator
         orch = get_orchestrator()
+        code = normalize_stock_code(code, target="yf")
         memory = orch.get_memory(code)
         return {
             "code": code,
