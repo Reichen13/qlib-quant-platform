@@ -146,6 +146,47 @@ print({
 print("PAIR_LIST_FAST_OK")
 PY
 
+section "Backend LLM model parameter check"
+openapi_file="/tmp/quant-openapi.json"
+curl -sS --max-time 20 "$BACKEND_URL/openapi.json" > "$openapi_file"
+python3 - "$openapi_file" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    spec = json.load(f)
+
+checks = {
+    "/api/agent/analyze": {"quick_model", "deep_model"},
+    "/api/news/daily-brief": {"quick_model", "deep_model"},
+}
+missing = {}
+for route, expected in checks.items():
+    operations = spec.get("paths", {}).get(route, {})
+    names = {
+        param.get("name")
+        for operation in operations.values()
+        for param in operation.get("parameters", [])
+    }
+    route_missing = sorted(expected - names)
+    if route_missing:
+        missing[route] = route_missing
+
+schemas = spec.get("components", {}).get("schemas", {})
+for schema_name in ("NLStrategyRequest", "StrategyAnalyzeRequest", "StrategyOptimizeRequest"):
+    props = set(schemas.get(schema_name, {}).get("properties", {}))
+    route_missing = sorted({"quick_model", "deep_model"} - props)
+    if route_missing:
+        missing[schema_name] = route_missing
+
+if missing:
+    print({"missing_llm_model_params": missing})
+    print("BACKEND_LLM_MODEL_PARAMS_MISSING")
+    sys.exit(6)
+print("BACKEND_LLM_MODEL_PARAMS_OK")
+PY
+
 section "Public URL smoke"
 curl -sS --max-time 20 -I "$PUBLIC_URL/" | sed -n '1,10p'
 
@@ -183,6 +224,7 @@ needles = [
     "去数据管理配置 Key",
     "ETF/指数暂按 Qlib 状态代理展示",
     "指定股票代码",
+    "用于提交模型回测",
 ]
 missing = [needle for needle in needles if needle not in bundle]
 if missing:

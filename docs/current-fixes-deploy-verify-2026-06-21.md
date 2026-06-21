@@ -165,10 +165,18 @@ PY
 
 - `去数据管理配置 Key`
 - `ETF/指数暂按 Qlib 状态代理展示`
+- `指定股票代码`
+- `用于提交模型回测`
+
+脚本还会读取后端 `/openapi.json`，确认 AI 相关接口已经接收用户在设置页选择的模型名称：
+
+- `quick_model`
+- `deep_model`
 
 通过标准：
 
 - 输出 `FRONTEND_BUNDLE_COPY_OK`。
+- 输出 `BACKEND_LLM_MODEL_PARAMS_OK`。
 - 如果输出 `FRONTEND_BUNDLE_COPY_MISSING`，说明 `/var/www/quant` 或实际静态目录仍是旧包，需要重新复制前端构建产物并清理浏览器缓存后复查。
 
 ## 8. 扩大修复范围前的判断
