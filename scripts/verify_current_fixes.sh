@@ -103,6 +103,48 @@ curl -sS --max-time 20 "$BACKEND_URL/api/factors/analyze/status/$task_id"
 echo
 echo "FACTOR_ASYNC_SUBMIT_OK"
 
+section "Fast market-data endpoints"
+etf_file="/tmp/etf-signals.json"
+curl -sS --max-time 12 -w '\nHTTP_STATUS=%{http_code} TIME_TOTAL=%{time_total}\n' \
+  "$BACKEND_URL/api/etf/signals?days=20" > "$etf_file"
+cat "$etf_file" | tail -n 1
+python3 - "$etf_file" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    raw = f.read()
+payload = json.loads(raw.split("\nHTTP_STATUS=", 1)[0])
+print({
+    "etf_count": len(payload.get("etfs") or []),
+    "warning": payload.get("warning"),
+})
+print("ETF_SIGNALS_FAST_OK")
+PY
+
+pair_file="/tmp/pair-list.json"
+curl -sS --max-time 12 -w '\nHTTP_STATUS=%{http_code} TIME_TOTAL=%{time_total}\n' \
+  "$BACKEND_URL/api/pair/list" > "$pair_file"
+cat "$pair_file" | tail -n 1
+python3 - "$pair_file" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    raw = f.read()
+payload = json.loads(raw.split("\nHTTP_STATUS=", 1)[0])
+pairs = payload.get("pairs") or []
+first = pairs[0] if pairs else {}
+print({
+    "pair_total": payload.get("total"),
+    "first_data_status": first.get("data_status"),
+    "first_signal": first.get("signal"),
+    "first_warning": first.get("warning"),
+})
+print("PAIR_LIST_FAST_OK")
+PY
+
 section "Public URL smoke"
 curl -sS --max-time 20 -I "$PUBLIC_URL/" | sed -n '1,10p'
-

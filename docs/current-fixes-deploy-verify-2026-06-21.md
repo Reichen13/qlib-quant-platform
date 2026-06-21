@@ -1,9 +1,11 @@
 # 2026-06-21 当前修复上线验证清单
 
-本清单只针对本轮已验证的两个线上问题：
+本清单只针对本轮已验证的线上问题：
 
 - 行情分析 K 线前段出现 0 值，导致图表只从 2026 年 4 月底附近开始显示有效 K 线。
 - 因子分析请求在 Nginx 前面出现 `504 Gateway Time-out`。
+- ETF 轮动/筛选接口在页面请求中触发慢速外部行情补抓，容易超时或卡顿。
+- 配对交易列表打开时实时重算 Qlib 指标，增加页面等待和服务器压力。
 
 服务器上还有其他项目，上线时只允许操作量化平台项目目录、该项目的前端静态目录、该项目容器，以及该项目使用的 Qlib 数据目录。不要修改系统级配置、其他项目目录或无关服务。
 
@@ -122,11 +124,43 @@ curl -s http://127.0.0.1:8001/api/factors/analyze/status/替换为task_id
 
 - 页面 `http://49.235.215.39:9090/factors` 点击运行分析后，不应再直接显示 Nginx 504 HTML。
 
-## 6. 扩大修复范围前的判断
+## 6. 快速行情接口验证
+
+ETF 轮动和配对交易列表应当快速返回；缺数据时只显示“暂无可靠数据/未生成模拟数据”类提示，不在页面请求里慢速补抓或重算。
+
+```bash
+curl -s --max-time 12 'http://127.0.0.1:8001/api/etf/signals?days=20' > /tmp/etf-signals.json
+python - <<'PY'
+import json
+data=json.load(open('/tmp/etf-signals.json', encoding='utf-8'))
+print({'etf_count': len(data.get('etfs') or []), 'warning': data.get('warning')})
+PY
+
+curl -s --max-time 12 'http://127.0.0.1:8001/api/pair/list' > /tmp/pair-list.json
+python - <<'PY'
+import json
+data=json.load(open('/tmp/pair-list.json', encoding='utf-8'))
+pairs=data.get('pairs') or []
+first=pairs[0] if pairs else {}
+print({
+  'pair_total': data.get('total'),
+  'first_data_status': first.get('data_status'),
+  'first_signal': first.get('signal'),
+  'first_warning': first.get('warning'),
+})
+PY
+```
+
+通过标准：
+
+- 两个接口都在 `12` 秒内返回。
+- ETF 接口不再因为外部行情源慢而超时。
+- 配对列表首项若缺缓存，应显示 `signal: 待分析`，而不是打开列表就实时重算。
+
+## 7. 扩大修复范围前的判断
 
 只有在单只股票验证通过后，才考虑扩大范围：
 
 - 如果 0 值只集中在少数股票，优先用 `--code` 定向修复。
 - 如果大面积股票都有同一段 0 值，再考虑用数据管理页面勾选“修复已有 0 值历史 K 线”后执行股票数据更新。
 - 全量修复前再次确认磁盘空间、备份和当前交易时段，避免在交易中或服务器高负载时运行。
-
