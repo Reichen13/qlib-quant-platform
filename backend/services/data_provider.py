@@ -18,6 +18,18 @@ class DataProvider:
         self._bs_client = None
         self._tdx_provider = None
 
+    @staticmethod
+    def _is_stock_universe_code(code: str) -> bool:
+        normalized = str(code or "").strip().lower()
+        return (
+            normalized.startswith("sh.6")
+            or normalized.startswith("sz.0")
+            or normalized.startswith("sz.3")
+            or normalized.startswith("bj.4")
+            or normalized.startswith("bj.8")
+            or normalized.startswith("bj.920")
+        )
+
     def _get_tdx_provider(self):
         if self._tdx_provider is None:
             try:
@@ -396,7 +408,7 @@ class DataProvider:
                 while (rs.error_code == '0') & rs.next():
                     row = rs.get_row_data()
                     # 只返回沪深 A 股，排除指数和基金；科创/创业板在上层筛选配置里决定是否排除
-                    if row[0].startswith("sh.6") or row[0].startswith("sz.0") or row[0].startswith("sz.3"):
+                    if self._is_stock_universe_code(row[0]):
                         stocks.append({
                             "code": row[0],  # sh.600000
                             "code_name": row[2],  # 股票名称
@@ -428,6 +440,8 @@ class DataProvider:
                 code = f"sh.{raw[2:8]}"
             elif raw.startswith("sz0") or raw.startswith("sz3"):
                 code = f"sz.{raw[2:8]}"
+            elif raw.startswith("bj4") or raw.startswith("bj8") or raw.startswith("bj920"):
+                code = f"bj.{raw[2:8]}"
             else:
                 continue
             stocks.append({

@@ -73,6 +73,10 @@ class FakeBaostockModule:
 
 
 class UpdateCnDataTests(unittest.TestCase):
+    def test_beijing_exchange_code_conversions(self):
+        self.assertEqual(update_cn_data.qlib_to_yf("bj430047"), "430047.BJ")
+        self.assertEqual(update_cn_data.yf_to_baostock("430047.BJ"), "bj.430047")
+
     def test_fetch_falls_back_to_baostock_when_yfinance_is_empty(self):
         with patch.object(update_cn_data.yf, "Ticker", FakeYfinanceTicker, create=True), \
              patch.dict(sys.modules, {"baostock": FakeBaostockModule()}):

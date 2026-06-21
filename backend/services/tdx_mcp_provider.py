@@ -156,22 +156,36 @@ class TdxMcpProvider:
             return None
         if "." in code:
             left, right = code.split(".", 1)
-            if left in {"SH", "SZ"}:
+            if left in {"SH", "SZ", "BJ"}:
                 market, symbol = left.lower(), right
-            elif right in {"SH", "SZ"}:
+            elif right in {"SH", "SZ", "BJ"}:
                 market, symbol = right.lower(), left
             else:
                 return None
-        elif code.startswith("SH") or code.startswith("SZ"):
+        elif code.startswith("SH") or code.startswith("SZ") or code.startswith("BJ"):
             market, symbol = code[:2].lower(), code[2:]
         else:
             symbol = code
-            market = "sh" if symbol.startswith("6") else "sz"
+            if symbol.startswith("6"):
+                market = "sh"
+            elif symbol.startswith("0") or symbol.startswith("3"):
+                market = "sz"
+            elif symbol.startswith(("4", "8")) or symbol.startswith("920"):
+                market = "bj"
+            else:
+                return None
 
         symbol = symbol[:6]
         if len(symbol) != 6 or not symbol.isdigit():
             return None
         normalized = f"{market}.{symbol}"
-        if normalized.startswith("sh.6") or normalized.startswith("sz.0") or normalized.startswith("sz.3"):
+        if (
+            normalized.startswith("sh.6")
+            or normalized.startswith("sz.0")
+            or normalized.startswith("sz.3")
+            or normalized.startswith("bj.4")
+            or normalized.startswith("bj.8")
+            or normalized.startswith("bj.920")
+        ):
             return normalized
         return None

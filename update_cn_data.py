@@ -54,26 +54,32 @@ def extend_calendar(new_dates: list[str]) -> list[str]:
 # ── 代码转换 ──
 
 def qlib_to_yf(code: str) -> str:
-    """sh600519 → 600519.SS，sz000001 → 000001.SZ"""
+    """sh600519 → 600519.SS，sz000001 → 000001.SZ，bj430047 → 430047.BJ"""
     code = code.lower()
     if code.startswith("sh"):
         return code[2:].upper() + ".SS"
     elif code.startswith("sz"):
         return code[2:].upper() + ".SZ"
+    elif code.startswith("bj"):
+        return code[2:].upper() + ".BJ"
     return code.upper() + ".SS"
 
 
 def yf_to_baostock(code: str) -> str:
-    """600519.SS → sh.600519，000001.SZ → sz.000001"""
+    """600519.SS → sh.600519，000001.SZ → sz.000001，430047.BJ → bj.430047"""
     code = code.upper()
     if code.endswith(".SS"):
         return "sh." + code[:6]
     if code.endswith(".SZ"):
         return "sz." + code[:6]
+    if code.endswith(".BJ"):
+        return "bj." + code[:6]
     if code.startswith("SH"):
         return "sh." + code[2:8]
     if code.startswith("SZ"):
         return "sz." + code[2:8]
+    if code.startswith("BJ"):
+        return "bj." + code[2:8]
     return "sh." + code[:6]
 
 

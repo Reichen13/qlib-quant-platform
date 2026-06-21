@@ -126,6 +126,23 @@ class DataApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["csi300_raw_total"], 3)
         self.assertEqual(response["csi300_duplicate_count"], 1)
 
+    async def test_stocks_health_counts_beijing_exchange_feature_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            qlib_dir = Path(tmpdir) / ".qlib" / "qlib_data" / "cn_data"
+            (qlib_dir / "calendars").mkdir(parents=True)
+            (qlib_dir / "instruments").mkdir(parents=True)
+            (qlib_dir / "calendars" / "day.txt").write_text("2026-06-18\n", encoding="utf-8")
+            (qlib_dir / "instruments" / "csi300.txt").write_text("", encoding="utf-8")
+            for code in ("sh600519", "sz300750", "bj430047", "bj830799", "bj920118"):
+                stock_dir = qlib_dir / "features" / code
+                stock_dir.mkdir(parents=True)
+                np.array([0.0, 10.0], dtype="<f").tofile(stock_dir / "close.day.bin")
+
+            with patch.object(Path, "home", return_value=Path(tmpdir)):
+                response = data._check_stocks_data()
+
+        self.assertEqual(response["total"], 5)
+
     async def test_stocks_health_ignores_older_feature_bin_when_newer_sample_exists(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             qlib_dir = Path(tmpdir) / ".qlib" / "qlib_data" / "cn_data"

@@ -23,6 +23,7 @@ import {
 import { OperationAdvice } from "@/components/features/operation-advice"
 import { InstructionsPanel, commonInstructions } from "@/components/features/instructions-panel"
 import { useMutation } from "@tanstack/react-query"
+import { useNavigate } from "react-router-dom"
 import { api } from "@/lib/api"
 import type { BacktestResult } from "@/lib/api"
 import { useAppStore } from "@/stores/app-store"
@@ -47,6 +48,7 @@ const emptyResult: BacktestResult = {
 }
 
 export function BacktestPage() {
+  const navigate = useNavigate()
   const activeTab = useAppStore((s) => s.backtestActiveTab)
   const setActiveTab = useAppStore((s) => s.setBacktestActiveTab)
   const params = useAppStore((s) => s.backtestParams)
@@ -127,6 +129,8 @@ export function BacktestPage() {
   const isRunning = result.status === "running"
   const isCompleted = result.status === "completed"
   const isFailed = result.status === "failed"
+  const errorMessage = result.error || "未知错误"
+  const isAuthError = errorMessage.includes("服务器管理 Key") || errorMessage.includes("API Key") || errorMessage.includes("X-API-Key")
 
   return (
     <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[1400px] mx-auto">
@@ -367,10 +371,26 @@ export function BacktestPage() {
             <Card>
               <CardContent className="py-8 text-center">
                 <p className="text-lg font-medium text-red-500">回测失败</p>
-                <p className="text-sm text-muted-foreground mt-2">{result.error || "未知错误"}</p>
-                <Button variant="outline" className="mt-4" onClick={() => setActiveTab("config")}>
-                  返回修改参数
-                </Button>
+                <p className="text-sm text-muted-foreground mt-2">
+                  {isAuthError
+                    ? "需要先配置服务器管理 Key。请到数据管理页面填写服务器 API_KEY 后，再回到本页重试。"
+                    : errorMessage}
+                </p>
+                {isAuthError && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    原始提示：{errorMessage}
+                  </p>
+                )}
+                <div className="mt-4 flex flex-wrap justify-center gap-2">
+                  {isAuthError && (
+                    <Button onClick={() => navigate("/data-management")}>
+                      去数据管理配置 Key
+                    </Button>
+                  )}
+                  <Button variant="outline" onClick={() => setActiveTab("config")}>
+                    返回修改参数
+                  </Button>
+                </div>
               </CardContent>
             </Card>
           ) : isCompleted && result.equity && result.equity.length > 0 ? (

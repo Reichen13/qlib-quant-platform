@@ -13,6 +13,17 @@ for path in (str(project_root), str(backend_dir)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
+if "loguru" not in sys.modules:
+    logger = SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+        add=lambda *args, **kwargs: None,
+        remove=lambda *args, **kwargs: None,
+    )
+    sys.modules["loguru"] = SimpleNamespace(logger=logger)
+
 _module_home = tempfile.TemporaryDirectory()
 os.environ["HOME"] = _module_home.name
 os.environ["USERPROFILE"] = _module_home.name
@@ -138,6 +149,21 @@ class StockPoolRefreshTests(unittest.TestCase):
 
         self.assertEqual(result["stats"]["input_count"], 350)
         self.assertEqual(result["stats"]["post_layer1"], 350)
+
+    def test_layer1_keeps_beijing_exchange_codes_in_valid_format(self):
+        class BeijingProvider:
+            def get_all_stocks(self):
+                return [
+                    {"code": "bj.430047", "code_name": "北交所样本一", "trade_status": "1"},
+                    {"code": "bj.920118", "code_name": "北交所样本二", "trade_status": "1"},
+                ]
+
+        engine = stock_pool.StockPoolEngine()
+        engine._provider = BeijingProvider()
+
+        result = engine.execute_layer1([], stock_pool.Layer1HardFilter())
+
+        self.assertEqual(result, ["430047.BJ", "920118.BJ"])
 
 
 if __name__ == "__main__":

@@ -22,8 +22,11 @@ if "loguru" not in sys.modules:
     )
     sys.modules["loguru"] = types.SimpleNamespace(logger=logger)
 
-if "pandas" not in sys.modules:
-    sys.modules["pandas"] = types.SimpleNamespace()
+try:
+    import pandas  # noqa: F401
+except Exception:
+    if "pandas" not in sys.modules:
+        sys.modules["pandas"] = types.SimpleNamespace(DataFrame=object)
 
 from backend.services.data_provider import DataProvider
 from backend.services.tdx_mcp_provider import TdxMcpProvider
@@ -76,6 +79,19 @@ class TdxMcpProviderTests(unittest.TestCase):
         self.assertEqual(DataProvider._to_baostock_code("300750"), "sz.300750")
         self.assertEqual(DataProvider._to_baostock_code("688981"), "sh.688981")
         self.assertEqual(DataProvider._from_baostock_code("sh.688981"), "SH688981")
+
+    def test_tdx_stock_list_keeps_beijing_exchange_codes(self):
+        payload = {
+            "data": [
+                {"code": "430047", "name": "北交所样本一"},
+                {"code": "BJ830799", "name": "北交所样本二"},
+                {"code": "920118.BJ", "name": "北交所样本三"},
+            ]
+        }
+
+        stocks = TdxMcpProvider._parse_stock_list(payload)
+
+        self.assertEqual([s["code"] for s in stocks], ["bj.430047", "bj.830799", "bj.920118"])
 
 
 if __name__ == "__main__":

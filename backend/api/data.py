@@ -161,7 +161,14 @@ def _get_feature_stock_count(data_dir: Path) -> dict:
     codes = set()
     for bin_path in feature_dir.glob("*/close.day.bin"):
         code = bin_path.parent.name.lower()
-        if code.startswith("sh6") or code.startswith("sz0") or code.startswith("sz3"):
+        if (
+            code.startswith("sh6")
+            or code.startswith("sz0")
+            or code.startswith("sz3")
+            or code.startswith("bj4")
+            or code.startswith("bj8")
+            or code.startswith("bj920")
+        ):
             codes.add(code)
     return {"total": len(codes)}
 

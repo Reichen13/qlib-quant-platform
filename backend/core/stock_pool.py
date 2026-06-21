@@ -105,10 +105,13 @@ class StockPoolEngine:
 
     def _bs_to_yf(self, code: str) -> str:
         """Baostock 格式 → yfinance 格式: sh.600000 → 600000.SS"""
-        code = code.replace("sh.", "").replace("sz.", "")
+        code_lower = code.lower().strip()
+        if code_lower.startswith("bj."):
+            return f"{code_lower.replace('bj.', '')}.BJ"
+        code = code_lower.replace("sh.", "").replace("sz.", "")
         if code.startswith("6"):
-            return f"{code}.SS"
-        return f"{code}.SZ"
+            return f"{code.upper()}.SS"
+        return f"{code.upper()}.SZ"
 
     def execute_layer1(self, codes: list[str], config: Layer1HardFilter) -> list[str]:
         """硬过滤: 排除ST/新股/停牌/科创板/资不抵债"""

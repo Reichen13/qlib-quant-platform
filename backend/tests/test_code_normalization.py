@@ -25,6 +25,13 @@ class CodeNormalizationTests(unittest.TestCase):
         self.assertEqual(normalize_stock_code("300750.SZ", target="baostock"), "sz.300750")
         self.assertEqual(normalize_stock_code("sh.688981", target="api"), "SH688981")
 
+    def test_beijing_exchange_codes_are_supported(self):
+        from backend.utils.code_normalization import normalize_stock_code
+
+        self.assertEqual(normalize_stock_code("430047", target="qlib"), "BJ430047")
+        self.assertEqual(normalize_stock_code("830799", target="baostock"), "bj.830799")
+        self.assertEqual(normalize_stock_code("bj.920118", target="yf"), "920118.BJ")
+
     def test_rejects_unknown_code_shape(self):
         from backend.utils.code_normalization import normalize_stock_code
 

@@ -20,6 +20,14 @@ class AuthErrorGuidanceTests(unittest.TestCase):
         self.assertIn("服务器管理 Key", source)
         self.assertIn("数据管理", source)
 
+    def test_backtest_page_guides_user_to_configure_admin_key(self):
+        source = (ROOT / "src" / "pages" / "backtest" / "index.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("isAuthError", source)
+        self.assertIn("服务器管理 Key", source)
+        self.assertIn("数据管理", source)
+        self.assertIn("返回修改参数", source)
+
 
 if __name__ == "__main__":
     unittest.main()

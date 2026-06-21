@@ -31,17 +31,21 @@ def _get_market(code: str) -> str:
         return "SH"
     if code_upper.startswith("SZ"):
         return "SZ"
+    if code_upper.startswith("BJ"):
+        return "BJ"
     return "SH" if code_upper.startswith(("6", "5")) else "SZ"
 
 
 def _to_api_code(bs_or_qlib_code: str) -> str:
     code = bs_or_qlib_code.upper().strip()
-    if code.startswith("SH.") or code.startswith("SZ."):
+    if code.startswith("SH.") or code.startswith("SZ.") or code.startswith("BJ."):
         return code.replace(".", "")
-    if code.startswith("SH") or code.startswith("SZ"):
+    if code.startswith("SH") or code.startswith("SZ") or code.startswith("BJ"):
         return code
     if code.startswith("6") or code.startswith("5"):
         return f"SH{code[-6:]}"
+    if code.startswith(("4", "8")) or code.startswith("920"):
+        return f"BJ{code[-6:]}"
     return f"SZ{code[-6:]}"
 
 
@@ -79,6 +83,9 @@ def _load_stock_names_from_qlib_features() -> dict:
             raw_code.startswith("SH6")
             or raw_code.startswith("SZ0")
             or raw_code.startswith("SZ3")
+            or raw_code.startswith("BJ4")
+            or raw_code.startswith("BJ8")
+            or raw_code.startswith("BJ920")
         ):
             continue
         api_code = _to_api_code(raw_code)
@@ -162,9 +169,11 @@ async def get_stock_info(code: str):
     name_map = _load_stock_names()
     code_upper = code.upper().strip()
 
-    if not code_upper.startswith(("SH", "SZ")):
+    if not code_upper.startswith(("SH", "SZ", "BJ")):
         if code_upper.startswith("6") or code_upper.startswith("5"):
             code_upper = f"SH{code_upper}"
+        elif code_upper.startswith(("4", "8")) or code_upper.startswith("920"):
+            code_upper = f"BJ{code_upper}"
         else:
             code_upper = f"SZ{code_upper}"
 

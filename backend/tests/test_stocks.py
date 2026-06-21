@@ -29,7 +29,7 @@ class StockMarketTests(unittest.IsolatedAsyncioTestCase):
     async def test_stock_list_can_fallback_to_qlib_feature_universe(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             feature_dir = Path(tmpdir) / ".qlib" / "qlib_data" / "cn_data" / "features"
-            for code in ("sh600519", "sz000001", "sz300750", "sh688981", "sh510300"):
+            for code in ("sh600519", "sz000001", "sz300750", "sh688981", "bj430047", "bj830799", "bj920118", "sh510300"):
                 stock_dir = feature_dir / code
                 stock_dir.mkdir(parents=True)
                 (stock_dir / "close.day.bin").write_bytes(b"fake")
@@ -41,11 +41,14 @@ class StockMarketTests(unittest.IsolatedAsyncioTestCase):
                 response = await stocks.get_stock_list()
 
         codes = {item.code for item in response.stocks}
-        self.assertEqual(response.total, 4)
+        self.assertEqual(response.total, 7)
         self.assertIn("SH600519", codes)
         self.assertIn("SZ000001", codes)
         self.assertIn("SZ300750", codes)
         self.assertIn("SH688981", codes)
+        self.assertIn("BJ430047", codes)
+        self.assertIn("BJ830799", codes)
+        self.assertIn("BJ920118", codes)
         self.assertNotIn("SH510300", codes)
 
 

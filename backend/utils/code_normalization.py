@@ -8,6 +8,8 @@ def _market_from_symbol(symbol: str) -> str:
         return "SH"
     if symbol.startswith(("0", "2", "3")):
         return "SZ"
+    if symbol.startswith(("4", "8")) or symbol.startswith("920"):
+        return "BJ"
     raise ValueError(f"Unsupported A-share code: {symbol}")
 
 
@@ -23,13 +25,13 @@ def normalize_stock_code(code: str, target: str = "qlib") -> str:
 
     market: str
     symbol: str
-    if raw.endswith(".SS") or raw.endswith(".SZ"):
+    if raw.endswith(".SS") or raw.endswith(".SZ") or raw.endswith(".BJ"):
         symbol, suffix = raw.split(".", 1)
-        market = "SH" if suffix == "SS" else "SZ"
-    elif raw.startswith("SH.") or raw.startswith("SZ."):
+        market = {"SS": "SH", "SZ": "SZ", "BJ": "BJ"}[suffix]
+    elif raw.startswith("SH.") or raw.startswith("SZ.") or raw.startswith("BJ."):
         prefix, symbol = raw.split(".", 1)
         market = prefix
-    elif raw.startswith("SH") or raw.startswith("SZ"):
+    elif raw.startswith("SH") or raw.startswith("SZ") or raw.startswith("BJ"):
         market, symbol = raw[:2], raw[2:]
     else:
         symbol = raw
@@ -43,7 +45,7 @@ def normalize_stock_code(code: str, target: str = "qlib") -> str:
     if target_lower == "qlib" or target_lower == "api":
         return f"{market}{symbol}"
     if target_lower == "yf" or target_lower == "yfinance":
-        return f"{symbol}.SS" if market == "SH" else f"{symbol}.SZ"
+        return f"{symbol}.SS" if market == "SH" else f"{symbol}.{market}"
     if target_lower == "baostock":
         return f"{market.lower()}.{symbol}"
     if target_lower == "plain":
