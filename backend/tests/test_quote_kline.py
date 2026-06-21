@@ -66,6 +66,33 @@ class QuoteKlineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.data[0].close, 1385)
         self.assertEqual(response.data[1].volume, 500)
 
+    async def test_stock_info_accepts_plain_bj_code(self):
+        ticker = Mock()
+        ticker.info = {
+            "currentPrice": 12.5,
+            "previousClose": 12.0,
+            "fiftyTwoWeekHigh": 15.0,
+            "fiftyTwoWeekLow": 9.0,
+            "marketCap": 1_000_000,
+            "volume": 1000,
+        }
+        fake_yfinance = types.ModuleType("yfinance")
+        fake_yfinance.Ticker = Mock(return_value=ticker)
+        fake_stock_names = types.ModuleType("stock_names")
+        fake_stock_names.get_stock_name = Mock(return_value="BJ Test")
+        fake_stock_names.get_transparency_level = Mock(return_value="MEDIUM")
+
+        with patch.dict(sys.modules, {
+            "yfinance": fake_yfinance,
+            "stock_names": fake_stock_names,
+        }):
+            response = await quote.get_stock_info_quote("920118")
+
+        fake_yfinance.Ticker.assert_called_once_with("920118.BJ")
+        self.assertEqual(response["code"], "BJ920118")
+        self.assertEqual(response["market"], "BJ")
+        self.assertEqual(response["change"], 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

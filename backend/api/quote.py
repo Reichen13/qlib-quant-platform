@@ -33,6 +33,10 @@ def _normalize_code(code: str) -> str:
     return normalize_stock_code(code, target="qlib")
 
 
+def _normalize_yfinance_code(code: str) -> str:
+    return normalize_stock_code(code, target="yf")
+
+
 def _default_start_date(end_dt: pd.Timestamp, frequency: str) -> pd.Timestamp:
     default_days = {
         "daily": 365,
@@ -209,8 +213,7 @@ async def get_stock_info_quote(code: str):
         from stock_names import get_stock_name, get_transparency_level
 
         code_upper = _normalize_code(code)
-        pure_code = code_upper.replace("SH", "").replace("SZ", "")
-        yf_code = f"{pure_code}.SS" if pure_code.startswith(("6", "5")) else f"{pure_code}.SZ"
+        yf_code = _normalize_yfinance_code(code)
 
         ticker = yf.Ticker(yf_code)
         info = ticker.info
@@ -220,7 +223,7 @@ async def get_stock_info_quote(code: str):
         return {
             "code": code_upper,
             "name": get_stock_name(code_upper),
-            "market": "SH" if code_upper.startswith("SH") else "SZ",
+            "market": code_upper[:2],
             "transparency": get_transparency_level(code_upper),
             "price": current_price,
             "change": round(current_price - previous_close, 2) if current_price and previous_close else None,
@@ -239,7 +242,7 @@ async def get_stock_info_quote(code: str):
         return {
             "code": code_upper,
             "name": get_stock_name(code_upper),
-            "market": "SH" if code_upper.startswith("SH") else "SZ",
+            "market": code_upper[:2],
             "transparency": get_transparency_level(code_upper),
             "price": None,
             "change": None,
