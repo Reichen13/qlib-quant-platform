@@ -12,6 +12,8 @@ class DashboardProxyLabelTests(unittest.TestCase):
         self.assertNotIn("s.stocks_count", page_source)
         self.assertIn("s.data_status === \"derived\"", page_source)
         self.assertIn("板块代理", page_source)
+        self.assertNotIn("|| 28", page_source)
+        self.assertNotIn("|| 320", page_source)
 
 
 if __name__ == "__main__":

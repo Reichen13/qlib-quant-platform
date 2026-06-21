@@ -94,9 +94,9 @@ export function DashboardPage() {
     refetchInterval: 120000,
   })
 
-  const stocksCount = stocksData?.total || 0
-  const etfCount = etfData?.etfs?.length || 0
-  const sectorsCount = sectorsData?.sectors?.length || 0
+  const stocksCount = stocksData?.total
+  const etfCount = etfData?.etfs?.length
+  const sectorsCount = sectorsData?.sectors?.length
   const marketTrend = marketPerformance?.data?.length
     ? buildMarketTrend(marketPerformance.data)
     : []
@@ -105,10 +105,13 @@ export function DashboardPage() {
     : []
 
   const latestTrend = marketTrend[marketTrend.length - 1]
+  const hasMarketTrend = Boolean(latestTrend)
+  const isBullish = hasMarketTrend && latestTrend.value > latestTrend.ma200
+  const isAboveMa60 = hasMarketTrend && latestTrend.value > latestTrend.ma60
   const marketStatus = {
-    trend: latestTrend?.value > latestTrend?.ma200 ? "bullish" : "bearish",
-    position: latestTrend?.value > latestTrend?.ma60 ? "高仓位(70-80%)" : "低仓位(30-40%)",
-    advice: latestTrend?.value > latestTrend?.ma200 ? "趋势向上，建议积极参与" : "趋势向下，建议谨慎观望",
+    trend: hasMarketTrend ? (isBullish ? "bullish" : "bearish") : "unavailable",
+    position: hasMarketTrend ? (isAboveMa60 ? "高仓位(70-80%)" : "低仓位(30-40%)") : "暂无可靠数据",
+    advice: hasMarketTrend ? (isBullish ? "趋势向上，建议积极参与" : "趋势向下，建议谨慎观望") : "暂无可靠大盘趋势数据",
   }
 
   const handleStrategyChange = (id: string, value: number) => {
@@ -139,7 +142,7 @@ export function DashboardPage() {
             <Database className="size-3.5 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl md:text-2xl font-bold tracking-tight">{stocksCount}</div>
+            <div className="text-xl md:text-2xl font-bold tracking-tight">{stocksCount ?? "--"}</div>
             <p className="text-[11px] text-muted-foreground mt-0.5">覆盖 A 股</p>
           </CardContent>
         </Card>
@@ -150,7 +153,7 @@ export function DashboardPage() {
             <TrendingUp className="size-3.5 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl md:text-2xl font-bold tracking-tight">{sectorsCount || 28}</div>
+            <div className="text-xl md:text-2xl font-bold tracking-tight">{sectorsCount ?? "--"}</div>
             <p className="text-[11px] text-muted-foreground mt-0.5">申万行业</p>
           </CardContent>
         </Card>
@@ -161,7 +164,7 @@ export function DashboardPage() {
             <Activity className="size-3.5 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-xl md:text-2xl font-bold tracking-tight">{etfCount || 320}</div>
+            <div className="text-xl md:text-2xl font-bold tracking-tight">{etfCount ?? "--"}</div>
             <p className="text-[11px] text-muted-foreground mt-0.5">全市场 ETF</p>
           </CardContent>
         </Card>
@@ -169,14 +172,14 @@ export function DashboardPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-0 gap-2">
             <CardTitle className="text-xs font-medium text-muted-foreground">大盘趋势</CardTitle>
-            <BarChart3 className={`size-3.5 ${marketStatus.trend === "bullish" ? "text-up" : "text-down"}`} />
+            <BarChart3 className={`size-3.5 ${marketStatus.trend === "bullish" ? "text-up" : marketStatus.trend === "bearish" ? "text-down" : "text-muted-foreground"}`} />
           </CardHeader>
           <CardContent>
-            <div className={`text-xl md:text-2xl font-bold tracking-tight ${marketStatus.trend === "bullish" ? "text-up" : "text-down"}`}>
-              {marketStatus.trend === "bullish" ? "多头" : "空头"}
+            <div className={`text-xl md:text-2xl font-bold tracking-tight ${marketStatus.trend === "bullish" ? "text-up" : marketStatus.trend === "bearish" ? "text-down" : "text-muted-foreground"}`}>
+              {marketStatus.trend === "bullish" ? "多头" : marketStatus.trend === "bearish" ? "空头" : "暂无"}
             </div>
             <p className="text-[11px] text-muted-foreground mt-0.5">
-              沪深300: {latestTrend?.value?.toFixed(0)}
+              沪深300: {latestTrend?.value?.toFixed(0) ?? "--"}
             </p>
           </CardContent>
         </Card>
