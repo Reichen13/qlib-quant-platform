@@ -225,6 +225,8 @@ needles = [
     "ETF/指数暂按 Qlib 状态代理展示",
     "指定股票代码",
     "用于提交模型回测",
+    "用于提交风险分析",
+    "用于提交组合优化",
 ]
 missing = [needle for needle in needles if needle not in bundle]
 if missing:

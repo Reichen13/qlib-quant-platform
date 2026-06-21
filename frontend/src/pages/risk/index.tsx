@@ -45,6 +45,16 @@ export function RiskPage() {
   const riskInputValue = useAppStore((s) => s.riskInputValue)
   const setRiskCodes = useAppStore((s) => s.setRiskCodes)
   const [analyzeEnabled, setAnalyzeEnabled] = useState(true)
+  const [adminApiKey, setAdminApiKey] = useState(() => localStorage.getItem("qlib-admin-api-key") || "")
+
+  const handleAdminKeyChange = (value: string) => {
+    setAdminApiKey(value)
+    if (value) {
+      localStorage.setItem("qlib-admin-api-key", value)
+    } else {
+      localStorage.removeItem("qlib-admin-api-key")
+    }
+  }
 
   // 风险分析
   const { data: riskData, isLoading, isError, error, refetch } = useQuery({
@@ -156,6 +166,24 @@ export function RiskPage() {
               ))}
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium">服务器管理 Key</CardTitle>
+          <CardDescription>
+            用于提交风险分析等受保护操作；只保存在当前浏览器，不会写入项目代码。
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Input
+            type="password"
+            value={adminApiKey}
+            onChange={(event) => handleAdminKeyChange(event.target.value)}
+            placeholder="请输入服务器 API_KEY"
+            autoComplete="off"
+          />
         </CardContent>
       </Card>
 

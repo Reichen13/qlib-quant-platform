@@ -38,6 +38,16 @@ export function PortfolioPage() {
   const codes = portfolioCodesStr.split(/[\s,]+/).filter(Boolean)
   const { method, maxWeight, turnoverLambda } = portfolioParams
   const [optimizeEnabled, setOptimizeEnabled] = useState(false)
+  const [adminApiKey, setAdminApiKey] = useState(() => localStorage.getItem("qlib-admin-api-key") || "")
+
+  const handleAdminKeyChange = (value: string) => {
+    setAdminApiKey(value)
+    if (value) {
+      localStorage.setItem("qlib-admin-api-key", value)
+    } else {
+      localStorage.removeItem("qlib-admin-api-key")
+    }
+  }
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ["portfolio", "optimize", codes, method, maxWeight, turnoverLambda],
@@ -202,6 +212,24 @@ export function PortfolioPage() {
               </div>
             </div>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium">服务器管理 Key</CardTitle>
+          <CardDescription>
+            用于提交组合优化等受保护操作；只保存在当前浏览器，不会写入项目代码。
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Input
+            type="password"
+            value={adminApiKey}
+            onChange={(event) => handleAdminKeyChange(event.target.value)}
+            placeholder="请输入服务器 API_KEY"
+            autoComplete="off"
+          />
         </CardContent>
       </Card>
 
