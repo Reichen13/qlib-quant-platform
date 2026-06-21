@@ -21,6 +21,7 @@ from typing import Optional
 
 from loguru import logger
 from pydantic import BaseModel, Field
+from utils.code_normalization import normalize_stock_code
 
 
 # ── 结构化输出模型 ──
@@ -134,7 +135,7 @@ def _format_indicators(code: str) -> str:
         import pandas as pd
         from datetime import datetime
 
-        inst = f"SH{code.replace('.SS', '')}" if code.endswith(".SS") else f"SZ{code.replace('.SZ', '')}"
+        inst = normalize_stock_code(code, target="qlib")
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - pd.Timedelta(days=120)).strftime("%Y-%m-%d")
 
