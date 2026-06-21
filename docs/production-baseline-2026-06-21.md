@@ -103,3 +103,24 @@ python update_cn_data.py --code sh600519 --start 2026-03-20 --end 2026-06-19 --r
 - `first_valid` 早于 `2026-04-30`。
 - 行情分析中贵州茅台 K 线不再只从 4 月底开始显示。
 
+## 公开接口巡检补充
+
+同日只读巡检主要公开接口，结果如下：
+
+| 接口 | 状态 | 耗时 | 结论 |
+|---|---:|---:|---|
+| `/health` | 200 | 165 ms | 正常 |
+| `/api/data/health` | 200 | 735 ms | 正常返回，整体 warning |
+| `/api/stocks/search?q=600519` | 200 | 32 ms | 搜索正常，市场识别为 SH |
+| `/api/quote/600519?frequency=daily&indicators=true` | 200 | 56 ms | 返回很快，但仍有 0 值 OHLC |
+| `/api/etf/signals?days=20` | timeout | 20031 ms | ETF 信号接口仍会超时 |
+| `/api/sectors/performance?days=10` | 200 | 3518 ms | 可返回，但偏慢 |
+| `/api/pair/list` | 200 | 30 ms | 可返回，部分配对指标为空/数据不足 |
+| `/api/index/performance?index=hs300` | 200 | 45 ms | 正常 |
+
+后续判断：
+
+- K 线 0 值问题已经有本地修复和定向数据修复脚本，等待服务器部署后验证。
+- 因子分析 504 已有本地后台任务修复，等待服务器部署后验证。
+- ETF 信号接口 `20s` 超时仍是独立遗留问题；本轮未把 ETF 信号计算改成后台任务或缓存，后续应单独优化。
+- 板块表现接口可返回但约 `3.5s`，如页面体验仍卡顿，可后续做缓存或预计算。
