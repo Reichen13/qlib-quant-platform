@@ -176,6 +176,28 @@ def _compute_pair_metrics(pair_def: dict) -> dict:
     return result
 
 
+def _cached_or_unavailable_pair_metrics(pair_def: dict) -> dict:
+    """Return cached pair metrics for fast list pages; do not calculate Qlib here."""
+    code1, code2 = pair_def["stock1"], pair_def["stock2"]
+    ck = _cache_key(code1, code2)
+    now = time.time()
+    if ck in _pair_cache:
+        ts, cached = _pair_cache[ck]
+        if now - ts < CACHE_TTL:
+            return dict(cached)
+
+    return {
+        **pair_def,
+        "correlation": None,
+        "pValue": None,
+        "zScore": None,
+        "signal": "待分析",
+        "status": "不可用",
+        "data_status": "unavailable",
+        "warning": "列表页未实时重算 Qlib 指标，请进入配对分析查看真实指标；未生成模拟配对指标。",
+    }
+
+
 def calc_spread_data(code1: str, code2: str, days: int = 60) -> List[Dict]:
     """计算价差数据"""
     try:
@@ -230,15 +252,15 @@ def calc_spread_data(code1: str, code2: str, days: int = 60) -> List[Dict]:
 @router.get("/list")
 async def list_pairs():
     """
-    获取配对交易列表（动态计算真实指标）
+    获取配对交易列表
 
-    使用 Qlib 实时计算相关性和价差 Z-score
+    列表页只读取已有缓存，避免每次打开页面都触发 Qlib 重计算。
     """
     try:
         updated_pairs = []
         for pair_def in PAIR_DEFINITIONS:
             try:
-                metrics = _compute_pair_metrics(pair_def)
+                metrics = _cached_or_unavailable_pair_metrics(pair_def)
                 updated_pairs.append(metrics)
             except Exception as e:
                 logger.warning(f"跳过配对 {pair_def['pair']}: {e}")

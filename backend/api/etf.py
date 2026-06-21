@@ -247,12 +247,12 @@ def _fetch_all_etf_history_from_yfinance(period: str = "6mo") -> Dict[str, pd.Da
         return {}
 
 
-def _fetch_all_etf_history(period: str = "6mo") -> Dict[str, pd.DataFrame]:
-    """获取 ETF 行情：先用本地 Qlib，缺失部分再尝试 yfinance 补充。"""
+def _fetch_all_etf_history(period: str = "6mo", include_external: bool = True) -> Dict[str, pd.DataFrame]:
+    """获取 ETF 行情：本地 Qlib 优先，必要时可用 yfinance 补充。"""
     result = _fetch_all_etf_history_from_qlib(period)
     missing_codes = [code for code in _get_etf_universe() if code not in result]
 
-    if missing_codes:
+    if include_external and missing_codes:
         yf_history = _fetch_all_etf_history_from_yfinance(period)
         for code in missing_codes:
             hist = yf_history.get(code)
@@ -262,15 +262,15 @@ def _fetch_all_etf_history(period: str = "6mo") -> Dict[str, pd.DataFrame]:
     return result
 
 
-def _get_cached_history() -> Dict[str, pd.DataFrame]:
+def _get_cached_history(include_external: bool = False) -> Dict[str, pd.DataFrame]:
     """获取缓存的 ETF 行情数据"""
     now = time.time()
-    cache_key = "all_etfs"
+    cache_key = f"all_etfs:external={int(include_external)}"
     if cache_key in _cache:
         ts, cached_history = _cache[cache_key]
         if now - ts < CACHE_TTL:
             return cached_history
-    history = _fetch_all_etf_history()
+    history = _fetch_all_etf_history(include_external=include_external)
     if history:
         _cache[cache_key] = (now, history)
     return history
@@ -388,18 +388,18 @@ async def get_etf_signals(days: int = 20):
     基于本地 Qlib 或备用外部行情计算动量信号
     """
     try:
-        all_history = _get_cached_history()
+        all_history = _get_cached_history(include_external=False)
+        universe = _get_etf_universe()
         etfs = []
         top_buy = []
         top_sell = []
+        missing_count = 0
 
-        for code, name in _get_etf_universe().items():
+        for code, name in universe.items():
             hist = all_history.get(code)
             if hist is None or len(hist) < 10:
-                # 降级：单独获取
-                hist = _fetch_etf_history(code)
-                if hist is None or len(hist) < 10:
-                    continue
+                missing_count += 1
+                continue
 
             etf_info = _compute_etf_metrics(code, hist, days)
             if etf_info is None:
@@ -421,12 +421,16 @@ async def get_etf_signals(days: int = 20):
             )
 
         etfs.sort(key=lambda x: x.change_pct, reverse=True)
+        warning = None
+        if missing_count:
+            warning = f"{missing_count} 只 ETF 暂无本地可靠行情数据，已跳过；未使用模拟轮动信号。"
 
         return ETFSignalResponse(
             date=date.today(),
             etfs=etfs,
             top_buy=top_buy[:5],
             top_sell=top_sell[:5],
+            warning=warning,
         )
 
     except HTTPException:
@@ -439,13 +443,11 @@ async def get_etf_signals(days: int = 20):
 @router.get("/list")
 async def list_etfs():
     """获取 ETF 列表及可计算的真实行情指标"""
-    all_history = _get_cached_history()
+    all_history = _get_cached_history(include_external=False)
     etfs = []
     missing = []
     for code, name in _get_etf_universe().items():
         hist = all_history.get(code)
-        if hist is None or len(hist) < 10:
-            hist = _fetch_etf_history(code)
         if hist is None or len(hist) < 10:
             missing.append(code)
             etfs.append({

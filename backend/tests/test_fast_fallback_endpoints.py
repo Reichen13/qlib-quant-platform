@@ -16,6 +16,8 @@ if "loguru" not in sys.modules:
         warning=lambda *args, **kwargs: None,
         error=lambda *args, **kwargs: None,
         debug=lambda *args, **kwargs: None,
+        add=lambda *args, **kwargs: None,
+        remove=lambda *args, **kwargs: None,
     )
     sys.modules["loguru"] = types.SimpleNamespace(logger=logger)
 
@@ -54,6 +56,20 @@ class FastFallbackEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.top_buy, [])
         self.assertEqual(response.top_sell, [])
         self.assertIn("未生成模拟", response.warning)
+
+    async def test_etf_pages_do_not_make_slow_external_or_per_code_fallbacks(self):
+        etf._cache.clear()
+        with patch.object(etf, "_fetch_all_etf_history_from_qlib", return_value={}), \
+             patch.object(etf, "_fetch_all_etf_history_from_yfinance", side_effect=AssertionError("bulk yfinance should not be called")), \
+             patch.object(etf, "_fetch_etf_history", side_effect=AssertionError("per-code ETF fallback should not be called")):
+            signals = await etf.get_etf_signals(days=20)
+            listing = await etf.list_etfs()
+
+        self.assertEqual(signals.etfs, [])
+        self.assertEqual(signals.top_buy, [])
+        self.assertEqual(signals.top_sell, [])
+        self.assertGreater(listing["total"], 0)
+        self.assertTrue(all(item["data_status"] == "unavailable" for item in listing["etfs"]))
 
     async def test_pair_list_does_not_recalculate_qlib_correlations(self):
         with patch.object(pair, "calc_correlation_from_qlib", side_effect=AssertionError("qlib should not be called")) as calc:

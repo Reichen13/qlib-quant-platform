@@ -21,6 +21,8 @@ if "loguru" not in sys.modules:
         error=lambda *args, **kwargs: None,
         debug=lambda *args, **kwargs: None,
         exception=lambda *args, **kwargs: None,
+        add=lambda *args, **kwargs: None,
+        remove=lambda *args, **kwargs: None,
     )
     sys.modules["loguru"] = types.SimpleNamespace(logger=logger)
 
