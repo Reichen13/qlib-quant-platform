@@ -282,6 +282,27 @@ class DataApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["task_id"], "task-1")
         self.assertEqual(response["status"], "running")
 
+    async def test_update_progress_falls_back_to_persisted_task(self):
+        data._update_tasks.clear()
+        self.store.create_task("task-1", json.dumps({"type": "stocks"}, ensure_ascii=False))
+        self.store.set_running(
+            "task-1",
+            35,
+            json.dumps({
+                "task_id": "task-1",
+                "type": "stocks",
+                "status": "running",
+                "progress": 35,
+                "message": "正在更新 Qlib 数据",
+            }, ensure_ascii=False),
+        )
+
+        response = await data.get_data_update_progress("task-1")
+
+        self.assertEqual(response["task_id"], "task-1")
+        self.assertEqual(response["status"], "running")
+        self.assertEqual(response["progress"], 35)
+
     async def test_running_process_is_rejected(self):
         data._update_tasks.clear()
         data._update_tasks["task-1"] = {

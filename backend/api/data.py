@@ -634,6 +634,11 @@ async def get_data_update_progress(task_id: str):
     """查询数据更新任务状态。"""
     with _tasks_lock:
         task = _update_tasks.get(task_id)
-        if task is None:
-            raise HTTPException(status_code=404, detail="数据更新任务不存在")
-        return task.copy()
+        if task is not None:
+            return task.copy()
+
+    persisted_task = _get_persisted_task(task_id)
+    if persisted_task is not None:
+        return persisted_task
+
+    raise HTTPException(status_code=404, detail="数据更新任务不存在")
