@@ -17,6 +17,7 @@ from core.news_sentiment import (
     get_event_extractor,
     analyze_sentiment,
 )
+from utils.code_normalization import normalize_stock_code
 
 router = APIRouter()
 
@@ -32,6 +33,7 @@ async def get_stock_news_sentiment(
         code: yfinance 格式代码，如 "600519.SS"
         days: 回溯天数
     """
+    code = normalize_stock_code(code, target="yf")
     fetcher = get_news_fetcher()
     news = fetcher.fetch_for_stock(code, days=days)
 
@@ -182,6 +184,7 @@ async def get_stock_events(
         code: yfinance 格式代码
         days: 回溯天数
     """
+    code = normalize_stock_code(code, target="yf")
     fetcher = get_news_fetcher()
     news = fetcher.fetch_for_stock(code, days=days)
 
