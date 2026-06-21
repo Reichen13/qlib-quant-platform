@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from auth import verify_api_key
 from db.task_store import TaskStore
+from utils.code_normalization import normalize_stock_code
 
 router = APIRouter()
 _MAX_FEATURE_DATE_SAMPLE = 300
@@ -31,8 +32,7 @@ class DataUpdateRequest(BaseModel):
     start_date: str | None = Field(default=None, description="起始日期 YYYY-MM-DD，默认从 Qlib 最新日期开始")
     end_date: str | None = Field(default=None, description="结束日期 YYYY-MM-DD，默认到今天")
     max_stocks: int | None = Field(default=None, ge=1, le=5000, description="最多更新多少只股票，测试时可填较小值")
-
-
+    codes: list[str] | None = Field(default=None, description="可选：只更新/修复指定股票代码")
     rebuild_stale: bool = Field(default=False, description="Repair existing stale zero/NaN OHLC rows")
 
 
@@ -311,6 +311,22 @@ def _resolve_update_script() -> Path:
     return Path(__file__).resolve().parents[2] / "update_cn_data.py"
 
 
+def _normalize_update_codes(codes: list[str] | None) -> list[str]:
+    if not codes:
+        return []
+    normalized = []
+    seen = set()
+    for code in codes:
+        try:
+            qlib_code = normalize_stock_code(code, target="qlib").lower()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"股票代码格式不支持: {code}") from exc
+        if qlib_code not in seen:
+            seen.add(qlib_code)
+            normalized.append(qlib_code)
+    return normalized
+
+
 def _find_running_update() -> dict | None:
     with _tasks_lock:
         for task in _update_tasks.values():
@@ -585,6 +601,8 @@ async def start_data_update(request: DataUpdateRequest):
         command.extend(["--end", request.end_date])
     if request.max_stocks:
         command.extend(["--max", str(request.max_stocks)])
+    for code in _normalize_update_codes(request.codes):
+        command.extend(["--code", code])
     if request.rebuild_stale:
         command.append("--rebuild-stale")
 

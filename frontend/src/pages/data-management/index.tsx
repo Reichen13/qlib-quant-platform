@@ -25,8 +25,9 @@ export function DataManagementPage() {
   const updateSteps = dataManagementParams.updateSteps
   const overallProgress = dataManagementParams.overallProgress
   const updateTaskId = dataManagementParams.updateTaskId
+  const repairStale = dataManagementParams.repairStale
+  const targetCodes = dataManagementParams.targetCodes
   const [adminApiKey, setAdminApiKey] = useState(() => localStorage.getItem("qlib-admin-api-key") || "")
-  const [repairStale, setRepairStale] = useState(false)
   const queryClient = useQueryClient()
 
   // 获取数据状态
@@ -106,6 +107,11 @@ export function DataManagementPage() {
     }
   }
 
+  const parseTargetCodes = () => targetCodes
+    .split(/[\s,，;；]+/)
+    .map((code) => code.trim())
+    .filter(Boolean)
+
   const handleUpdate = async (type: "stocks" | "etf" | "index" | "all") => {
     setDataManagementParams({
       updateTaskId: null,
@@ -119,7 +125,7 @@ export function DataManagementPage() {
     })
 
     try {
-      const result = await api.data.update(type, { rebuildStale: repairStale })
+      const result = await api.data.update(type, { rebuildStale: repairStale, codes: parseTargetCodes() })
       const taskId = result.task_id
       setDataManagementParams({
         updateTaskId: taskId,
@@ -228,12 +234,27 @@ export function DataManagementPage() {
         <input
           type="checkbox"
           checked={repairStale}
-          onChange={(event) => setRepairStale(event.target.checked)}
+          onChange={(event) => setDataManagementParams({ repairStale: event.target.checked })}
           disabled={isUpdating}
           className="h-4 w-4"
         />
         修复已有 0 值历史 K 线
       </label>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">指定股票代码</CardTitle>
+          <CardDescription>可选。留空则按全量更新；填写后只更新/修复这些股票，支持 600519、300750、688981 这类普通代码。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Input
+            value={targetCodes}
+            onChange={(event) => setDataManagementParams({ targetCodes: event.target.value })}
+            placeholder="例如：600519 300750 688981"
+            disabled={isUpdating}
+          />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

@@ -11,8 +11,11 @@ class DataManagementRebuildStaleTests(unittest.TestCase):
         api_source = (ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
 
         self.assertIn("repairStale", page_source)
+        self.assertIn("targetCodes", page_source)
+        self.assertIn("指定股票代码", page_source)
         self.assertIn("rebuildStale", api_source)
         self.assertIn("rebuild_stale", api_source)
+        self.assertIn("codes:", api_source)
 
     def test_etf_and_index_status_copy_does_not_overstate_update_coverage(self):
         page_source = (ROOT / "src" / "pages" / "data-management" / "index.tsx").read_text(encoding="utf-8")

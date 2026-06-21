@@ -569,11 +569,15 @@ export const api = {
     },
     logs: () =>
       fetch(`${API_BASE}/api/data/logs`, { timeoutMs: 30_000 }).then(r => handleResponse<DataLogsResponse>(r)),
-    update: async (type: "stocks" | "etf" | "index" | "all", options?: { rebuildStale?: boolean }) =>
+    update: async (type: "stocks" | "etf" | "index" | "all", options?: { rebuildStale?: boolean; codes?: string[] }) =>
       fetch(`${API_BASE}/api/data/update`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type, rebuild_stale: options?.rebuildStale ?? false }),
+        body: JSON.stringify({
+          type,
+          rebuild_stale: options?.rebuildStale ?? false,
+          codes: options?.codes && options.codes.length > 0 ? options.codes : undefined,
+        }),
         timeoutMs: 30_000,
       }).then(r => handleResponse<DataUpdateResponse>(r)),
     updateProgress: (taskId: string) =>

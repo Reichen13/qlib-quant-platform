@@ -99,6 +99,8 @@ export interface DataManagementParams {
   isUpdating: boolean
   updateSteps: DataUpdateStep[]
   overallProgress: number
+  repairStale: boolean
+  targetCodes: string
 }
 
 export interface AgentDebateParams {
@@ -321,6 +323,8 @@ function createDefaultDataManagementParams(): DataManagementParams {
     isUpdating: false,
     updateSteps: [],
     overallProgress: 0,
+    repairStale: false,
+    targetCodes: "",
   }
 }
 

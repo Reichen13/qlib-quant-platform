@@ -246,6 +246,26 @@ class DataApiTests(unittest.IsolatedAsyncioTestCase):
         command = start_thread.call_args.args[1]
         self.assertIn("--rebuild-stale", command)
 
+    async def test_start_update_can_pass_target_stock_codes(self):
+        data._update_tasks.clear()
+
+        with patch.object(data, "_resolve_update_script", return_value=Path(__file__)), \
+             patch.object(data, "_start_update_thread") as start_thread:
+            await data.start_data_update(
+                data.DataUpdateRequest(
+                    type="stocks",
+                    codes=["600519", "300750", "688981"],
+                    rebuild_stale=True,
+                )
+            )
+
+        command = start_thread.call_args.args[1]
+        self.assertIn("--rebuild-stale", command)
+        self.assertEqual(command.count("--code"), 3)
+        self.assertIn("sh600519", command)
+        self.assertIn("sz300750", command)
+        self.assertIn("sh688981", command)
+
     async def test_update_progress_returns_existing_task(self):
         data._update_tasks.clear()
         data._update_tasks["task-1"] = {
