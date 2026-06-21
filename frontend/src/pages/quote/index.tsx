@@ -41,6 +41,12 @@ interface SearchResult {
   market: string
 }
 
+function filterValidOhlcRows(row: any) {
+  const values = [row.open, row.high, row.low, row.close].map(Number)
+  const validOhlc = values.every((value) => Number.isFinite(value)) && values.some((value) => value > 0)
+  return validOhlc
+}
+
 export function QuoteAnalysisPage() {
   const [searchParams] = useSearchParams()
   const quoteParams = useAppStore((s) => s.quoteParams)
@@ -113,7 +119,7 @@ export function QuoteAnalysisPage() {
   let chartData: any[] = []
 
   if (quoteData?.data && quoteData.data.length > 0) {
-    chartData = quoteData.data.map((d: any) => ({
+    chartData = quoteData.data.filter(filterValidOhlcRows).map((d: any) => ({
       time: new Date(d.date).getTime() / 1000,
       open: d.open,
       high: d.high,

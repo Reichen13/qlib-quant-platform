@@ -33,6 +33,9 @@ class DataUpdateRequest(BaseModel):
     max_stocks: int | None = Field(default=None, ge=1, le=5000, description="最多更新多少只股票，测试时可填较小值")
 
 
+    rebuild_stale: bool = Field(default=False, description="Repair existing stale zero/NaN OHLC rows")
+
+
 _update_tasks: dict[str, dict] = {}
 _tasks_lock = threading.Lock()
 data_update_task_store = TaskStore(Path.home() / ".qlib" / "data_update_tasks.db", table_name="data_update_tasks")
@@ -575,6 +578,8 @@ async def start_data_update(request: DataUpdateRequest):
         command.extend(["--end", request.end_date])
     if request.max_stocks:
         command.extend(["--max", str(request.max_stocks)])
+    if request.rebuild_stale:
+        command.append("--rebuild-stale")
 
     task_id = str(uuid.uuid4())
     now = datetime.now().isoformat()

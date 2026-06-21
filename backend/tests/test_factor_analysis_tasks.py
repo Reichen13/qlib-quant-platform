@@ -1,4 +1,6 @@
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -66,16 +68,68 @@ class FactorAnalysisTaskTests(unittest.TestCase):
                 },
             )
 
-        self.assertEqual(submit.status_code, 200)
-        task_id = submit.json()["task_id"]
+            self.assertEqual(submit.status_code, 200)
+            task_id = submit.json()["task_id"]
 
-        status = self.client.get(f"/api/factors/analyze/status/{task_id}")
+            status = None
+            for _ in range(20):
+                status = self.client.get(f"/api/factors/analyze/status/{task_id}")
+                if status.json().get("status") == "completed":
+                    break
+                time.sleep(0.05)
 
+        self.assertIsNotNone(status)
         self.assertEqual(status.status_code, 200)
         body = status.json()
         self.assertEqual(body["status"], "completed")
         self.assertEqual(body["progress"], 100)
         self.assertEqual(body["result"]["factors"][0]["factor"], "KMID")
+
+    def test_submit_returns_before_long_analysis_finishes(self):
+        result = FactorAnalysisResponse(
+            start_date="2026-01-01",
+            end_date="2026-01-31",
+            predict_period=5,
+            factors=[
+                FactorIC(factor="KMID", ic=0.12, rank_ic=0.12, icir=1.5, category="kline"),
+            ],
+            summary={"total_factors": 1},
+        )
+        release_analysis = threading.Event()
+
+        def slow_analysis(_params):
+            release_analysis.wait(timeout=3)
+            return result
+
+        with patch.object(factors, "_run_factor_analysis", side_effect=slow_analysis):
+            started = time.monotonic()
+            submit = self.client.post(
+                "/api/factors/analyze/submit",
+                json={
+                    "start_date": "2026-01-01",
+                    "end_date": "2026-01-31",
+                    "predict_period": 5,
+                    "top_k": 20,
+                },
+            )
+            elapsed = time.monotonic() - started
+
+            self.assertEqual(submit.status_code, 200)
+            self.assertLess(elapsed, 1.0)
+            task_id = submit.json()["task_id"]
+
+            status = self.client.get(f"/api/factors/analyze/status/{task_id}")
+            self.assertEqual(status.status_code, 200)
+            self.assertEqual(status.json()["status"], "running")
+
+            release_analysis.set()
+            for _ in range(20):
+                status = self.client.get(f"/api/factors/analyze/status/{task_id}")
+                if status.json().get("status") == "completed":
+                    break
+                time.sleep(0.05)
+
+        self.assertEqual(status.json()["status"], "completed")
 
     def test_missing_task_returns_404(self):
         status = self.client.get("/api/factors/analyze/status/not-found")

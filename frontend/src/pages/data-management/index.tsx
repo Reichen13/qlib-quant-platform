@@ -26,6 +26,7 @@ export function DataManagementPage() {
   const overallProgress = dataManagementParams.overallProgress
   const updateTaskId = dataManagementParams.updateTaskId
   const [adminApiKey, setAdminApiKey] = useState(() => localStorage.getItem("qlib-admin-api-key") || "")
+  const [repairStale, setRepairStale] = useState(false)
   const queryClient = useQueryClient()
 
   // 获取数据状态
@@ -118,7 +119,7 @@ export function DataManagementPage() {
     })
 
     try {
-      const result = await api.data.update(type)
+      const result = await api.data.update(type, { rebuildStale: repairStale })
       const taskId = result.task_id
       setDataManagementParams({
         updateTaskId: taskId,
@@ -222,6 +223,17 @@ export function DataManagementPage() {
           指数更新未接入
         </Button>
       </div>
+
+      <label className="flex max-w-fit items-center gap-2 text-sm text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={repairStale}
+          onChange={(event) => setRepairStale(event.target.checked)}
+          disabled={isUpdating}
+          className="h-4 w-4"
+        />
+        修复已有 0 值历史 K 线
+      </label>
 
       <Card>
         <CardHeader>

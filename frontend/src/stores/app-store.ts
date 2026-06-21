@@ -87,6 +87,7 @@ export interface AgentDebateParams {
   agentDebateTaskId: string | null
   status: "idle" | "running" | "completed" | "failed" | "error"
   report: unknown | null
+  errorMessage: string
   activeStage: number
   memory: string
 }
@@ -268,6 +269,7 @@ function createDefaultAgentDebateParams(): AgentDebateParams {
     agentDebateTaskId: null,
     status: "idle",
     report: null,
+    errorMessage: "",
     activeStage: 0,
     memory: "",
   }
@@ -312,9 +314,9 @@ function createDefaultDlModelsParams(): DlModelsParams {
   }
 }
 
-const DEFAULT_RISK_CODES = ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS", "601012.SS", "300750.SZ", "000002.SZ"]
+const DEFAULT_RISK_CODES = ["600519", "000858", "601318", "000333", "600036", "601012", "300750", "000002"]
 
-const DEFAULT_PORTFOLIO_CODES = "600519.SS 000858.SZ 601318.SS 000333.SZ 600036.SS"
+const DEFAULT_PORTFOLIO_CODES = "600519 000858 601318 000333 600036"
 
 export const useAppStore = create<AppState>()(
   persist(

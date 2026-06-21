@@ -249,6 +249,46 @@ class UpdateCnDataTests(unittest.TestCase):
         self.assertEqual(int(raw[0]), calendar.index("2026-03-01"))
         self.assertEqual(float(raw[-1]), 22.0)
 
+    def test_rebuild_stale_repairs_existing_zero_ohlc_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "cn_data"
+            stock_dir = data_dir / "features" / "sh600519"
+            (data_dir / "calendars").mkdir(parents=True)
+            stock_dir.mkdir(parents=True)
+            calendar = ["2026-03-20", "2026-03-23", "2026-03-24"]
+            (data_dir / "calendars" / "day.txt").write_text("\n".join(calendar) + "\n", encoding="utf-8")
+
+            for field in update_cn_data.FIELDS + update_cn_data.EXTRA_FIELDS:
+                np.array([0.0, 0.0, 0.0, 1300.0], dtype="<f").tofile(stock_dir / f"{field}.day.bin")
+
+            df = pd.DataFrame(
+                {
+                    "open": [1400.0, 1401.0],
+                    "close": [1395.0, 1396.0],
+                    "high": [1410.0, 1411.0],
+                    "low": [1380.0, 1381.0],
+                    "volume": [100.0, 200.0],
+                    "amount": [139500.0, 279200.0],
+                    "factor": [1.0, 1.0],
+                },
+                index=["2026-03-20", "2026-03-23"],
+            )
+
+            with patch.object(update_cn_data, "DATA_DIR", data_dir):
+                changed = update_cn_data.append_to_bin(
+                    "sh600519",
+                    df,
+                    calendar,
+                    rebuild_stale=True,
+                )
+
+            open_raw = np.fromfile(stock_dir / "open.day.bin", dtype="<f")
+            close_raw = np.fromfile(stock_dir / "close.day.bin", dtype="<f")
+
+        self.assertEqual(changed, 2)
+        self.assertEqual(list(open_raw), [0.0, 1400.0, 1401.0, 1300.0])
+        self.assertEqual(list(close_raw), [0.0, 1395.0, 1396.0, 1300.0])
+
 
 if __name__ == "__main__":
     unittest.main()

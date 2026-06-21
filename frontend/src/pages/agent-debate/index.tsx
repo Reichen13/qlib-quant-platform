@@ -26,7 +26,7 @@ const RATING_COLORS: Record<string, string> = {
 
 export function AgentDebatePage() {
   const { agentDebateParams, setAgentDebateParams } = useAppStore()
-  const { code, agentDebateTaskId, status, activeStage, memory } = agentDebateParams
+  const { code, agentDebateTaskId, status, activeStage, memory, errorMessage } = agentDebateParams
   const report = agentDebateParams.report as any
 
   const pollReport = useCallback(async () => {
@@ -37,6 +37,7 @@ export function AgentDebatePage() {
         setAgentDebateParams({
           status: r.status,
           report: r.report || null,
+          errorMessage: r.error || "",
           activeStage: r.report ? 5 : activeStage,
           agentDebateTaskId: null,
         })
@@ -60,6 +61,7 @@ export function AgentDebatePage() {
     setAgentDebateParams({
       status: "running",
       report: null,
+      errorMessage: "",
       activeStage: 0,
       agentDebateTaskId: null,
     })
@@ -70,10 +72,12 @@ export function AgentDebatePage() {
         agentDebateTaskId: result.task_id,
         status: result.status || "running",
         report: result.report || null,
+        errorMessage: result.error || "",
         activeStage: result.report ? 5 : 0,
       })
-    } catch {
-      setAgentDebateParams({ status: "error", agentDebateTaskId: null })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "分析请求失败"
+      setAgentDebateParams({ status: "error", agentDebateTaskId: null, errorMessage: message })
     }
   }
 
@@ -101,7 +105,7 @@ export function AgentDebatePage() {
         <CardContent className="pt-6">
           <div className="flex gap-2">
             <Input
-              placeholder="输入股票代码如 600519.SS 或 SH600519"
+              placeholder="输入股票代码，如 600519 / 300750 / 688981"
               value={code}
               onChange={(e) => setAgentDebateParams({ code: e.target.value })}
               onKeyDown={(e) => e.key === "Enter" && handleAnalyze()}
@@ -153,6 +157,9 @@ export function AgentDebatePage() {
             <p className="text-sm text-red-700 flex items-center gap-2">
               <XCircle className="h-4 w-4" />
               分析失败，请检查 LLM 配置或股票代码是否正确
+            </p>
+            <p className="text-sm text-muted-foreground mt-2">
+              {errorMessage || "请检查 LLM 配置、模型名称、Base URL 或股票代码是否正确。"}
             </p>
           </CardContent>
         </Card>

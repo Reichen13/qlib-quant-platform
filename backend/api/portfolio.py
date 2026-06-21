@@ -13,6 +13,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Depends
 from loguru import logger
 from auth import verify_api_key
+from utils.code_normalization import normalize_stock_code, normalize_stock_codes
 
 project_root = str(Path(__file__).parent.parent.parent)
 if project_root not in sys.path:
@@ -28,15 +29,7 @@ router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 def _to_qlib_codes(codes: List[str]) -> List[str]:
     """将 yfinance 格式代码 (.SS/.SZ) 转为 Qlib 格式 (SH/SZ)"""
-    converted = []
-    for code in codes:
-        if code.endswith(".SS"):
-            converted.append("SH" + code.replace(".SS", ""))
-        elif code.endswith(".SZ"):
-            converted.append("SZ" + code.replace(".SZ", ""))
-        else:
-            converted.append(code)
-    return converted
+    return normalize_stock_codes(codes, target="qlib")
 
 
 def _get_historical_prices(codes: List[str], start_date: str, end_date: str) -> pd.DataFrame:
@@ -380,7 +373,7 @@ async def optimize_portfolio(request: PortfolioOptimizeRequest):
     支持多种优化方法：max_sharpe, min_variance, risk_parity, equal_weight
     """
     try:
-        codes = request.codes
+        codes = [normalize_stock_code(code, target="yf") for code in request.codes]
         if len(codes) < 2:
             raise HTTPException(status_code=400, detail="至少需要 2 只股票")
 

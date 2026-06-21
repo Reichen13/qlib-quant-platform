@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 import pandas as pd
 from loguru import logger
+from utils.code_normalization import normalize_stock_code
 
 
 class DataProvider:
@@ -94,7 +95,7 @@ class DataProvider:
             import qlib
             from qlib.data import D
 
-            qlib_code = code.replace("SH", "").replace("SZ", "")
+            qlib_code = normalize_stock_code(code, target="qlib")
             df = D.features(
                 [qlib_code],
                 ["$open", "$high", "$low", "$close", "$volume", "$amount"],
@@ -444,27 +445,12 @@ class DataProvider:
     @staticmethod
     def _to_baostock_code(code: str) -> str:
         """转换代码格式：SH600000 -> sh.600000"""
-        code = code.upper().strip()
-        if code.startswith("SH"):
-            return code.replace("SH", "sh.").replace("SZ", "sz.")
-        elif code.startswith("SZ"):
-            return code.replace("SZ", "sz.")
-        elif code.startswith("sh.") or code.startswith("sz."):
-            return code
-        else:
-            # 默认格式化为上海代码
-            if code[0] == '6':
-                return f"sh.{code}"
-            else:
-                return f"sz.{code}"
+        return normalize_stock_code(code, target="baostock")
 
     @staticmethod
     def _from_baostock_code(code: str) -> str:
         """转换代码格式：sh.600000 -> SH600000"""
-        if "." in code:
-            market, symbol = code.split(".")
-            return f"{market.upper()}{symbol}"
-        return code
+        return normalize_stock_code(code, target="qlib")
 
     def close(self):
         """关闭连接"""

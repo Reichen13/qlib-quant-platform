@@ -1,5 +1,6 @@
 import unittest
 import sys
+import types
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,6 +9,22 @@ project_root = backend_dir.parent
 for path in (str(project_root), str(backend_dir)):
     if path not in sys.path:
         sys.path.insert(0, path)
+
+if "loguru" not in sys.modules:
+    logger = types.SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        warning=lambda *args, **kwargs: None,
+        error=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    sys.modules["loguru"] = types.SimpleNamespace(logger=logger)
+
+if "yfinance" not in sys.modules:
+    fake_yfinance = types.SimpleNamespace(
+        Ticker=lambda *args, **kwargs: None,
+        download=lambda *args, **kwargs: None,
+    )
+    sys.modules["yfinance"] = fake_yfinance
 
 from backend.api import etf, index, pair, sectors
 
@@ -33,8 +50,10 @@ class FastFallbackEndpointTests(unittest.IsolatedAsyncioTestCase):
         with patch("yfinance.Ticker", side_effect=AssertionError("yfinance should not be called")):
             response = await etf.get_etf_signals(days=20)
 
-        self.assertGreater(len(response.etfs), 0)
-        self.assertIn(response.etfs[0].signal, {"buy", "hold", "sell"})
+        self.assertEqual(response.etfs, [])
+        self.assertEqual(response.top_buy, [])
+        self.assertEqual(response.top_sell, [])
+        self.assertIn("未生成模拟", response.warning)
 
     async def test_pair_list_does_not_recalculate_qlib_correlations(self):
         with patch.object(pair, "calc_correlation_from_qlib", side_effect=AssertionError("qlib should not be called")) as calc:

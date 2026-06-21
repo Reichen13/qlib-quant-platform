@@ -196,6 +196,42 @@ def _should_rebuild_bin(end_idx: int, first_new_idx: int, raw_len: int, rebuild_
     return first_new_idx - end_idx > REBUILD_GAP_THRESHOLD and raw_len < REBUILD_GAP_THRESHOLD
 
 
+def _repair_existing_stale_values(
+    bin_path: pathlib.Path,
+    raw: np.ndarray,
+    start_idx: int,
+    end_idx: int,
+    df: pd.DataFrame,
+    field: str,
+    calendar_index: dict[str, int],
+    rebuild_stale: bool,
+) -> int:
+    if not rebuild_stale:
+        return 0
+
+    values = raw[1:].copy()
+    repaired = 0
+    for date_str in df.index:
+        cal_idx = _date_to_calendar_index(calendar_index, date_str)
+        if cal_idx is None or cal_idx < start_idx or cal_idx > end_idx:
+            continue
+
+        new_val = float(df.loc[date_str, field])
+        if not np.isfinite(new_val) or new_val == 0:
+            continue
+
+        pos = cal_idx - start_idx
+        old_val = values[pos]
+        if not np.isfinite(old_val) or old_val == 0:
+            values[pos] = new_val
+            repaired += 1
+
+    if repaired:
+        _write_bin(bin_path, start_idx, values.tolist())
+
+    return repaired
+
+
 def append_to_bin(
     qlib_code: str,
     df: pd.DataFrame,
@@ -235,6 +271,18 @@ def append_to_bin(
         start_idx = int(raw[0])
         existing_len = len(raw) - 1
         end_idx = start_idx + existing_len - 1  # 最后一条数据的日历索引
+
+        repaired = _repair_existing_stale_values(
+            bin_path,
+            raw,
+            start_idx,
+            end_idx,
+            df,
+            field,
+            calendar_index,
+            rebuild_stale,
+        )
+        appended = max(appended, repaired)
 
         # 找新数据中日历索引 > end_idx 的部分
         new_rows = []

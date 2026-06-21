@@ -4,13 +4,14 @@
 
 import os
 import uuid
+import threading
 from pathlib import Path
 from datetime import date, datetime, timedelta
 from typing import List
 import pandas as pd
 import numpy as np
 import random
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException
 from loguru import logger
 
 from models.schemas import FactorAnalysisRequest, FactorAnalysisResponse, FactorIC
@@ -313,8 +314,19 @@ def _run_factor_analysis_task(task_id: str, params: FactorAnalysisRequest):
         factor_task_store.set_failed(task_id, str(e))
 
 
+def _start_factor_analysis_thread(task_id: str, params: FactorAnalysisRequest):
+    thread = threading.Thread(
+        target=_run_factor_analysis_task,
+        args=(task_id, params),
+        daemon=True,
+        name=f"factor-analysis-{task_id[:8]}",
+    )
+    thread.start()
+    return thread
+
+
 @router.post("/analyze/submit")
-def submit_factor_analysis(params: FactorAnalysisRequest, background_tasks: BackgroundTasks):
+def submit_factor_analysis(params: FactorAnalysisRequest):
     """提交因子分析后台任务，避免页面切换导致长请求丢失。"""
     try:
         factor_task_store.init_db()
@@ -323,7 +335,7 @@ def submit_factor_analysis(params: FactorAnalysisRequest, background_tasks: Back
 
     task_id = str(uuid.uuid4())
     factor_task_store.create_task(task_id, params.model_dump_json())
-    background_tasks.add_task(_run_factor_analysis_task, task_id, params)
+    _start_factor_analysis_thread(task_id, params)
 
     return {
         "task_id": task_id,

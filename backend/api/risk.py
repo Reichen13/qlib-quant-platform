@@ -23,21 +23,14 @@ from models.schemas import (
     RiskMetrics, StressTestResult, CorrelationItem,
     PositionSizingResult,
 )
+from utils.code_normalization import normalize_stock_code, normalize_stock_codes
 
 router = APIRouter()
 
 
 def _to_qlib_codes(codes: List[str]) -> List[str]:
     """将 yfinance 格式代码 (.SS/.SZ) 转为 Qlib 格式 (SH/SZ)"""
-    converted = []
-    for code in codes:
-        if code.endswith(".SS"):
-            converted.append("SH" + code.replace(".SS", ""))
-        elif code.endswith(".SZ"):
-            converted.append("SZ" + code.replace(".SZ", ""))
-        else:
-            converted.append(code)
-    return converted
+    return normalize_stock_codes(codes, target="qlib")
 
 
 def _get_historical_prices(codes: List[str], start_date: str, end_date: str) -> pd.DataFrame:
@@ -304,7 +297,7 @@ async def analyze_risk(request: RiskAnalysisRequest):
     分析投资组合的各类风险指标
     """
     try:
-        codes = request.codes
+        codes = [normalize_stock_code(code, target="yf") for code in request.codes]
         if not codes:
             # 默认使用 CSI300 成分股中的代表性股票
             codes = ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS"]
@@ -448,7 +441,7 @@ async def analyze_risk(request: RiskAnalysisRequest):
 async def run_stress_test(request: RiskAnalysisRequest):
     """专项压力测试"""
     try:
-        codes = request.codes or ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS"]
+        codes = [normalize_stock_code(code, target="yf") for code in request.codes] if request.codes else ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS"]
         start_date = request.start_date or (date.today() - timedelta(days=365)).isoformat()
         end_date = request.end_date or date.today().isoformat()
 

@@ -126,7 +126,7 @@ export function RiskPage() {
         <CardHeader className="pb-3">
           <CardTitle className="text-sm font-medium">投资组合配置</CardTitle>
           <CardDescription>
-            输入股票代码（空格或逗号分隔），如 600519.SS 000858.SZ
+            输入股票代码（空格或逗号分隔），如 600519 000858 300750 688981
           </CardDescription>
         </CardHeader>
         <CardContent>

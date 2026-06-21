@@ -12,6 +12,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from loguru import logger
+from utils.code_normalization import normalize_stock_code
 
 router = APIRouter()
 
@@ -77,6 +78,7 @@ async def analyze_stock(
         task_id 用于后续查询报告
     """
     _check_llm(api_key)
+    code = normalize_stock_code(code, target="yf")
 
     import uuid
     task_id = str(uuid.uuid4())[:8]

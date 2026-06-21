@@ -102,6 +102,8 @@ export function PortfolioPage() {
   const minVolPoint = frontierData.length > 0
     ? frontierData.reduce((a: any, b: any) => a.volatility < b.volatility ? a : b)
     : null
+  const portfolioErrorMessage = error instanceof Error ? error.message : ""
+  const needsAdminKey = portfolioErrorMessage.includes("服务器管理 Key") || portfolioErrorMessage.includes("API Key") || portfolioErrorMessage.includes("X-API-Key")
 
   return (
     <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[1400px] mx-auto">
@@ -128,7 +130,7 @@ export function PortfolioPage() {
                 <Input
                   value={portfolioCodesStr}
                   onChange={(e) => setPortfolioCodes(e.target.value)}
-                  placeholder="600519.SS 000858.SZ ..."
+                  placeholder="600519 000858 300750 688981 ..."
                   className="flex-1 font-mono text-sm"
                   onKeyDown={(e) => e.key === "Enter" && handleOptimize()}
                 />
@@ -219,8 +221,15 @@ export function PortfolioPage() {
               <div>
                 <p className="font-medium">优化失败</p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  {(error as any)?.message || "请检查股票代码是否正确"}
+                  {needsAdminKey
+                    ? "需要先在数据管理页面填写服务器管理 Key，然后再重试组合优化。"
+                    : portfolioErrorMessage || "请检查股票代码是否正确"}
                 </p>
+                {needsAdminKey && (
+                  <a className="text-sm underline mt-2 inline-block" href="/data-management">
+                    去数据管理填写服务器管理 Key
+                  </a>
+                )}
               </div>
             </div>
           </CardContent>

@@ -20,6 +20,9 @@ if "loguru" not in sys.modules:
     )
     sys.modules["loguru"] = types.SimpleNamespace(logger=logger)
 
+if "pandas" not in sys.modules:
+    sys.modules["pandas"] = types.SimpleNamespace()
+
 from backend.services.data_provider import DataProvider
 from backend.services.tdx_mcp_provider import TdxMcpProvider
 
@@ -64,6 +67,13 @@ class TdxMcpProviderTests(unittest.TestCase):
         self.assertEqual(len(stocks), 2)
         self.assertEqual(stocks[0]["code"], "sh.600519")
         self.assertEqual(stocks[0]["source"], "tdx_mcp")
+
+    def test_data_provider_uses_shared_code_normalization_for_baostock_codes(self):
+        self.assertEqual(DataProvider._to_baostock_code("600519"), "sh.600519")
+        self.assertEqual(DataProvider._to_baostock_code("600519.SS"), "sh.600519")
+        self.assertEqual(DataProvider._to_baostock_code("300750"), "sz.300750")
+        self.assertEqual(DataProvider._to_baostock_code("688981"), "sh.688981")
+        self.assertEqual(DataProvider._from_baostock_code("sh.688981"), "SH688981")
 
 
 if __name__ == "__main__":

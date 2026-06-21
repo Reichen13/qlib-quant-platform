@@ -76,6 +76,10 @@ function parseErrorMessage(status: number, body: string): string {
     }
   }
 
+  if (status === 504 || detail.includes("Gateway Time-out") || detail.includes("504")) {
+    return "服务器处理超时。因子分析这类计算较重，建议后台提交后等待结果，或先缩短日期范围再试。"
+  }
+
   return detail || "Unknown error"
 }
 
@@ -565,11 +569,11 @@ export const api = {
     },
     logs: () =>
       fetch(`${API_BASE}/api/data/logs`, { timeoutMs: 30_000 }).then(r => handleResponse<DataLogsResponse>(r)),
-    update: async (type: "stocks" | "etf" | "index" | "all") =>
+    update: async (type: "stocks" | "etf" | "index" | "all", options?: { rebuildStale?: boolean }) =>
       fetch(`${API_BASE}/api/data/update`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type }),
+        body: JSON.stringify({ type, rebuild_stale: options?.rebuildStale ?? false }),
         timeoutMs: 30_000,
       }).then(r => handleResponse<DataUpdateResponse>(r)),
     updateProgress: (taskId: string) =>

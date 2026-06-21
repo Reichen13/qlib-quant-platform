@@ -44,6 +44,29 @@ interface CandlestickChartProps {
   className?: string
 }
 
+export function buildPriceAutoscaleInfo(data: CandlestickData[]) {
+  const prices = data.flatMap((item) => [item.high, item.low])
+    .filter((price) => Number.isFinite(price) && price > 0)
+
+  if (prices.length === 0) return null
+
+  const minPrice = Math.min(...prices)
+  const maxPrice = Math.max(...prices)
+  const spread = Math.max(maxPrice - minPrice, maxPrice * 0.01)
+  const padding = spread * 0.08
+
+  return {
+    priceRange: {
+      minValue: Math.max(0, minPrice - padding),
+      maxValue: maxPrice + padding,
+    },
+    margins: {
+      above: 20,
+      below: 20,
+    },
+  }
+}
+
 export function CandlestickChart({
   data,
   maData,
@@ -58,9 +81,12 @@ export function CandlestickChart({
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<any>(null)
   const candlestickSeriesRef = useRef<any>(null)
+  const dataRef = useRef<CandlestickData[]>(data)
   const maSeriesRef = useRef<Record<string, any>>({})
   const bollingerSeriesRef = useRef<Record<string, any>>({})
   const volumeSeriesRef = useRef<any>(null)
+
+  dataRef.current = data
 
   // 创建图表和所有序列
   useEffect(() => {
@@ -108,6 +134,8 @@ export function CandlestickChart({
       borderVisible: false,
       wickUpColor: "#ef5350",
       wickDownColor: "#26a69a",
+      autoscaleInfoProvider: (baseImplementation: () => any) =>
+        buildPriceAutoscaleInfo(dataRef.current) ?? baseImplementation(),
     })
     candlestickSeriesRef.current = candlestickSeries
 

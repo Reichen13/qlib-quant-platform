@@ -151,7 +151,7 @@ export function NewsAnalysisPage() {
         <CardContent className="space-y-4">
           <div className="flex gap-2">
             <Input
-              placeholder="输入代码如 600519.SS 或 SH600519"
+              placeholder="输入代码如 600519 / 300750 / 688981"
               value={searchCode}
               onChange={(e) => setSearchCode(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSearch()}

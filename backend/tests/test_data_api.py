@@ -215,6 +215,18 @@ class DataApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("--start", command)
         self.assertEqual(command[command.index("--start") + 1], "2026-05-06")
 
+    async def test_start_update_can_pass_rebuild_stale_flag(self):
+        data._update_tasks.clear()
+
+        with patch.object(data, "_resolve_update_script", return_value=Path(__file__)), \
+             patch.object(data, "_start_update_thread") as start_thread:
+            await data.start_data_update(
+                data.DataUpdateRequest(type="stocks", max_stocks=1, rebuild_stale=True)
+            )
+
+        command = start_thread.call_args.args[1]
+        self.assertIn("--rebuild-stale", command)
+
     async def test_update_progress_returns_existing_task(self):
         data._update_tasks.clear()
         data._update_tasks["task-1"] = {

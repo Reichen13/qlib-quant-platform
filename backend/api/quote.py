@@ -8,6 +8,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
 from models.schemas import IndicatorData, QuoteData, QuoteResponse
+from utils.code_normalization import normalize_stock_code
 
 router = APIRouter()
 
@@ -29,12 +30,7 @@ def get_calendar_range():
 
 
 def _normalize_code(code: str) -> str:
-    code_upper = code.upper().strip()
-    if code_upper.startswith(("SH", "SZ")):
-        return code_upper
-    if code_upper.startswith("6") or code_upper.startswith("5"):
-        return f"SH{code_upper}"
-    return f"SZ{code_upper}"
+    return normalize_stock_code(code, target="qlib")
 
 
 def _default_start_date(end_dt: pd.Timestamp, frequency: str) -> pd.Timestamp:
