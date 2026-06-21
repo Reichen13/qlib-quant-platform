@@ -276,7 +276,9 @@ export function DashboardPage() {
                       <Badge variant={s.signal === "持有" ? "outline" : "default"} className="text-[11px] px-1.5 py-0">
                         {s.signal}
                       </Badge>
-                      <p className="text-[11px] text-muted-foreground">{s.stocks_count} 只标的</p>
+                      <p className="text-[11px] text-muted-foreground">
+                        {s.data_status === "derived" ? "板块代理" : "真实信号"}
+                      </p>
                     </div>
                   </div>
                 ))}

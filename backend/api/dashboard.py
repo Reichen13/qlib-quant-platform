@@ -89,13 +89,15 @@ async def get_dashboard_summary():
                 "strategy": "因子策略",
                 "signal": "买入" if up_count >= 4 else "关注",
                 "reason": f"Top板块「{top['name']}」涨幅 {top['change_pct']:+.1f}%，{up_count}个板块上涨",
-                "stocks_count": up_count * 5,
+                "data_status": "derived",
+                "source": "sector_proxy",
             },
             {
                 "strategy": "ETF 轮动",
                 "signal": "增持" if market_bias == "偏多" else ("持有" if market_bias == "震荡" else "减仓"),
                 "reason": f"市场情绪{market_bias}，{up_count}/{up_count + down_count}板块上涨",
-                "stocks_count": up_count * 3 if up_count > 2 else 5,
+                "data_status": "derived",
+                "source": "sector_proxy",
             },
         ]
 
