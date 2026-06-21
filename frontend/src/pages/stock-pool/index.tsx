@@ -6,12 +6,15 @@ import { Input } from "@/components/ui/input"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { Layers, Plus, RefreshCw, Trash2, Loader2, Filter, Check, AlertCircle } from "lucide-react"
+import { useAppStore } from "@/stores/app-store"
 
 export function StockPoolPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [newName, setNewName] = useState("")
   const [creating, setCreating] = useState(false)
-  const [selectedPool, setSelectedPool] = useState<string | null>(null)
+  const stockPoolParams = useAppStore((s) => s.stockPoolParams)
+  const setStockPoolParams = useAppStore((s) => s.setStockPoolParams)
+  const { selectedPool } = stockPoolParams
   const queryClient = useQueryClient()
 
   const { data, isLoading } = useQuery({
@@ -72,7 +75,7 @@ export function StockPoolPage() {
   const handleDelete = async (id: string) => {
     try {
       await api.stockPool.delete(id)
-      if (selectedPool === id) setSelectedPool(null)
+      if (selectedPool === id) setStockPoolParams({ selectedPool: null })
       queryClient.invalidateQueries({ queryKey: ["stock-pool"] })
     } catch { /* ignore */ }
   }
@@ -132,7 +135,7 @@ export function StockPoolPage() {
           <Card
             key={p.id}
             className={`hover:shadow-md transition-shadow cursor-pointer ${selectedPool === p.id ? "ring-2 ring-primary" : ""}`}
-            onClick={() => setSelectedPool(p.id)}
+            onClick={() => setStockPoolParams({ selectedPool: p.id })}
           >
             <CardHeader className="pb-2">
               <CardTitle className="text-base flex items-center justify-between">

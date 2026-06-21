@@ -75,6 +75,15 @@ export interface PairTradingParams {
   selectedPair: Record<string, any> | null
 }
 
+export interface NewsAnalysisParams {
+  searchCode: string
+  activeCode: string
+}
+
+export interface StockPoolParams {
+  selectedPool: string | null
+}
+
 export interface DataUpdateStep {
   id: string
   name: string
@@ -180,6 +189,15 @@ interface AppState {
   pairTradingParams: PairTradingParams
   setPairTradingParams: (params: Partial<PairTradingParams>) => void
 
+  newsAnalysisParams: NewsAnalysisParams
+  setNewsAnalysisParams: (params: Partial<NewsAnalysisParams>) => void
+
+  stockPoolParams: StockPoolParams
+  setStockPoolParams: (params: Partial<StockPoolParams>) => void
+
+  dashboardStrategyValues: Record<string, number>
+  setDashboardStrategyValue: (id: string, value: number) => void
+
   dataManagementParams: DataManagementParams
   setDataManagementParams: (params: Partial<DataManagementParams>) => void
 
@@ -281,6 +299,19 @@ function createDefaultPairTradingParams(): PairTradingParams {
   return {
     selectedCategory: "全部",
     selectedPair: null,
+  }
+}
+
+function createDefaultNewsAnalysisParams(): NewsAnalysisParams {
+  return {
+    searchCode: "",
+    activeCode: "",
+  }
+}
+
+function createDefaultStockPoolParams(): StockPoolParams {
+  return {
+    selectedPool: null,
   }
 }
 
@@ -429,6 +460,21 @@ export const useAppStore = create<AppState>()(
         pairTradingParams: { ...state.pairTradingParams, ...params },
       })),
 
+      newsAnalysisParams: createDefaultNewsAnalysisParams(),
+      setNewsAnalysisParams: (params) => set((state) => ({
+        newsAnalysisParams: { ...state.newsAnalysisParams, ...params },
+      })),
+
+      stockPoolParams: createDefaultStockPoolParams(),
+      setStockPoolParams: (params) => set((state) => ({
+        stockPoolParams: { ...state.stockPoolParams, ...params },
+      })),
+
+      dashboardStrategyValues: {},
+      setDashboardStrategyValue: (id, value) => set((state) => ({
+        dashboardStrategyValues: { ...state.dashboardStrategyValues, [id]: value },
+      })),
+
       dataManagementParams: createDefaultDataManagementParams(),
       setDataManagementParams: (params) => set((state) => ({
         dataManagementParams: { ...state.dataManagementParams, ...params },
@@ -509,6 +555,18 @@ export const useAppStore = create<AppState>()(
             ...current.pairTradingParams,
             ...persistedState?.pairTradingParams,
           },
+          newsAnalysisParams: {
+            ...current.newsAnalysisParams,
+            ...persistedState?.newsAnalysisParams,
+          },
+          stockPoolParams: {
+            ...current.stockPoolParams,
+            ...persistedState?.stockPoolParams,
+          },
+          dashboardStrategyValues: {
+            ...current.dashboardStrategyValues,
+            ...persistedState?.dashboardStrategyValues,
+          },
           dataManagementParams: {
             ...current.dataManagementParams,
             ...persistedState?.dataManagementParams,
@@ -550,6 +608,9 @@ export const useAppStore = create<AppState>()(
         etfScreenerParams: state.etfScreenerParams,
         hotSectorsParams: state.hotSectorsParams,
         pairTradingParams: state.pairTradingParams,
+        newsAnalysisParams: state.newsAnalysisParams,
+        stockPoolParams: state.stockPoolParams,
+        dashboardStrategyValues: state.dashboardStrategyValues,
         dataManagementParams: state.dataManagementParams,
         agentDebateParams: state.agentDebateParams,
         aiStrategyParams: state.aiStrategyParams,

@@ -1,5 +1,4 @@
 // 新闻分析页面 - 市场情报与情感分析
-import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -7,6 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { Newspaper, Search, TrendingUp, TrendingDown, Minus, Loader2, ExternalLink } from "lucide-react"
+import { useAppStore } from "@/stores/app-store"
 
 function SentimentBadge({ score, label }: { score: number; label: string }) {
   const color = label === "positive"
@@ -45,13 +45,14 @@ function SentimentBar({ positive, negative, neutral }: { positive: number; negat
 }
 
 export function NewsAnalysisPage() {
-  const [searchCode, setSearchCode] = useState("")
-  const [activeCode, setActiveCode] = useState("")
+  const newsAnalysisParams = useAppStore((s) => s.newsAnalysisParams)
+  const setNewsAnalysisParams = useAppStore((s) => s.setNewsAnalysisParams)
+  const { searchCode, activeCode } = newsAnalysisParams
 
   const handleSearch = () => {
     const trimmed = searchCode.trim()
     if (trimmed) {
-      setActiveCode(trimmed)
+      setNewsAnalysisParams({ activeCode: trimmed })
     }
   }
 
@@ -153,7 +154,7 @@ export function NewsAnalysisPage() {
             <Input
               placeholder="输入代码如 600519 / 300750 / 688981"
               value={searchCode}
-              onChange={(e) => setSearchCode(e.target.value)}
+              onChange={(e) => setNewsAnalysisParams({ searchCode: e.target.value })}
               onKeyDown={(e) => e.key === "Enter" && handleSearch()}
               className="max-w-sm font-mono"
             />

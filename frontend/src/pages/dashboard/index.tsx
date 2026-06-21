@@ -1,5 +1,4 @@
 // 首页仪表盘 — 响应式 + 精致视觉
-import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -16,6 +15,7 @@ import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { ParameterSlider } from "@/components/features/parameter-slider"
 import { LineChartComponent } from "@/components/charts/line-chart"
+import { useAppStore } from "@/stores/app-store"
 
 // 策略配置
 const strategySliders = [
@@ -58,7 +58,12 @@ function trendClass(value: number | null | undefined) {
 }
 
 export function DashboardPage() {
-  const [strategies, setStrategies] = useState(strategySliders)
+  const dashboardStrategyValues = useAppStore((s) => s.dashboardStrategyValues)
+  const setDashboardStrategyValue = useAppStore((s) => s.setDashboardStrategyValue)
+  const strategies = strategySliders.map((strategy) => ({
+    ...strategy,
+    value: dashboardStrategyValues[strategy.id] ?? strategy.value,
+  }))
 
   const { data: stocksData } = useQuery({
     queryKey: ["stocks", "list"],
@@ -115,9 +120,7 @@ export function DashboardPage() {
   }
 
   const handleStrategyChange = (id: string, value: number) => {
-    setStrategies((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, value } : s))
-    )
+    setDashboardStrategyValue(id, value)
   }
 
   const totalCapital = 1000000
