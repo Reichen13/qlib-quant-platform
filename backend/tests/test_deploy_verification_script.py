@@ -10,7 +10,9 @@ class DeployVerificationScriptTests(unittest.TestCase):
         script = (ROOT / "scripts" / "verify_current_fixes.sh").read_text(encoding="utf-8")
 
         self.assertIn("Frontend bundle version check", script)
-        self.assertIn("去数据管理配置 Key", script)
+        self.assertIn("请在本页填写服务器管理 Key 后重试模型回测", script)
+        self.assertIn("请在本页填写服务器管理 Key 后重试风险分析", script)
+        self.assertIn("请在本页填写服务器管理 Key 后重试组合优化", script)
         self.assertIn("ETF/指数暂按 Qlib 状态代理展示", script)
         self.assertIn("指定股票代码", script)
         self.assertIn("用于提交模型回测", script)

@@ -221,7 +221,9 @@ import sys
 
 bundle = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 needles = [
-    "去数据管理配置 Key",
+    "请在本页填写服务器管理 Key 后重试模型回测",
+    "请在本页填写服务器管理 Key 后重试风险分析",
+    "请在本页填写服务器管理 Key 后重试组合优化",
     "ETF/指数暂按 Qlib 状态代理展示",
     "指定股票代码",
     "用于提交模型回测",
