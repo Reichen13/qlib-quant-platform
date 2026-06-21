@@ -14,6 +14,16 @@ class DataManagementRebuildStaleTests(unittest.TestCase):
         self.assertIn("rebuildStale", api_source)
         self.assertIn("rebuild_stale", api_source)
 
+    def test_etf_and_index_status_copy_does_not_overstate_update_coverage(self):
+        page_source = (ROOT / "src" / "pages" / "data-management" / "index.tsx").read_text(encoding="utf-8")
+
+        self.assertNotIn("全市场 ETF 日线数据", page_source)
+        self.assertNotIn("全市场 ETF (300+)", page_source)
+        self.assertNotIn("主要指数日线数据", page_source)
+        self.assertNotIn("主要指数 (12个)", page_source)
+        self.assertIn("ETF/指数暂按 Qlib 状态代理展示，尚未接入独立更新", page_source)
+        self.assertIn("待接入独立更新", page_source)
+
 
 if __name__ == "__main__":
     unittest.main()

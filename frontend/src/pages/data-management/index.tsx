@@ -309,7 +309,7 @@ export function DataManagementPage() {
                 {getStatusBadge(dataStatus?.etf?.status || "unknown")}
               </div>
             </div>
-            <CardDescription>全市场 ETF 日线数据</CardDescription>
+            <CardDescription>ETF/指数暂按 Qlib 状态代理展示，尚未接入独立更新</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-3 text-sm">
@@ -343,7 +343,7 @@ export function DataManagementPage() {
                 {getStatusBadge(dataStatus?.index?.status || "unknown")}
               </div>
             </div>
-            <CardDescription>主要指数日线数据</CardDescription>
+            <CardDescription>ETF/指数暂按 Qlib 状态代理展示，尚未接入独立更新</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-3 text-sm">
@@ -396,15 +396,15 @@ export function DataManagementPage() {
                 <TableCell>ETF 行情</TableCell>
                 <TableCell>暂未接入独立更新</TableCell>
                 <TableCell>交易日收盘后</TableCell>
-                <TableCell>全市场 ETF (300+)</TableCell>
-                <TableCell>2020年起</TableCell>
+                <TableCell>待接入独立更新</TableCell>
+                <TableCell>暂无可靠数据</TableCell>
               </TableRow>
               <TableRow>
                 <TableCell>指数行情</TableCell>
                 <TableCell>暂未接入独立更新</TableCell>
                 <TableCell>交易日收盘后</TableCell>
-                <TableCell>主要指数 (12个)</TableCell>
-                <TableCell>2020年起</TableCell>
+                <TableCell>待接入独立更新</TableCell>
+                <TableCell>暂无可靠数据</TableCell>
               </TableRow>
               <TableRow>
                 <TableCell>财务数据</TableCell>
