@@ -17,6 +17,7 @@ import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
 import { BarChart } from "@/components/charts/bar-chart"
 import { InstructionsPanel } from "@/components/features/instructions-panel"
+import { useAppStore } from "@/stores/app-store"
 
 interface SectorItem {
   name: string
@@ -29,8 +30,9 @@ interface SectorItem {
 }
 
 export function HotSectorsPage() {
-  const [period, setPeriod] = useState("10d")
-  const [expandedSector, setExpandedSector] = useState<string | null>(null)
+  const hotSectorsParams = useAppStore((s) => s.hotSectorsParams)
+  const setHotSectorsParams = useAppStore((s) => s.setHotSectorsParams)
+  const { period, expandedSector } = hotSectorsParams
   const [isUpdating, setIsUpdating] = useState(false)
 
   const { data: sectorData, isLoading, isError, refetch } = useQuery({
@@ -77,7 +79,7 @@ export function HotSectorsPage() {
   }
 
   const toggleSector = (sectorName: string) => {
-    setExpandedSector(expandedSector === sectorName ? null : sectorName)
+    setHotSectorsParams({ expandedSector: expandedSector === sectorName ? null : sectorName })
   }
 
   const getAdviceBadge = (advice: string) => {
@@ -110,7 +112,7 @@ export function HotSectorsPage() {
 
       {/* 控制栏 */}
       <div className="flex items-center justify-between">
-        <Tabs value={period} onValueChange={(v) => setPeriod(v as any)}>
+        <Tabs value={period} onValueChange={(v) => setHotSectorsParams({ period: v })}>
           <TabsList>
             <TabsTrigger value="1d">1日</TabsTrigger>
             <TabsTrigger value="5d">5日</TabsTrigger>

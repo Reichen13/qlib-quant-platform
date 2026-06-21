@@ -1,5 +1,4 @@
 // 配对交易页面 - 统计套利策略
-import { useState } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -16,10 +15,12 @@ import { LineChartComponent } from "@/components/charts/line-chart"
 import { InstructionsPanel, commonInstructions } from "@/components/features/instructions-panel"
 import { useQuery } from "@tanstack/react-query"
 import { api } from "@/lib/api"
+import { useAppStore } from "@/stores/app-store"
 
 export function PairTradingPage() {
-  const [selectedPair, setSelectedPair] = useState<any>(null)
-  const [selectedCategory, setSelectedCategory] = useState("全部")
+  const pairTradingParams = useAppStore((s) => s.pairTradingParams)
+  const setPairTradingParams = useAppStore((s) => s.setPairTradingParams)
+  const { selectedPair, selectedCategory } = pairTradingParams
 
   // 从后端获取配对交易数据
   const { data: pairsData, isLoading: pairsLoading } = useQuery({
@@ -30,7 +31,9 @@ export function PairTradingPage() {
   // 获取价差数据
   const { data: spreadResponse, isLoading: spreadLoading } = useQuery({
     queryKey: ["pair-trading", "spread", selectedPair?.stock1, selectedPair?.stock2],
-    queryFn: () => api.pair.spread(selectedPair.stock1, selectedPair.stock2),
+    queryFn: () => selectedPair
+      ? api.pair.spread(selectedPair.stock1, selectedPair.stock2)
+      : Promise.resolve({ data: [] }),
     enabled: !!selectedPair,
   })
 
@@ -176,7 +179,7 @@ export function PairTradingPage() {
                       key={cat}
                       variant={selectedCategory === cat ? "default" : "outline"}
                       className="cursor-pointer"
-                      onClick={() => setSelectedCategory(cat)}
+                      onClick={() => setPairTradingParams({ selectedCategory: cat })}
                     >
                       {cat}
                     </Badge>
@@ -208,7 +211,7 @@ export function PairTradingPage() {
                       <TableRow
                         key={pair.pair}
                         className="cursor-pointer hover:bg-muted/50"
-                        onClick={() => setSelectedPair(pair)}
+                        onClick={() => setPairTradingParams({ selectedPair: pair })}
                       >
                         <TableCell>
                           <div className="space-y-0.5">

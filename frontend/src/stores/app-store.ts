@@ -65,6 +65,16 @@ export interface EtfScreenerParams {
   dataSource: "core" | "all"
 }
 
+export interface HotSectorsParams {
+  period: string
+  expandedSector: string | null
+}
+
+export interface PairTradingParams {
+  selectedCategory: string
+  selectedPair: Record<string, any> | null
+}
+
 export interface DataUpdateStep {
   id: string
   name: string
@@ -164,6 +174,12 @@ interface AppState {
     filters?: Partial<EtfScreenerParams["filters"]>
   }) => void
 
+  hotSectorsParams: HotSectorsParams
+  setHotSectorsParams: (params: Partial<HotSectorsParams>) => void
+
+  pairTradingParams: PairTradingParams
+  setPairTradingParams: (params: Partial<PairTradingParams>) => void
+
   dataManagementParams: DataManagementParams
   setDataManagementParams: (params: Partial<DataManagementParams>) => void
 
@@ -251,6 +267,20 @@ function createDefaultEtfScreenerParams(): EtfScreenerParams {
     sortBy: "change-desc",
     filters: { minPe: "", maxPe: "", minSize: "" },
     dataSource: "core",
+  }
+}
+
+function createDefaultHotSectorsParams(): HotSectorsParams {
+  return {
+    period: "10d",
+    expandedSector: null,
+  }
+}
+
+function createDefaultPairTradingParams(): PairTradingParams {
+  return {
+    selectedCategory: "全部",
+    selectedPair: null,
   }
 }
 
@@ -389,6 +419,16 @@ export const useAppStore = create<AppState>()(
         },
       })),
 
+      hotSectorsParams: createDefaultHotSectorsParams(),
+      setHotSectorsParams: (params) => set((state) => ({
+        hotSectorsParams: { ...state.hotSectorsParams, ...params },
+      })),
+
+      pairTradingParams: createDefaultPairTradingParams(),
+      setPairTradingParams: (params) => set((state) => ({
+        pairTradingParams: { ...state.pairTradingParams, ...params },
+      })),
+
       dataManagementParams: createDefaultDataManagementParams(),
       setDataManagementParams: (params) => set((state) => ({
         dataManagementParams: { ...state.dataManagementParams, ...params },
@@ -461,6 +501,14 @@ export const useAppStore = create<AppState>()(
               ...persistedState?.etfScreenerParams?.filters,
             },
           },
+          hotSectorsParams: {
+            ...current.hotSectorsParams,
+            ...persistedState?.hotSectorsParams,
+          },
+          pairTradingParams: {
+            ...current.pairTradingParams,
+            ...persistedState?.pairTradingParams,
+          },
           dataManagementParams: {
             ...current.dataManagementParams,
             ...persistedState?.dataManagementParams,
@@ -500,6 +548,8 @@ export const useAppStore = create<AppState>()(
         factorParams: state.factorParams,
         quoteParams: state.quoteParams,
         etfScreenerParams: state.etfScreenerParams,
+        hotSectorsParams: state.hotSectorsParams,
+        pairTradingParams: state.pairTradingParams,
         dataManagementParams: state.dataManagementParams,
         agentDebateParams: state.agentDebateParams,
         aiStrategyParams: state.aiStrategyParams,
