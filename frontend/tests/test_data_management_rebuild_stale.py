@@ -28,5 +28,12 @@ class DataManagementRebuildStaleTests(unittest.TestCase):
         self.assertIn("待接入独立更新", page_source)
 
 
+    def test_stock_coverage_copy_does_not_hardcode_outdated_universe_size(self):
+        page_source = (ROOT / "src" / "pages" / "data-management" / "index.tsx").read_text(encoding="utf-8")
+
+        self.assertNotIn("3800+", page_source)
+        self.assertIn("以状态卡实际覆盖数量为准", page_source)
+
+
 if __name__ == "__main__":
     unittest.main()

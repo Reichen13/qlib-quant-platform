@@ -410,7 +410,7 @@ export function DataManagementPage() {
                 <TableCell>股票行情</TableCell>
                 <TableCell>Qlib cn_data</TableCell>
                 <TableCell>交易日收盘后</TableCell>
-                <TableCell>A股全市场 (3800+)</TableCell>
+                <TableCell>以状态卡实际覆盖数量为准</TableCell>
                 <TableCell>2020年起</TableCell>
               </TableRow>
               <TableRow>
