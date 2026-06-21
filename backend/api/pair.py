@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
+from utils.code_normalization import normalize_stock_code
 
 router = APIRouter()
 
@@ -45,14 +46,18 @@ def get_stock_name_from_file(code: str) -> str:
         return code
 
 
+def _normalize_pair_code(code: str) -> str:
+    return normalize_stock_code(code, target="qlib")
+
+
 def calc_correlation_from_qlib(code1: str, code2: str, days: int = 60) -> float | None:
     """使用 Qlib 数据计算两只股票的相关性"""
     try:
         import qlib
         from qlib.data import D
 
-        qlib_code1 = code1.replace("SH", "").replace("SZ", "")
-        qlib_code2 = code2.replace("SH", "").replace("SZ", "")
+        qlib_code1 = _normalize_pair_code(code1)
+        qlib_code2 = _normalize_pair_code(code2)
 
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
@@ -87,8 +92,8 @@ def calc_zscore_from_qlib(code1: str, code2: str, days: int = 60) -> float | Non
         import qlib
         from qlib.data import D
 
-        qlib_code1 = code1.replace("SH", "").replace("SZ", "")
-        qlib_code2 = code2.replace("SH", "").replace("SZ", "")
+        qlib_code1 = _normalize_pair_code(code1)
+        qlib_code2 = _normalize_pair_code(code2)
 
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
@@ -204,8 +209,8 @@ def calc_spread_data(code1: str, code2: str, days: int = 60) -> List[Dict]:
         import qlib
         from qlib.data import D
 
-        qlib_code1 = code1.replace("SH", "").replace("SZ", "")
-        qlib_code2 = code2.replace("SH", "").replace("SZ", "")
+        qlib_code1 = _normalize_pair_code(code1)
+        qlib_code2 = _normalize_pair_code(code2)
 
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
@@ -294,6 +299,8 @@ async def get_spread(
 ):
     """获取两只股票的价差 Z-score 历史数据"""
     try:
+        stock1 = _normalize_pair_code(stock1)
+        stock2 = _normalize_pair_code(stock2)
         spread_data = calc_spread_data(stock1, stock2, days)
 
         return {
@@ -317,6 +324,8 @@ async def analyze_pair(
 ):
     """分析两只股票的配对关系（动态计算）"""
     try:
+        stock1 = _normalize_pair_code(stock1)
+        stock2 = _normalize_pair_code(stock2)
         correlation = calc_correlation_from_qlib(stock1, stock2)
         zscore = calc_zscore_from_qlib(stock1, stock2)
 
