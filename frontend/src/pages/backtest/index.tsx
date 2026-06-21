@@ -23,7 +23,6 @@ import {
 import { OperationAdvice } from "@/components/features/operation-advice"
 import { InstructionsPanel, commonInstructions } from "@/components/features/instructions-panel"
 import { useMutation } from "@tanstack/react-query"
-import { useNavigate } from "react-router-dom"
 import { api } from "@/lib/api"
 import type { BacktestResult } from "@/lib/api"
 import { useAppStore } from "@/stores/app-store"
@@ -48,7 +47,6 @@ const emptyResult: BacktestResult = {
 }
 
 export function BacktestPage() {
-  const navigate = useNavigate()
   const activeTab = useAppStore((s) => s.backtestActiveTab)
   const setActiveTab = useAppStore((s) => s.setBacktestActiveTab)
   const params = useAppStore((s) => s.backtestParams)
@@ -401,7 +399,7 @@ export function BacktestPage() {
                 <p className="text-lg font-medium text-red-500">回测失败</p>
                 <p className="text-sm text-muted-foreground mt-2">
                   {isAuthError
-                    ? "需要先配置服务器管理 Key。请到数据管理页面填写服务器 API_KEY 后，再回到本页重试。"
+                    ? "请在本页填写服务器管理 Key 后重试模型回测。"
                     : errorMessage}
                 </p>
                 {isAuthError && (
@@ -410,11 +408,6 @@ export function BacktestPage() {
                   </p>
                 )}
                 <div className="mt-4 flex flex-wrap justify-center gap-2">
-                  {isAuthError && (
-                    <Button onClick={() => navigate("/data-management")}>
-                      去数据管理配置 Key
-                    </Button>
-                  )}
                   <Button variant="outline" onClick={() => setActiveTab("config")}>
                     返回修改参数
                   </Button>

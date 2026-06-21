@@ -250,14 +250,9 @@ export function PortfolioPage() {
                 <p className="font-medium">优化失败</p>
                 <p className="text-sm text-muted-foreground mt-1">
                   {needsAdminKey
-                    ? "需要先在数据管理页面填写服务器管理 Key，然后再重试组合优化。"
+                    ? "请在本页填写服务器管理 Key 后重试组合优化。"
                     : portfolioErrorMessage || "请检查股票代码是否正确"}
                 </p>
-                {needsAdminKey && (
-                  <a className="text-sm underline mt-2 inline-block" href="/data-management">
-                    去数据管理填写服务器管理 Key
-                  </a>
-                )}
               </div>
             </div>
           </CardContent>

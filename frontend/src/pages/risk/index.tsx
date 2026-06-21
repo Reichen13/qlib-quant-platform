@@ -204,7 +204,7 @@ export function RiskPage() {
                 <p className="font-medium">风险分析失败</p>
                 <p className="text-sm text-muted-foreground mt-1">
                   {isAuthError
-                    ? "需要先配置服务器管理 Key。请到数据管理页面填写服务器 API_KEY 后，再回到本页重试。"
+                    ? "请在本页填写服务器管理 Key 后重试风险分析。"
                     : errorMessage}
                 </p>
                 {isAuthError && (

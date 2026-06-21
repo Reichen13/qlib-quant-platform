@@ -18,7 +18,7 @@ class PortfolioStateTests(unittest.TestCase):
         self.assertIn("portfolioParams", page_source)
         self.assertIn("setPortfolioParams", page_source)
         self.assertIn("portfolioErrorMessage", page_source)
-        self.assertIn("data-management", page_source)
+        self.assertIn("请在本页填写服务器管理 Key", page_source)
         self.assertNotIn('const [method, setMethod] = useState("max_sharpe")', page_source)
         self.assertNotIn("const [maxWeight, setMaxWeight] = useState(30)", page_source)
         self.assertNotIn("const [turnoverLambda, setTurnoverLambda] = useState(0)", page_source)
