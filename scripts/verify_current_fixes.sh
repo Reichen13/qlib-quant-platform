@@ -148,3 +148,45 @@ PY
 
 section "Public URL smoke"
 curl -sS --max-time 20 -I "$PUBLIC_URL/" | sed -n '1,10p'
+
+section "Frontend bundle version check"
+index_file="/tmp/quant-public-index.html"
+bundle_file="/tmp/quant-public-bundle.js"
+curl -sS --max-time 20 "$PUBLIC_URL/" > "$index_file"
+asset_path="$(python3 - "$index_file" <<'PY'
+import re
+import sys
+
+html = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+match = re.search(r'<script[^>]+src="([^"]+/assets/[^"]+\.js)"', html)
+print(match.group(1) if match else "")
+PY
+)"
+
+if [ -z "$asset_path" ]; then
+  echo "FRONTEND_BUNDLE_ASSET_NOT_FOUND"
+  exit 4
+fi
+
+case "$asset_path" in
+  http*) bundle_url="$asset_path" ;;
+  *) bundle_url="${PUBLIC_URL%/}$asset_path" ;;
+esac
+
+echo "bundle_url=$bundle_url"
+curl -sS --max-time 30 "$bundle_url" > "$bundle_file"
+python3 - "$bundle_file" <<'PY'
+import sys
+
+bundle = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+needles = [
+    "去数据管理配置 Key",
+    "ETF/指数暂按 Qlib 状态代理展示",
+]
+missing = [needle for needle in needles if needle not in bundle]
+if missing:
+    print({"missing_frontend_copy": missing})
+    print("FRONTEND_BUNDLE_COPY_MISSING")
+    sys.exit(5)
+print("FRONTEND_BUNDLE_COPY_OK")
+PY
