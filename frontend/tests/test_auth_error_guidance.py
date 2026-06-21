@@ -51,6 +51,13 @@ class AuthErrorGuidanceTests(unittest.TestCase):
         self.assertIn('localStorage.setItem("qlib-admin-api-key"', source)
         self.assertIn("请输入服务器 API_KEY", source)
 
+    def test_backtest_auth_failure_can_retry_from_results_card(self):
+        source = (ROOT / "src" / "pages" / "backtest" / "index.tsx").read_text(encoding="utf-8")
+
+        self.assertIn('data-testid="backtest-auth-retry-key"', source)
+        self.assertIn("保存 Key 并重试", source)
+        self.assertIn("onClick={runBacktest}", source)
+
 
 if __name__ == "__main__":
     unittest.main()

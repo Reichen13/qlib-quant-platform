@@ -403,9 +403,39 @@ export function BacktestPage() {
                     : errorMessage}
                 </p>
                 {isAuthError && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    原始提示：{errorMessage}
-                  </p>
+                  <div className="mt-4 mx-auto max-w-md space-y-3 text-left">
+                    <p className="text-xs text-muted-foreground text-center">
+                      原始提示：{errorMessage}
+                    </p>
+                    <div className="space-y-2">
+                      <Label>服务器管理 Key</Label>
+                      <Input
+                        data-testid="backtest-auth-retry-key"
+                        type="password"
+                        value={adminApiKey}
+                        onChange={(event) => handleAdminKeyChange(event.target.value)}
+                        placeholder="请输入服务器 API_KEY"
+                        autoComplete="off"
+                      />
+                    </div>
+                    <Button
+                      className="w-full"
+                      onClick={runBacktest}
+                      disabled={backtestMutation.isPending || !!backtestTaskId || !adminApiKey.trim()}
+                    >
+                      {backtestMutation.isPending ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          提交中...
+                        </>
+                      ) : (
+                        <>
+                          <Play className="mr-2 h-4 w-4" />
+                          保存 Key 并重试
+                        </>
+                      )}
+                    </Button>
+                  </div>
                 )}
                 <div className="mt-4 flex flex-wrap justify-center gap-2">
                   <Button variant="outline" onClick={() => setActiveTab("config")}>
