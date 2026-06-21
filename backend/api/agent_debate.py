@@ -36,7 +36,14 @@ def _check_llm(api_key: Optional[str] = None):
         raise HTTPException(status_code=503, detail=str(e))
 
 
-def _run_analysis_task(task_id: str, code: str, api_key: Optional[str] = None, base_url: Optional[str] = None):
+def _run_analysis_task(
+    task_id: str,
+    code: str,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    quick_model: Optional[str] = None,
+    deep_model: Optional[str] = None,
+):
     """后台运行多智能体分析"""
     try:
         from core.multi_agent import get_orchestrator
@@ -45,7 +52,12 @@ def _run_analysis_task(task_id: str, code: str, api_key: Optional[str] = None, b
 
         orch = get_orchestrator()
         if api_key:
-            orch.set_llm_client(create_llm_client(api_key=api_key, base_url=base_url or ""))
+            orch.set_llm_client(create_llm_client(
+                api_key=api_key,
+                base_url=base_url or "",
+                quick_model=quick_model or "",
+                deep_model=deep_model or "",
+            ))
 
         report = orch.run_full_pipeline(code)
         report_dict = report.model_dump()
@@ -65,6 +77,8 @@ async def analyze_stock(
     async_mode: bool = True,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
+    quick_model: Optional[str] = None,
+    deep_model: Optional[str] = None,
 ):
     """单股多智能体分析
 
@@ -73,6 +87,8 @@ async def analyze_stock(
         async_mode: 是否异步执行（默认 true）
         api_key: 用户 API Key（可选，优先级高于服务器配置）
         base_url: 用户 Base URL（可选）
+        quick_model: 快速模型名称（可选）
+        deep_model: 深度模型名称（可选）
 
     Returns:
         task_id 用于后续查询报告
@@ -88,7 +104,7 @@ async def analyze_stock(
     save_report(task_id, code, "running")
 
     if async_mode:
-        background_tasks.add_task(_run_analysis_task, task_id, code, api_key, base_url)
+        background_tasks.add_task(_run_analysis_task, task_id, code, api_key, base_url, quick_model, deep_model)
         _report_cache[task_id] = {"status": "running"}
         return {
             "task_id": task_id,
@@ -102,7 +118,12 @@ async def analyze_stock(
         orch = get_orchestrator()
         if api_key:
             from core.llm_client import create_llm_client
-            orch.set_llm_client(create_llm_client(api_key=api_key, base_url=base_url or ""))
+            orch.set_llm_client(create_llm_client(
+                api_key=api_key,
+                base_url=base_url or "",
+                quick_model=quick_model or "",
+                deep_model=deep_model or "",
+            ))
         report = orch.run_full_pipeline(code)
         report_dict = report.model_dump()
         _report_cache[task_id] = {

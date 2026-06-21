@@ -62,6 +62,8 @@ async def get_stock_news_sentiment(
 async def get_daily_brief(
     api_key: Optional[str] = Query(default=None, description="用户 API Key（可选）"),
     base_url: Optional[str] = Query(default=None, description="用户 Base URL（可选）"),
+    quick_model: Optional[str] = Query(default=None, description="快速模型名称（可选）"),
+    deep_model: Optional[str] = Query(default=None, description="深度模型名称（可选）"),
 ):
     """每日市场简报 — 聚合当日重要新闻
 
@@ -95,7 +97,7 @@ async def get_daily_brief(
     try:
         from core.llm_client import get_llm_config
         if api_key or get_llm_config().is_configured:
-            summary = _llm_summary(market_news, api_key, base_url)
+            summary = _llm_summary(market_news, api_key, base_url, quick_model, deep_model)
     except Exception:
         pass
 
@@ -134,12 +136,23 @@ def _rule_based_summary(news: list[dict], avg_score: float) -> str:
     return "".join(parts)
 
 
-def _llm_summary(news: list[dict], api_key: Optional[str] = None, base_url: Optional[str] = None) -> str:
+def _llm_summary(
+    news: list[dict],
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    quick_model: Optional[str] = None,
+    deep_model: Optional[str] = None,
+) -> str:
     """LLM 生成的市场摘要"""
     from core.llm_client import get_llm_client, create_llm_client
 
     if api_key:
-        client = create_llm_client(api_key=api_key, base_url=base_url or "")
+        client = create_llm_client(
+            api_key=api_key,
+            base_url=base_url or "",
+            quick_model=quick_model or "",
+            deep_model=deep_model or "",
+        )
     else:
         client = get_llm_client()
     titles = "\n".join(

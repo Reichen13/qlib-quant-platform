@@ -26,6 +26,8 @@ class NLStrategyRequest(BaseModel):
     use_deep: bool = Field(default=False, description="是否使用深度推理")
     api_key: Optional[str] = Field(default=None, description="用户 API Key（可选，优先级高于服务器配置）")
     base_url: Optional[str] = Field(default=None, description="用户 Base URL（可选）")
+    quick_model: Optional[str] = Field(default=None, description="快速模型名称（可选）")
+    deep_model: Optional[str] = Field(default=None, description="深度模型名称（可选）")
 
 
 class StrategyTemplate(BaseModel):
@@ -49,6 +51,8 @@ class StrategyAnalyzeRequest(BaseModel):
     risk_tolerance: str = Field(default="moderate", description="风险偏好: conservative/moderate/aggressive")
     api_key: Optional[str] = Field(default=None, description="用户 API Key（可选）")
     base_url: Optional[str] = Field(default=None, description="用户 Base URL（可选）")
+    quick_model: Optional[str] = Field(default=None, description="快速模型名称（可选）")
+    deep_model: Optional[str] = Field(default=None, description="深度模型名称（可选）")
 
 
 class StrategyOptimizeRequest(BaseModel):
@@ -57,6 +61,8 @@ class StrategyOptimizeRequest(BaseModel):
     start_date: Optional[str] = Field(default=None, description="优化回测起始日期")
     api_key: Optional[str] = Field(default=None, description="用户 API Key（可选）")
     base_url: Optional[str] = Field(default=None, description="用户 Base URL（可选）")
+    quick_model: Optional[str] = Field(default=None, description="快速模型名称（可选）")
+    deep_model: Optional[str] = Field(default=None, description="深度模型名称（可选）")
 
 
 # ── 策略模板库 ──
@@ -183,11 +189,21 @@ def _check_llm_available(api_key: Optional[str] = None):
         raise HTTPException(status_code=503, detail=f"LLM 不可用: {e}")
 
 
-def _get_llm_client(api_key: Optional[str] = None, base_url: Optional[str] = None):
+def _get_llm_client(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    quick_model: Optional[str] = None,
+    deep_model: Optional[str] = None,
+):
     """获取 LLM 客户端（优先使用用户 key）"""
     if api_key:
         from core.llm_client import create_llm_client
-        return create_llm_client(api_key=api_key, base_url=base_url or "")
+        return create_llm_client(
+            api_key=api_key,
+            base_url=base_url or "",
+            quick_model=quick_model or "",
+            deep_model=deep_model or "",
+        )
     from core.llm_client import get_llm_client
     return get_llm_client()
 
@@ -224,7 +240,7 @@ async def generate_strategy(req: NLStrategyRequest):
     """
     _check_llm_available(req.api_key)
 
-    client = _get_llm_client(req.api_key, req.base_url)
+    client = _get_llm_client(req.api_key, req.base_url, req.quick_model, req.deep_model)
 
     # 构建 prompt
     templates_desc = "\n".join(
@@ -301,7 +317,7 @@ async def analyze_strategy(req: StrategyAnalyzeRequest):
     """策略分析：LLM 分析当前持仓并给出调整建议"""
     _check_llm_available(req.api_key)
 
-    client = _get_llm_client(req.api_key, req.base_url)
+    client = _get_llm_client(req.api_key, req.base_url, req.quick_model, req.deep_model)
 
     holdings_desc = "\n".join(
         f"- {h.code} ({h.name}): 权重 {h.weight:.1%}"
@@ -373,7 +389,7 @@ async def optimize_strategy(req: StrategyOptimizeRequest):
     """
     _check_llm_available(req.api_key)
 
-    client = _get_llm_client(req.api_key, req.base_url)
+    client = _get_llm_client(req.api_key, req.base_url, req.quick_model, req.deep_model)
 
     # 找匹配的模板
     template = None

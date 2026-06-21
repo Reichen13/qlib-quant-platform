@@ -91,6 +91,15 @@ async function handleResponse<T>(response: Response): Promise<T> {
   return response.json()
 }
 
+function getLlmRequestConfig() {
+  return {
+    apiKey: localStorage.getItem("qlib-api-key") || "",
+    baseUrl: localStorage.getItem("qlib-llm-base-url") || "",
+    quickModel: localStorage.getItem("qlib-llm-quick-model") || "",
+    deepModel: localStorage.getItem("qlib-llm-deep-model") || "",
+  }
+}
+
 // 股票信息类型
 export interface Stock {
   code: string
@@ -729,11 +738,12 @@ export const api = {
     sentiment: (code: string, days: number = 7) =>
       fetch(`${API_BASE}/api/news/sentiment/${encodeURIComponent(code)}?days=${days}`).then(r => handleResponse<any>(r)),
     dailyBrief: () => {
-      const apiKey = localStorage.getItem("qlib-api-key") || ""
-      const baseUrl = localStorage.getItem("qlib-llm-base-url") || ""
+      const { apiKey, baseUrl, quickModel, deepModel } = getLlmRequestConfig()
       const params = new URLSearchParams()
       if (apiKey) params.append("api_key", apiKey)
       if (baseUrl) params.append("base_url", baseUrl)
+      if (quickModel) params.append("quick_model", quickModel)
+      if (deepModel) params.append("deep_model", deepModel)
       const qs = params.toString()
       return fetch(`${API_BASE}/api/news/daily-brief${qs ? "?" + qs : ""}`).then(r => handleResponse<any>(r))
     },
@@ -748,17 +758,22 @@ export const api = {
     templates: () =>
       fetch(`${API_BASE}/api/ai-strategy/templates`).then(r => handleResponse<any>(r)),
     generate: (description: string, useDeep: boolean = false) => {
-      const apiKey = localStorage.getItem("qlib-api-key") || ""
-      const baseUrl = localStorage.getItem("qlib-llm-base-url") || ""
+      const { apiKey, baseUrl, quickModel, deepModel } = getLlmRequestConfig()
       return fetch(`${API_BASE}/api/ai-strategy/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ description, use_deep: useDeep, api_key: apiKey || undefined, base_url: baseUrl || undefined }),
+        body: JSON.stringify({
+          description,
+          use_deep: useDeep,
+          api_key: apiKey || undefined,
+          base_url: baseUrl || undefined,
+          quick_model: quickModel || undefined,
+          deep_model: deepModel || undefined,
+        }),
       }).then(r => handleResponse<any>(r))
     },
     analyze: (holdings: { code: string; name: string; weight: number; cost?: number }[], totalCapital?: number, riskTolerance?: string) => {
-      const apiKey = localStorage.getItem("qlib-api-key") || ""
-      const baseUrl = localStorage.getItem("qlib-llm-base-url") || ""
+      const { apiKey, baseUrl, quickModel, deepModel } = getLlmRequestConfig()
       return fetch(`${API_BASE}/api/ai-strategy/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -768,12 +783,13 @@ export const api = {
           risk_tolerance: riskTolerance || "moderate",
           api_key: apiKey || undefined,
           base_url: baseUrl || undefined,
+          quick_model: quickModel || undefined,
+          deep_model: deepModel || undefined,
         }),
       }).then(r => handleResponse<any>(r))
     },
     optimize: (strategyType: string, paramRanges?: Record<string, any>) => {
-      const apiKey = localStorage.getItem("qlib-api-key") || ""
-      const baseUrl = localStorage.getItem("qlib-llm-base-url") || ""
+      const { apiKey, baseUrl, quickModel, deepModel } = getLlmRequestConfig()
       return fetch(`${API_BASE}/api/ai-strategy/optimize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -782,6 +798,8 @@ export const api = {
           param_ranges: paramRanges || {},
           api_key: apiKey || undefined,
           base_url: baseUrl || undefined,
+          quick_model: quickModel || undefined,
+          deep_model: deepModel || undefined,
         }),
       }).then(r => handleResponse<any>(r))
     },
@@ -790,11 +808,12 @@ export const api = {
   // 多智能体辩论
   agent: {
     analyze: (code: string, asyncMode: boolean = true) => {
-      const apiKey = localStorage.getItem("qlib-api-key") || ""
-      const baseUrl = localStorage.getItem("qlib-llm-base-url") || ""
+      const { apiKey, baseUrl, quickModel, deepModel } = getLlmRequestConfig()
       const params = new URLSearchParams({ code, async_mode: String(asyncMode) })
       if (apiKey) params.append("api_key", apiKey)
       if (baseUrl) params.append("base_url", baseUrl)
+      if (quickModel) params.append("quick_model", quickModel)
+      if (deepModel) params.append("deep_model", deepModel)
       return fetch(`${API_BASE}/api/agent/analyze?${params}`, {
         method: "POST",
       }).then(r => handleResponse<any>(r))
