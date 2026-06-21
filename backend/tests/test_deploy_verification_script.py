@@ -12,6 +12,7 @@ class DeployVerificationScriptTests(unittest.TestCase):
         self.assertIn("Frontend bundle version check", script)
         self.assertIn("去数据管理配置 Key", script)
         self.assertIn("ETF/指数暂按 Qlib 状态代理展示", script)
+        self.assertIn("指定股票代码", script)
         self.assertIn("FRONTEND_BUNDLE_COPY_OK", script)
 
 

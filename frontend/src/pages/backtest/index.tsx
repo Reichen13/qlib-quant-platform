@@ -58,6 +58,16 @@ export function BacktestPage() {
   const setBacktestTaskState = useAppStore((s) => s.setBacktestTaskState)
   const result = (persistedResult as BacktestResult | null) || emptyResult
   const [attributionOpen, setAttributionOpen] = useState(true)
+  const [adminApiKey, setAdminApiKey] = useState(() => localStorage.getItem("qlib-admin-api-key") || "")
+
+  const handleAdminKeyChange = (value: string) => {
+    setAdminApiKey(value)
+    if (value) {
+      localStorage.setItem("qlib-admin-api-key", value)
+    } else {
+      localStorage.removeItem("qlib-admin-api-key")
+    }
+  }
 
   // 运行回测 mutation
   const backtestMutation = useMutation({
@@ -342,6 +352,24 @@ export function BacktestPage() {
               </CardContent>
             </Card>
           </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">服务器管理 Key</CardTitle>
+              <CardDescription>
+                用于提交模型回测等受保护操作；只保存在当前浏览器，不会写入项目代码。
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <Input
+                type="password"
+                value={adminApiKey}
+                onChange={(event) => handleAdminKeyChange(event.target.value)}
+                placeholder="请输入服务器 API_KEY"
+                autoComplete="off"
+              />
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* 回测结果 */}

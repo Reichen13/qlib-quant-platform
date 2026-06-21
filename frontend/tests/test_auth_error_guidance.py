@@ -28,6 +28,13 @@ class AuthErrorGuidanceTests(unittest.TestCase):
         self.assertIn("数据管理", source)
         self.assertIn("返回修改参数", source)
 
+    def test_backtest_page_can_save_admin_key_without_leaving_page(self):
+        source = (ROOT / "src" / "pages" / "backtest" / "index.tsx").read_text(encoding="utf-8")
+
+        self.assertIn('localStorage.getItem("qlib-admin-api-key")', source)
+        self.assertIn('localStorage.setItem("qlib-admin-api-key"', source)
+        self.assertIn("请输入服务器 API_KEY", source)
+
 
 if __name__ == "__main__":
     unittest.main()

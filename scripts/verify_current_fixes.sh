@@ -182,6 +182,7 @@ bundle = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 needles = [
     "去数据管理配置 Key",
     "ETF/指数暂按 Qlib 状态代理展示",
+    "指定股票代码",
 ]
 missing = [needle for needle in needles if needle not in bundle]
 if missing:
