@@ -21,6 +21,7 @@ class AgentDebateStateTests(unittest.TestCase):
         self.assertIn("errorMessage", store_source)
         self.assertIn("errorMessage", page_source)
         self.assertIn("r.error", page_source)
+        self.assertIn('status === "error" || status === "failed"', page_source)
         self.assertIn("setAgentDebateParams", page_source)
         self.assertNotIn("const [, setTaskId]", page_source)
         self.assertNotIn('const [status, setStatus] = useState<string>("idle")', page_source)

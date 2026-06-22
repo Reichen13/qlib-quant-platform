@@ -151,12 +151,12 @@ export function AgentDebatePage() {
       )}
 
       {/* 错误状态 */}
-      {status === "error" && (
+      {(status === "error" || status === "failed") && (
         <Card className="border-red-200 bg-red-50">
           <CardContent className="pt-6">
             <p className="text-sm text-red-700 flex items-center gap-2">
               <XCircle className="h-4 w-4" />
-              分析失败，请检查 LLM 配置或股票代码是否正确
+              分析失败
             </p>
             <p className="text-sm text-muted-foreground mt-2">
               {errorMessage || "请检查 LLM 配置、模型名称、Base URL 或股票代码是否正确。"}

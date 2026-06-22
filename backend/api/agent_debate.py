@@ -93,8 +93,20 @@ async def analyze_stock(
     Returns:
         task_id 用于后续查询报告
     """
+    raw_code = code
+    try:
+        code = normalize_stock_code(raw_code, target="yf")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "股票代码格式不支持："
+                f"{raw_code}。请使用 600519 / 300750 / 688981 / 920118 "
+                "这类普通 A 股代码，也支持 SH600519、SZ300750、688981.SS。"
+            ),
+        ) from exc
+
     _check_llm(api_key)
-    code = normalize_stock_code(code, target="yf")
 
     import uuid
     task_id = str(uuid.uuid4())[:8]
