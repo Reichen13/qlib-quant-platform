@@ -9,9 +9,8 @@ from typing import List, Optional
 import pandas as pd
 import numpy as np
 import uuid
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
+from fastapi import APIRouter, HTTPException, BackgroundTasks
 from loguru import logger
-from auth import verify_api_key
 
 # 全局禁用多进程（必须在 import qlib 之前设置）
 os.environ['NUMBA_NUM_THREADS'] = '1'
@@ -25,7 +24,7 @@ from models.schemas import (
     AttributionPoint, AttributionSummary,
 )
 
-router = APIRouter(dependencies=[Depends(verify_api_key)])
+router = APIRouter()
 
 # 导入核心模块
 import sys
