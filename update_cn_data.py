@@ -11,10 +11,12 @@
     python update_cn_data.py --check      # 只检查状态，不更新
 """
 import argparse
+import json
 import sys
 import pathlib
 import time
 import atexit
+import urllib.request
 
 import numpy as np
 import pandas as pd
@@ -27,6 +29,7 @@ EXTRA_FIELDS = ["amount", "factor"]
 _BAOSTOCK = None
 _BAOSTOCK_LOGGED_IN = False
 REBUILD_GAP_THRESHOLD = 500
+REQUEST_SLEEP_SECONDS = 0.05
 
 
 # ── 日历 ──
@@ -174,12 +177,139 @@ def fetch_baostock(yf_code: str, start: str, end: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def yf_to_eastmoney_secid(code: str) -> str:
+    code = code.upper()
+    if code.endswith(".SS"):
+        return "1." + code[:6]
+    if code.endswith(".SZ"):
+        return "0." + code[:6]
+    if code.endswith(".BJ"):
+        return "0." + code[:6]
+    if code.startswith("SH"):
+        return "1." + code[2:8]
+    if code.startswith("SZ") or code.startswith("BJ"):
+        return "0." + code[2:8]
+    return "1." + code[:6]
+
+
+def fetch_eastmoney(yf_code: str, start: str, end: str) -> pd.DataFrame:
+    try:
+        secid = yf_to_eastmoney_secid(yf_code)
+        beg = start.replace("-", "")
+        end_ = end.replace("-", "")
+        url = (
+            "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+            f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6"
+            "&fields2=f51,f52,f53,f54,f55,f56,f57"
+            f"&klt=101&fqt=1&beg={beg}&end={end_}"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+                ),
+                "Referer": "https://quote.eastmoney.com/",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+
+        klines = (payload.get("data") or {}).get("klines") or []
+        rows = []
+        for item in klines:
+            parts = item.split(",")
+            if len(parts) >= 7:
+                rows.append(parts[:7])
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(
+            rows,
+            columns=["date", "open", "close", "high", "low", "volume", "amount"],
+        )
+        df.index = df["date"].astype(str)
+        for field in FIELDS + ["amount"]:
+            df[field] = pd.to_numeric(df[field], errors="coerce")
+        df["factor"] = 1.0
+        df = df.dropna(subset=["open", "high", "low", "close"])
+        return df[[f for f in FIELDS + EXTRA_FIELDS if f in df.columns]]
+    except Exception as e:
+        print(f"  WARN: Eastmoney fetch {yf_code} failed: {e}")
+        return pd.DataFrame()
+
+
+def yf_to_tencent_code(code: str) -> str:
+    code = code.upper()
+    if code.endswith(".SS"):
+        return "sh" + code[:6]
+    if code.endswith(".SZ"):
+        return "sz" + code[:6]
+    if code.endswith(".BJ"):
+        return "bj" + code[:6]
+    if code.startswith(("SH", "SZ", "BJ")):
+        return code[:2].lower() + code[2:8]
+    return "sh" + code[:6]
+
+
+def fetch_tencent(yf_code: str, start: str, end: str) -> pd.DataFrame:
+    try:
+        tencent_code = yf_to_tencent_code(yf_code)
+        url = (
+            "https://web.ifzq.gtimg.cn/appstock/app/kline/kline"
+            f"?param={tencent_code},day,{start},{end},640"
+        )
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+                ),
+                "Referer": "https://gu.qq.com/",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+
+        data = (payload.get("data") or {}).get(tencent_code) or {}
+        rows = data.get("qfqday") or data.get("day") or []
+        if not rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(
+            [row[:6] for row in rows if len(row) >= 6],
+            columns=["date", "open", "close", "high", "low", "volume"],
+        )
+        if df.empty:
+            return pd.DataFrame()
+
+        df.index = df["date"].astype(str)
+        for field in FIELDS:
+            df[field] = pd.to_numeric(df[field], errors="coerce")
+        df["volume"] = df["volume"] * 100.0
+        df["amount"] = df["close"] * df["volume"]
+        df["factor"] = 1.0
+        df = df.dropna(subset=["open", "high", "low", "close"])
+        return df[[f for f in FIELDS + EXTRA_FIELDS if f in df.columns]]
+    except Exception as e:
+        print(f"  WARN: Tencent fetch {yf_code} failed: {e}")
+        return pd.DataFrame()
+
+
 def fetch(yf_code: str, start: str, end: str) -> pd.DataFrame:
     """优先 yfinance，失败时使用服务器可访问的 Baostock 备用源。"""
+    df = fetch_tencent(yf_code, start, end)
+    if not df.empty:
+        return df
     df = fetch_yfinance(yf_code, start, end)
     if not df.empty:
         return df
-    return fetch_baostock(yf_code, start, end)
+    df = fetch_baostock(yf_code, start, end)
+    if not df.empty:
+        return df
+    return fetch_eastmoney(yf_code, start, end)
 
 
 # ── Qlib bin 追加 ──
@@ -413,7 +543,7 @@ def update(
             print(f"  [{i+1}/{total}] 成功:{success} 跳过:{skip} 失败:{fail} "
                   f"速度:{speed:.1f}只/s 剩余:{remaining/60:.1f}分")
 
-        time.sleep(0.25)  # 限速避免被封
+        time.sleep(REQUEST_SLEEP_SECONDS)  # 限速避免被封
 
     if success == 0 and skip == 0 and fail > 0:
         print("  ERROR: 所有股票数据拉取失败，请检查行情源或网络")

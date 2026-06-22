@@ -72,6 +72,36 @@ class FakeBaostockModule:
         return FakeBaostockResult()
 
 
+class FakeEastmoneyResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return (
+            b'{"data":{"klines":['
+            b'"2026-06-22,1370.00,1388.50,1390.00,1368.00,1234567,1690000000"'
+            b']}}'
+        )
+
+
+class FakeTencentResponse:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self):
+        return (
+            b'{"code":0,"data":{"sh600519":{"day":['
+            b'["2026-06-22","1214.31","1241.41","1252.80","1205.00","58251"]'
+            b']}}}'
+        )
+
+
 class UpdateCnDataTests(unittest.TestCase):
     def test_beijing_exchange_code_conversions(self):
         self.assertEqual(update_cn_data.qlib_to_yf("bj430047"), "430047.BJ")
@@ -79,6 +109,7 @@ class UpdateCnDataTests(unittest.TestCase):
 
     def test_fetch_falls_back_to_baostock_when_yfinance_is_empty(self):
         with patch.object(update_cn_data.yf, "Ticker", FakeYfinanceTicker, create=True), \
+             patch.object(update_cn_data, "fetch_tencent", return_value=pd.DataFrame()), \
              patch.dict(sys.modules, {"baostock": FakeBaostockModule()}):
             df = update_cn_data.fetch("600519.SS", "2026-05-06", "2026-06-18")
 
@@ -86,6 +117,73 @@ class UpdateCnDataTests(unittest.TestCase):
         self.assertEqual(list(df.index), ["2026-05-07"])
         self.assertEqual(float(df.loc["2026-05-07", "close"]), 1371.05)
         self.assertEqual(float(df.loc["2026-05-07", "amount"]), 5573286314.86)
+
+    def test_fetch_eastmoney_parses_daily_kline_rows(self):
+        with patch.object(update_cn_data.urllib.request, "urlopen", return_value=FakeEastmoneyResponse()):
+            df = update_cn_data.fetch_eastmoney("600519.SS", "2026-06-18", "2026-06-22")
+
+        self.assertFalse(df.empty)
+        self.assertEqual(list(df.index), ["2026-06-22"])
+        self.assertEqual(float(df.loc["2026-06-22", "open"]), 1370.0)
+        self.assertEqual(float(df.loc["2026-06-22", "close"]), 1388.5)
+        self.assertEqual(float(df.loc["2026-06-22", "amount"]), 1690000000.0)
+
+    def test_fetch_tencent_parses_daily_kline_rows(self):
+        with patch.object(update_cn_data.urllib.request, "urlopen", return_value=FakeTencentResponse()):
+            df = update_cn_data.fetch_tencent("600519.SS", "2026-06-18", "2026-06-22")
+
+        self.assertFalse(df.empty)
+        self.assertEqual(list(df.index), ["2026-06-22"])
+        self.assertEqual(float(df.loc["2026-06-22", "open"]), 1214.31)
+        self.assertEqual(float(df.loc["2026-06-22", "close"]), 1241.41)
+        self.assertEqual(float(df.loc["2026-06-22", "volume"]), 5825100.0)
+        self.assertEqual(round(float(df.loc["2026-06-22", "amount"]), 2), 7231337391.0)
+
+    def test_fetch_falls_back_to_tencent_before_eastmoney(self):
+        tencent_frame = pd.DataFrame(
+            {
+                "open": [1214.31],
+                "close": [1241.41],
+                "high": [1252.8],
+                "low": [1205.0],
+                "volume": [5825100.0],
+                "amount": [7230011991.0],
+                "factor": [1.0],
+            },
+            index=["2026-06-22"],
+        )
+
+        with patch.object(update_cn_data.yf, "Ticker", FakeYfinanceTicker, create=True), \
+             patch.object(update_cn_data, "fetch_baostock", return_value=pd.DataFrame()), \
+             patch.object(update_cn_data, "fetch_tencent", return_value=tencent_frame), \
+             patch.object(update_cn_data, "fetch_eastmoney", side_effect=AssertionError("Eastmoney should not be called")):
+            df = update_cn_data.fetch("600519.SS", "2026-06-18", "2026-06-22")
+
+        self.assertEqual(list(df.index), ["2026-06-22"])
+        self.assertEqual(float(df.loc["2026-06-22", "close"]), 1241.41)
+
+    def test_fetch_falls_back_to_eastmoney_when_yfinance_and_baostock_are_empty(self):
+        eastmoney_frame = pd.DataFrame(
+            {
+                "open": [1370.0],
+                "close": [1388.5],
+                "high": [1390.0],
+                "low": [1368.0],
+                "volume": [1234567.0],
+                "amount": [1690000000.0],
+                "factor": [1.0],
+            },
+            index=["2026-06-22"],
+        )
+
+        with patch.object(update_cn_data.yf, "Ticker", FakeYfinanceTicker, create=True), \
+             patch.object(update_cn_data, "fetch_baostock", return_value=pd.DataFrame()), \
+             patch.object(update_cn_data, "fetch_tencent", return_value=pd.DataFrame(), create=True), \
+             patch.object(update_cn_data, "fetch_eastmoney", return_value=eastmoney_frame):
+            df = update_cn_data.fetch("600519.SS", "2026-06-18", "2026-06-22")
+
+        self.assertEqual(list(df.index), ["2026-06-22"])
+        self.assertEqual(float(df.loc["2026-06-22", "close"]), 1388.5)
 
     def test_update_returns_failure_when_reference_data_unavailable(self):
         with patch.object(update_cn_data, "fetch", return_value=EmptyFrame()):
