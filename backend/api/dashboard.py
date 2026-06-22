@@ -41,28 +41,20 @@ async def get_dashboard_summary():
 
     # ── 热门板块 ──
     try:
-        from api.sectors import _get_all_stock_prices
-        from core.sector_definitions import SECTOR_DEFINITIONS
+        from api.hot import get_hot_sectors
 
-        all_prices = _get_all_stock_prices()
-
-        for sector_name, codes in SECTOR_DEFINITIONS.items():
-            try:
-                changes = []
-                for code in codes:
-                    info = all_prices.get(code)
-                    if info:
-                        changes.append(info["change_pct"])
-                avg_chg = round(float(sum(changes) / len(changes)), 2) if changes else 0
-                result["hot_sectors"].append({
-                    "name": sector_name,
-                    "change_pct": avg_chg,
-                    "stock_count": len(codes),
-                })
-            except Exception:
-                pass
-
-        result["hot_sectors"].sort(key=lambda x: x["change_pct"], reverse=True)
+        hot_response = await get_hot_sectors(days=10)
+        for sector in getattr(hot_response, "sectors", []):
+            sector_data = sector.model_dump() if hasattr(sector, "model_dump") else {
+                "name": getattr(sector, "name", ""),
+                "change_pct": getattr(sector, "change_pct", 0),
+                "stock_count": getattr(sector, "stock_count", 0),
+            }
+            result["hot_sectors"].append({
+                "name": sector_data.get("name"),
+                "change_pct": float(sector_data.get("change_pct") or 0),
+                "stock_count": int(sector_data.get("stock_count") or 0),
+            })
     except Exception as e:
         logger.warning(f"Dashboard 板块数据获取失败: {e}")
 

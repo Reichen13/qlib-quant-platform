@@ -30,21 +30,31 @@ from backend.api import dashboard
 
 class DashboardTests(unittest.IsolatedAsyncioTestCase):
     async def test_strategy_signals_are_marked_as_derived_without_fake_stock_counts(self):
+        class FakeSector:
+            def __init__(self, name, change_pct, stock_count):
+                self.name = name
+                self.change_pct = change_pct
+                self.stock_count = stock_count
+
+        class FakeHotResponse:
+            sectors = [
+                FakeSector("行业A", 1.0, 2),
+                FakeSector("行业B", -0.4, 1),
+            ]
+
+        async def fake_get_hot_sectors(days=10):
+            return FakeHotResponse()
+
         fake_sectors = types.ModuleType("api.sectors")
-        fake_sectors._get_all_stock_prices = lambda: {
-            "SH600001": {"change_pct": 1.2},
-            "SH600002": {"change_pct": 0.8},
-            "SH600003": {"change_pct": -0.4},
-        }
-        fake_definitions = types.ModuleType("core.sector_definitions")
-        fake_definitions.SECTOR_DEFINITIONS = {
-            "行业A": ["SH600001", "SH600002"],
-            "行业B": ["SH600003"],
-        }
+        fake_sectors._get_all_stock_prices = lambda: (_ for _ in ()).throw(
+            AssertionError("Dashboard should not use the slow yfinance sector path")
+        )
+        fake_hot = types.ModuleType("api.hot")
+        fake_hot.get_hot_sectors = fake_get_hot_sectors
 
         with patch.dict(sys.modules, {
             "api.sectors": fake_sectors,
-            "core.sector_definitions": fake_definitions,
+            "api.hot": fake_hot,
         }):
             result = await dashboard.get_dashboard_summary()
 
