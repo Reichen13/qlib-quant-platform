@@ -1,9 +1,11 @@
 import sys
 import types
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
 import pandas as pd
 
 backend_dir = Path(__file__).resolve().parents[1]
@@ -69,6 +71,20 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
             "change_pct": 3.2,
             "signal": "buy",
         }])
+
+    async def test_summary_returns_json_serializable_numbers(self):
+        fake_etf = types.ModuleType("api.etf")
+        fake_etf._get_cached_history = lambda: {
+            "SH510300": pd.DataFrame({"Close": [1.0 + i * 0.01 for i in range(12)]})
+        }
+        fake_etf._get_etf_universe = lambda: {"SH510300": "沪深300ETF"}
+        fake_etf.compute_signal = lambda prices, days=20: ("buy", np.float32(3.2), np.float32(1.5))
+
+        with patch.dict(sys.modules, {"api.etf": fake_etf}):
+            result = await dashboard.get_dashboard_summary()
+
+        json.dumps(result, ensure_ascii=False)
+        self.assertIs(type(result["etf_signals"][0]["change_pct"]), float)
 
 
 if __name__ == "__main__":

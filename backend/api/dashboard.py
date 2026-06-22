@@ -10,6 +10,19 @@ from loguru import logger
 router = APIRouter()
 
 
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            return value
+    return value
+
+
 @router.get("/summary")
 async def get_dashboard_summary():
     """
@@ -101,4 +114,4 @@ async def get_dashboard_summary():
             },
         ]
 
-    return result
+    return _json_safe(result)
