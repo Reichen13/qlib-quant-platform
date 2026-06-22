@@ -832,7 +832,6 @@ async def get_backtest_status(task_id: str):
         raise HTTPException(status_code=404, detail="任务不存在")
 
     if task["status"] == "completed" and task["result_json"]:
-        from models.schemas import BacktestResponse
         return BacktestResponse.model_validate_json(task["result_json"])
     elif task["status"] == "failed":
         return BacktestResponse(
