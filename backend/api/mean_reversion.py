@@ -10,6 +10,7 @@ import pandas as pd
 import numpy as np
 from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
+from utils.code_normalization import normalize_stock_code
 
 router = APIRouter()
 
@@ -58,6 +59,43 @@ def calc_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int = 2) 
     }
 
 
+def _is_a_share_feature_dir(name: str) -> bool:
+    code = name.lower()
+    return (
+        code.startswith("sh6")
+        or code.startswith("sz0")
+        or code.startswith("sz3")
+        or code.startswith("bj4")
+        or code.startswith("bj8")
+        or code.startswith("bj920")
+    )
+
+
+def _get_scan_universe() -> list[str]:
+    data_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data"
+    feature_dir = data_dir / "features"
+    if feature_dir.exists():
+        codes = []
+        for stock_dir in feature_dir.iterdir():
+            if stock_dir.is_dir() and _is_a_share_feature_dir(stock_dir.name):
+                try:
+                    codes.append(normalize_stock_code(stock_dir.name, target="qlib"))
+                except ValueError:
+                    continue
+        if codes:
+            return list(dict.fromkeys(codes))
+
+    csi300_file = data_dir / "instruments" / "csi300.txt"
+    if csi300_file.exists():
+        with open(csi300_file, encoding="utf-8") as f:
+            return [
+                normalize_stock_code(line.strip().split("\t")[0], target="qlib")
+                for line in f
+                if line.strip()
+            ]
+    return []
+
+
 def scan_mean_reversion_signals(
     stock_codes: List[str],
     rsi_threshold: int = 70,
@@ -82,21 +120,9 @@ def scan_mean_reversion_signals(
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
 
-        # 获取 CSI300 成分股
-        csi300_file = Path.home() / ".qlib" / "qlib_data" / "cn_data" / "instruments" / "csi300.txt"
+        scan_codes = stock_codes or _get_scan_universe()
 
-        if csi300_file.exists():
-            with open(csi300_file) as f:
-                stock_codes = [line.strip().split('\t')[0] for line in f if line.strip()][:100]
-        else:
-            # 默认股票列表
-            stock_codes = [
-                "SH600519", "SZ000858", "SH600036", "SZ000001",
-                "SH601318", "SZ000002", "SZ000333", "SZ002594",
-                "SH600276", "SZ300750", "SH600887", "SH600000",
-            ]
-
-        for code in stock_codes[:50]:  # 限制扫描数量
+        for code in scan_codes[:200]:  # 控制单次扫描耗时，同时避免只绑定 CSI300
             try:
                 # 获取价格数据
                 df = D.features(

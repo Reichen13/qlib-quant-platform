@@ -35,6 +35,24 @@ def make_history(rows: int = 12) -> pd.DataFrame:
 
 
 class NoMockMarketFallbackTests(unittest.IsolatedAsyncioTestCase):
+    def test_mean_reversion_universe_prefers_local_full_market_features(self):
+        feature_dirs = [
+            Path("/tmp/qlib-test/.qlib/qlib_data/cn_data/features/sh600519"),
+            Path("/tmp/qlib-test/.qlib/qlib_data/cn_data/features/sz000001"),
+            Path("/tmp/qlib-test/.qlib/qlib_data/cn_data/features/sz300750"),
+            Path("/tmp/qlib-test/.qlib/qlib_data/cn_data/features/sh688981"),
+            Path("/tmp/qlib-test/.qlib/qlib_data/cn_data/features/bj920118"),
+            Path("/tmp/qlib-test/.qlib/qlib_data/cn_data/features/sh510300"),
+        ]
+
+        with patch.object(mean_reversion.Path, "home", return_value=Path("/tmp/qlib-test")):
+            with patch.object(mean_reversion.Path, "exists", return_value=True), \
+                 patch.object(mean_reversion.Path, "is_dir", return_value=True), \
+                 patch.object(mean_reversion.Path, "iterdir", return_value=feature_dirs):
+                universe = mean_reversion._get_scan_universe()
+
+        self.assertEqual(universe, ["SH600519", "SZ000001", "SZ300750", "SH688981", "BJ920118"])
+
     async def test_mean_reversion_scan_reports_unavailable_instead_of_mock_signals(self):
         with patch.object(mean_reversion, "scan_mean_reversion_signals", side_effect=RuntimeError("qlib unavailable")):
             response = await mean_reversion.scan_signals(rsi_threshold=70, bollinger_period=20)
