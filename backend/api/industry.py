@@ -1,6 +1,6 @@
 """
 行业板块 API
-基于 Baostock 提供行业分类和板块数据
+基于 akshare 东方财富行业分类数据（原 Baostock 已替换）
 """
 
 from typing import List, Optional
@@ -49,29 +49,24 @@ async def list_industries():
     返回可用的行业分类及其股票数量
     """
     try:
-        bs = provider._get_bs_client()
-        if not bs:
-            raise HTTPException(status_code=503, detail="数据源不可用")
+        import akshare as ak
 
-        import baostock as bs
-        rs = bs.query_stock_industry()
-
-        industries = {}
-        while (rs.error_code == '0') & rs.next():
-            row = rs.get_row_data()
-            industry_name = row[3]  # industry
-            if industry_name:
-                industries[industry_name] = industries.get(industry_name, 0) + 1
-
-        # 转换为列表并排序
-        industry_list = [
-            {"name": k, "count": v}
-            for k, v in sorted(industries.items(), key=lambda x: x[1], reverse=True)
-        ]
+        df = ak.stock_board_industry_name_em()
+        industry_list = []
+        for _, row in df.iterrows():
+            name = str(row.get("板块名称") or "").strip()
+            if not name:
+                continue
+            up = int(row.get("上涨家数") or 0)
+            down = int(row.get("下跌家数") or 0)
+            industry_list.append({
+                "name": name,
+                "count": up + down,
+            })
 
         return {
             "total": len(industry_list),
-            "industries": industry_list
+            "industries": industry_list,
         }
 
     except HTTPException:
@@ -91,26 +86,20 @@ async def get_industry_stocks(
     返回该行业下的所有股票列表
     """
     try:
-        bs = provider._get_bs_client()
-        if not bs:
-            raise HTTPException(status_code=503, detail="数据源不可用")
+        import akshare as ak
 
-        import baostock as bs
-        rs = bs.query_stock_industry()
-
+        df = ak.stock_board_industry_cons_em(symbol=industry)
         stocks = []
-        while (rs.error_code == '0') & rs.next():
-            row = rs.get_row_data()
-            if row[3] == industry:  # 行业匹配
-                stocks.append({
-                    "code": row[1],  # sh.600000
-                    "name": row[2],  # 股票名称
-                })
+        for _, row in df.iterrows():
+            code = str(row.get("代码") or "").strip()
+            name = str(row.get("名称") or "").strip()
+            if code:
+                stocks.append({"code": code, "name": name})
 
         return {
             "industry": industry,
             "count": len(stocks),
-            "stocks": stocks
+            "stocks": stocks,
         }
 
     except HTTPException:
@@ -130,92 +119,36 @@ async def get_industry_performance(
     计算每个行业股票的平均涨跌幅
     """
     try:
-        from datetime import datetime, timedelta
-
-        # 获取所有股票的行业
-        bs = provider._get_bs_client()
-        if not bs:
-            raise HTTPException(status_code=503, detail="数据源不可用")
+        from datetime import datetime
+        import akshare as ak
 
         end_date = datetime.now().strftime("%Y-%m-%d")
-        start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
 
-        import baostock as bs
-        rs_industry = bs.query_stock_industry()
-
-        # 按行业分组
-        industry_stocks = {}
-        while (rs_industry.error_code == '0') & rs_industry.next():
-            row = rs_industry.get_row_data()
-            industry = row[3]
-            if industry and industry not in industry_stocks:
-                industry_stocks[industry] = []
-            # 限制每个行业取前20只股票
-            if industry and len(industry_stocks.get(industry, [])) < 20:
-                industry_stocks[industry].append(row[1])
-
-        # 展平所有股票查询任务
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        def _fetch_quote(code):
-            try:
-                rs_quote = bs.query_history_k_data_plus(
-                    code,
-                    "date,code,pctChg",
-                    start_date=start_date,
-                    end_date=end_date,
-                    frequency="d",
-                    adjustflag="2",
-                )
-                if rs_quote.error_code == '0':
-                    changes = []
-                    while (rs_quote.error_code == '0') & rs_quote.next():
-                        pct = rs_quote.get_row_data()[2]
-                        if pct:
-                            changes.append(float(pct))
-                    if changes:
-                        return sum(changes) / len(changes)
-            except Exception:
-                pass
-            return None
-
-        # 展平为 (industry, code) 任务列表
-        tasks = []
-        for industry, codes in industry_stocks.items():
-            for code in codes[:10]:
-                tasks.append((industry, code))
-
-        # 并行查询
-        industry_changes: dict[str, list] = {}
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {executor.submit(_fetch_quote, code): (ind, code) for ind, code in tasks}
-            for future in as_completed(futures):
-                ind, code = futures[future]
-                avg_change = future.result()
-                if avg_change is not None:
-                    if ind not in industry_changes:
-                        industry_changes[ind] = []
-                    industry_changes[ind].append(avg_change)
-
-        # 汇总行业表现
+        df = ak.stock_board_industry_name_em()
         industry_performance = []
-        for industry in industry_stocks:
-            changes = industry_changes.get(industry, [])
-            if changes:
-                avg = sum(changes) / len(changes)
-                industry_performance.append({
-                    "industry": industry,
-                    "change_pct": round(avg, 2),
-                    "stock_count": len(changes),
-                })
+        for _, row in df.iterrows():
+            name = str(row.get("板块名称") or "").strip()
+            if not name:
+                continue
+            change_pct = row.get("涨跌幅")
+            try:
+                change_pct = round(float(change_pct), 2)
+            except (TypeError, ValueError):
+                change_pct = 0.0
+            up = int(row.get("上涨家数") or 0)
+            down = int(row.get("下跌家数") or 0)
+            industry_performance.append({
+                "industry": name,
+                "change_pct": change_pct,
+                "stock_count": up + down,
+            })
 
-        # 排序
         industry_performance.sort(key=lambda x: x["change_pct"], reverse=True)
 
         return {
             "date": end_date,
             "period_days": days,
-            "sectors": industry_performance
+            "sectors": industry_performance,
         }
 
     except HTTPException:
