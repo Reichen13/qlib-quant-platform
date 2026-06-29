@@ -1,8 +1,8 @@
 # PROJECT_STATE.md
 
-> 记录时间：2026-06-24  
+> 记录时间：2026-06-29  
 > 范围：当前工作区 + 最近可核对的线上基线（最后一次明确线上记录为 2026-06-21）  
-> 状态：本地工作区仍有未提交改动，说明最近一轮修复还在整合阶段，线上未必已同步最新版本。
+> 状态：本地工作区仍有未提交改动（截至 06-29 为 34 文件，+2405/-250）；盘后选股工作流、AI 策略模板/回测、宏观适配器已实现并跑通纯逻辑测试，但线上基线仍停在 2026-06-21。
 
 ## 1. 当前整体进度
 
@@ -254,3 +254,25 @@
 - 解决 LLM / Key 这类硬阻塞
 - 补齐股票池和数据覆盖
 - 继续压缩假数据、慢请求和状态丢失问题
+
+
+## 2026-06-29 进展核对（本地核查）
+
+> 核对方式：git status + 路由注册核对 + 后端纯逻辑测试（本地为 Python 3.14，未装 pandas/qlib）。
+
+### 自 06-24 以来已完成（仍为未提交改动）
+- 盘后选股工作流：backend/api/screening.py（编排层）+ /api/screening 路由（已注册到 backend/main.py）+ frontend/src/pages/screening-workflow/；test_screening_workflow.py 11 项本地通过。
+- AI 策略模板与回测：backend/api/ai_strategy.py + frontend/src/lib/ai-strategy-backtest.ts；test_ai_strategy_templates.py、test_ai_strategy_screening.py 本地通过。
+- 宏观适配器：backend/api/macro.py + test_macro_data_adapters.py（依赖 pandas，本地未跑，待容器验证）。
+
+### 本地可验证 / 不可验证
+- 可验证（纯逻辑，本地通过）：screening、ai_strategy_templates、ai_strategy_screening、llm_request_models、backtest_status、agent_debate 归一化。
+- 不可验证（本地未装 pandas/qlib）：test_macro_data_adapters、test_multi_agent_indicators、test_qlib_multiindex_metrics，需在 quant-backend 容器内跑。
+
+### 待清理（需确认）
+- 11 个 frontend-dist-*.tgz（06-24~06-25 部署打包产物，每个约 0.4MB），散在工作区根目录。
+
+### 仍待推进
+- 本地 34 文件改动（+2405/-250）尚未提交，线上基线仍停在 2026-06-21。
+- LLM Key / 服务管理 Key 硬阻塞未解。
+- 股票池仍未到完整 A 股口径（线上约 3876，目标 4000+）。
