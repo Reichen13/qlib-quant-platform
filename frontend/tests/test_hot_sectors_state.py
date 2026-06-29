@@ -20,6 +20,14 @@ class HotSectorsStateTests(unittest.TestCase):
         self.assertNotIn('const [period, setPeriod] = useState("10d")', page_source)
         self.assertNotIn("const [expandedSector, setExpandedSector] = useState<string | null>(null)", page_source)
 
+    def test_hot_sectors_page_uses_hot_api_not_legacy_sector_proxy(self):
+        page_source = (ROOT / "src" / "pages" / "hot-sectors" / "index.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("api.hot.sectors(period)", page_source)
+        self.assertIn("api.hot.sectorStocks(expandedSector!)", page_source)
+        self.assertNotIn("api.sectors.performance", page_source)
+        self.assertNotIn("api.sectors.stocks", page_source)
+
 
 if __name__ == "__main__":
     unittest.main()

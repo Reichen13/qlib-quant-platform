@@ -103,6 +103,24 @@ class FakeTencentResponse:
 
 
 class UpdateCnDataTests(unittest.TestCase):
+    def test_extend_calendar_rewrites_unsorted_duplicate_calendar(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "cn_data"
+            (data_dir / "calendars").mkdir(parents=True)
+            cal_path = data_dir / "calendars" / "day.txt"
+            cal_path.write_text(
+                "2026-06-22\n2026-06-23\n2026-06-24\n2025-10-24\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(update_cn_data, "DATA_DIR", data_dir):
+                calendar = update_cn_data.extend_calendar(["2026-06-24", "2026-06-25"])
+
+            calendar_text = cal_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(calendar, ["2025-10-24", "2026-06-22", "2026-06-23", "2026-06-24", "2026-06-25"])
+        self.assertEqual(calendar_text, calendar)
+
     def test_beijing_exchange_code_conversions(self):
         self.assertEqual(update_cn_data.qlib_to_yf("bj430047"), "430047.BJ")
         self.assertEqual(update_cn_data.yf_to_baostock("430047.BJ"), "bj.430047")
@@ -310,6 +328,54 @@ class UpdateCnDataTests(unittest.TestCase):
         self.assertIn("300750.SZ", fetched_codes)
         self.assertNotIn("600519.SS", fetched_codes)
 
+    def test_update_filters_provider_rows_after_requested_end_date(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "cn_data"
+            stock_dir = data_dir / "features" / "sh600519"
+            (data_dir / "calendars").mkdir(parents=True)
+            (data_dir / "instruments").mkdir(parents=True)
+            stock_dir.mkdir(parents=True)
+            (data_dir / "calendars" / "day.txt").write_text("2026-06-22\n", encoding="utf-8")
+            (data_dir / "instruments" / "csi300.txt").write_text(
+                "sh600519\t2020-01-01\t2026-06-22\n",
+                encoding="utf-8",
+            )
+            for field in update_cn_data.FIELDS + update_cn_data.EXTRA_FIELDS:
+                np.array([0.0, 10.0], dtype="<f").tofile(stock_dir / f"{field}.day.bin")
+
+            provider_frame = pd.DataFrame(
+                {
+                    "open": [11.0, 99.0],
+                    "close": [12.0, 100.0],
+                    "high": [13.0, 101.0],
+                    "low": [10.0, 98.0],
+                    "volume": [100.0, 900.0],
+                    "amount": [1200.0, 90000.0],
+                    "factor": [1.0, 1.0],
+                },
+                index=["2026-06-23", "2026-06-24"],
+            )
+
+            with patch.object(update_cn_data, "DATA_DIR", data_dir), \
+                 patch.object(update_cn_data, "fetch", return_value=provider_frame), \
+                 patch.object(update_cn_data.time, "sleep"):
+                exit_code = update_cn_data.update(
+                    start="2026-06-22",
+                    end="2026-06-23",
+                    max_stocks=None,
+                )
+
+            calendar_text = (data_dir / "calendars" / "day.txt").read_text(encoding="utf-8")
+            instrument_text = (data_dir / "instruments" / "csi300.txt").read_text(encoding="utf-8")
+            close_raw = np.fromfile(stock_dir / "close.day.bin", dtype="<f")
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("2026-06-23", calendar_text)
+        self.assertNotIn("2026-06-24", calendar_text)
+        self.assertIn("2026-06-23", instrument_text)
+        self.assertNotIn("2026-06-24", instrument_text)
+        self.assertEqual(float(close_raw[-1]), 12.0)
+
     def test_rebuild_stale_short_bin_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "cn_data"
@@ -390,6 +456,48 @@ class UpdateCnDataTests(unittest.TestCase):
         self.assertEqual(changed, 2)
         self.assertEqual(list(open_raw), [0.0, 1400.0, 1401.0, 1300.0])
         self.assertEqual(list(close_raw), [0.0, 1395.0, 1396.0, 1300.0])
+
+    def test_overwrite_existing_repairs_nonzero_prices_but_preserves_factor(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "cn_data"
+            stock_dir = data_dir / "features" / "sh600519"
+            (data_dir / "calendars").mkdir(parents=True)
+            stock_dir.mkdir(parents=True)
+            calendar = ["2026-03-20", "2026-03-23", "2026-03-24"]
+            (data_dir / "calendars" / "day.txt").write_text("\n".join(calendar) + "\n", encoding="utf-8")
+
+            for field in update_cn_data.FIELDS + ["amount"]:
+                np.array([0.0, 99.0, 100.0, 101.0], dtype="<f").tofile(stock_dir / f"{field}.day.bin")
+            np.array([0.0, 0.5, 0.5, 0.5], dtype="<f").tofile(stock_dir / "factor.day.bin")
+
+            df = pd.DataFrame(
+                {
+                    "open": [1400.0, 1401.0],
+                    "close": [1395.0, 1396.0],
+                    "high": [1410.0, 1411.0],
+                    "low": [1380.0, 1381.0],
+                    "volume": [100.0, 200.0],
+                    "amount": [139500.0, 279200.0],
+                    "factor": [1.0, 1.0],
+                },
+                index=["2026-03-20", "2026-03-23"],
+            )
+
+            with patch.object(update_cn_data, "DATA_DIR", data_dir):
+                changed = update_cn_data.append_to_bin(
+                    "sh600519",
+                    df,
+                    calendar,
+                    rebuild_stale=True,
+                    overwrite_existing=True,
+                )
+
+            close_raw = np.fromfile(stock_dir / "close.day.bin", dtype="<f")
+            factor_raw = np.fromfile(stock_dir / "factor.day.bin", dtype="<f")
+
+        self.assertEqual(changed, 2)
+        self.assertEqual(list(close_raw), [0.0, 1395.0, 1396.0, 101.0])
+        self.assertEqual(list(factor_raw), [0.0, 0.5, 0.5, 0.5])
 
 
 if __name__ == "__main__":

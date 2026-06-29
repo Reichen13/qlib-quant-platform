@@ -39,7 +39,7 @@ class AgentDebateCodeNormalizationTests(unittest.IsolatedAsyncioTestCase):
     async def test_analyze_rejects_invalid_code_before_llm_check(self):
         with patch.object(agent_debate, "_check_llm", side_effect=AssertionError("LLM check should not run")):
             with self.assertRaises(HTTPException) as ctx:
-                await agent_debate.analyze_stock("not-a-code", BackgroundTasks())
+                await agent_debate.analyze_stock(BackgroundTasks(), code="not-a-code")
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("\u80a1\u7968\u4ee3\u7801\u683c\u5f0f\u4e0d\u652f\u6301", ctx.exception.detail)
@@ -50,7 +50,7 @@ class AgentDebateCodeNormalizationTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(agent_debate, "_check_llm", return_value=None), \
              patch.dict(sys.modules, {"db.report_store": fake_report_store}):
-            response = await agent_debate.analyze_stock("688981", background_tasks)
+            response = await agent_debate.analyze_stock(background_tasks, code="688981")
 
         self.assertEqual(response["code"], "688981.SS")
         self.assertEqual(response["status"], "running")

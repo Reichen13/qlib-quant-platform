@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Zap, Play, Loader2, TrendingUp, Activity, Settings, BarChart3, ChevronDown, ChevronRight } from "lucide-react"
+import { Zap, Play, Loader2, TrendingUp, Activity, Settings, BarChart3, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react"
 import { LineChartComponent } from "@/components/charts/line-chart"
 import { DrawdownChart } from "@/components/charts/drawdown-chart"
 import {
@@ -113,6 +113,12 @@ export function BacktestPage() {
     return () => clearInterval(interval)
   }, [backtestTaskId, pollStatus])
 
+  useEffect(() => {
+    if (!backtestTaskId && result.status === "running" && result.task_id) {
+      setBacktestTaskState({ taskId: result.task_id })
+    }
+  }, [backtestTaskId, result.status, result.task_id, setBacktestTaskState])
+
   const runBacktest = () => {
     const snakeParams: Record<string, any> = {
       model: params.model,
@@ -137,6 +143,7 @@ export function BacktestPage() {
   const isRunning = result.status === "running"
   const isCompleted = result.status === "completed"
   const isFailed = result.status === "failed"
+  const isUnsupportedModel = params.model === "xgboost"
   const errorMessage = result.error || "未知错误"
   const isAuthError = errorMessage.includes("服务器管理 Key") || errorMessage.includes("API Key") || errorMessage.includes("X-API-Key")
 
@@ -189,7 +196,9 @@ export function BacktestPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="lightgbm">LightGBM</SelectItem>
-                      <SelectItem value="xgboost">XGBoost</SelectItem>
+                      <SelectItem value="xgboost" disabled>
+                        XGBoost（服务器暂未安装）
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -319,7 +328,7 @@ export function BacktestPage() {
                 <Button
                   className="w-full"
                   onClick={runBacktest}
-                  disabled={backtestMutation.isPending || !!backtestTaskId}
+                  disabled={backtestMutation.isPending || !!backtestTaskId || isUnsupportedModel}
                 >
                   {backtestMutation.isPending ? (
                     <>
@@ -338,6 +347,12 @@ export function BacktestPage() {
                     </>
                   )}
                 </Button>
+
+                {isUnsupportedModel && (
+                  <div className="p-3 bg-yellow-500/10 rounded-lg text-sm text-yellow-700 dark:text-yellow-300">
+                    当前服务器未安装 XGBoost，请选择 LightGBM 后再运行回测。
+                  </div>
+                )}
 
                 {result.task_id && result.status === "completed" && !backtestTaskId && (
                   <div className="p-3 bg-green-500/10 rounded-lg">
@@ -455,6 +470,21 @@ export function BacktestPage() {
                       <span className="text-muted-foreground">
                         当前回测基于因子 <span className="font-medium text-foreground">{result.factor_source}</span> 的选股信号
                       </span>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {result.warnings && result.warnings.length > 0 && (
+                <Card className="border-amber-500/40 bg-amber-500/5">
+                  <CardContent className="py-3">
+                    <div className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-300">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                      <div className="space-y-1">
+                        {result.warnings.map((warning) => (
+                          <p key={warning}>{warning}</p>
+                        ))}
+                      </div>
                     </div>
                   </CardContent>
                 </Card>

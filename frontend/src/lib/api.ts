@@ -92,11 +92,22 @@ async function handleResponse<T>(response: Response): Promise<T> {
 }
 
 function getLlmRequestConfig() {
+  const storedConfig = (() => {
+    try {
+      const raw = localStorage.getItem("qlib-app-store")
+      if (!raw) return {}
+      const parsed = JSON.parse(raw)
+      return parsed?.state || {}
+    } catch {
+      return {}
+    }
+  })()
+
   return {
-    apiKey: localStorage.getItem("qlib-api-key") || "",
-    baseUrl: localStorage.getItem("qlib-llm-base-url") || "",
-    quickModel: localStorage.getItem("qlib-llm-quick-model") || "",
-    deepModel: localStorage.getItem("qlib-llm-deep-model") || "",
+    apiKey: localStorage.getItem("qlib-api-key") || storedConfig.llmApiKey || "",
+    baseUrl: localStorage.getItem("qlib-llm-base-url") || storedConfig.llmBaseUrl || "",
+    quickModel: localStorage.getItem("qlib-llm-quick-model") || storedConfig.llmQuickModel || "",
+    deepModel: localStorage.getItem("qlib-llm-deep-model") || storedConfig.llmDeepModel || "",
   }
 }
 
@@ -173,6 +184,69 @@ export interface ETFSignalsResponse {
   top_sell: string[]
 }
 
+export interface ScreeningCandidate {
+  code: string
+  name: string
+  price?: number | null
+  change_pct?: number | null
+  action: string
+  bucket: string
+  reason: string
+  mean_reversion?: {
+    rsi?: number | null
+    bollingerPosition?: number | null
+    signal?: string
+    strength?: string
+    price?: number | null
+  }
+  factor_signal?: {
+    score?: number | null
+    rank?: number | null
+    matched_factors?: number | null
+    top_factor_count?: number | null
+    as_of?: string
+    source?: string
+  }
+  ai_strategy?: {
+    status?: string
+    score?: number | null
+    recommendation?: string
+    action?: string
+    reason?: string
+    votes?: Array<Record<string, any>>
+    cautions?: string[]
+  }
+  agent?: {
+    status?: string
+    rating?: string
+    risk_level?: string
+  }
+  warning?: string
+}
+
+export interface ScreeningRunRequest {
+  candidates?: string[]
+  include_llm?: boolean
+  risk_start_date?: string
+  risk_end_date?: string
+  generated_strategy?: Record<string, any>
+}
+
+export interface ScreeningRunResponse {
+  run_date: string
+  data_health: Record<string, any>
+  hot_sectors: Array<Record<string, any>>
+  etf_signals: Array<Record<string, any>>
+  pair_signals: Array<Record<string, any>>
+  risk_summary: Record<string, any>
+  factor_summary: Record<string, any>
+  ai_strategy_summary: Record<string, any>
+  candidates: ScreeningCandidate[]
+  buckets: Record<string, ScreeningCandidate[]>
+  llm_review: Record<string, any>
+  warnings: string[]
+}
+
 // 因子 IC 类型
 export interface FactorIC {
   factor: string
@@ -208,6 +282,19 @@ export interface DataStatus {
     last_date: string
     lag_days: number
     status: "normal" | "warning" | "error"
+  }
+  priceAdjustment?: {
+    status: "normal" | "warning" | "error"
+    adjustment_mode: string
+    factor_field_status: string
+    message: string
+    sample_size?: number
+    all_one_factor_count?: number
+    non_one_factor_count?: number
+    possible_unadjusted_jump_count?: number
+    suspect_examples?: Array<Record<string, any>>
+    warnings?: string[]
+    source_policy?: Record<string, any>
   }
 }
 
@@ -269,6 +356,7 @@ export type BacktestResult = {
   }>
   attribution_interpretation?: string
   cost_impact_estimate?: string
+  warnings?: string[]
   error?: string
 }
 
@@ -565,6 +653,17 @@ export const api = {
       fetch(`${API_BASE}/api/etf/list`).then(r => handleResponse<any>(r)),
   },
 
+  // 盘后选股工作流
+  screening: {
+    run: (params?: ScreeningRunRequest) =>
+      fetch(`${API_BASE}/api/screening/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params || {}),
+        timeoutMs: 120_000,
+      }).then(r => handleResponse<ScreeningRunResponse>(r)),
+  },
+
   // 数据管理
   data: {
     status: async () => {
@@ -574,18 +673,25 @@ export const api = {
         stocks: src.stocks,
         etf: src.stocks.etf,
         index: src.stocks.index,
+        priceAdjustment: src.price_adjustment,
       }
     },
     logs: () =>
       fetch(`${API_BASE}/api/data/logs`, { timeoutMs: 30_000 }).then(r => handleResponse<DataLogsResponse>(r)),
-    update: async (type: "stocks" | "etf" | "index" | "all", options?: { rebuildStale?: boolean; codes?: string[] }) =>
+    update: async (
+      type: "stocks" | "etf" | "index" | "all",
+      options?: { rebuildStale?: boolean; overwriteExisting?: boolean; codes?: string[]; startDate?: string; endDate?: string },
+    ) =>
       fetch(`${API_BASE}/api/data/update`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           type,
           rebuild_stale: options?.rebuildStale ?? false,
+          overwrite_existing: options?.overwriteExisting ?? false,
           codes: options?.codes && options.codes.length > 0 ? options.codes : undefined,
+          start_date: options?.startDate,
+          end_date: options?.endDate,
         }),
         timeoutMs: 30_000,
       }).then(r => handleResponse<DataUpdateResponse>(r)),
@@ -716,21 +822,23 @@ export const api = {
   // 宏观策略
   macro: {
     indicators: () =>
-      fetch(`${API_BASE}/api/macro/indicators`).then(r => handleResponse<any>(r)),
+      fetch(`${API_BASE}/api/macro/indicators`, { timeoutMs: 60_000 }).then(r => handleResponse<any>(r)),
     regime: (indicators: Record<string, number>) =>
       fetch(`${API_BASE}/api/macro/regime`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ indicators }),
+        timeoutMs: 60_000,
       }).then(r => handleResponse<any>(r)),
     allocation: (indicators: Record<string, number>) =>
       fetch(`${API_BASE}/api/macro/allocation`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ indicators }),
+        timeoutMs: 60_000,
       }).then(r => handleResponse<any>(r)),
     history: (months: number = 12) =>
-      fetch(`${API_BASE}/api/macro/history?months=${months}`).then(r => handleResponse<any>(r)),
+      fetch(`${API_BASE}/api/macro/history?months=${months}`, { timeoutMs: 60_000 }).then(r => handleResponse<any>(r)),
   },
 
   // 新闻分析
@@ -770,6 +878,7 @@ export const api = {
           quick_model: quickModel || undefined,
           deep_model: deepModel || undefined,
         }),
+        timeoutMs: 120_000,
       }).then(r => handleResponse<any>(r))
     },
     analyze: (holdings: { code: string; name: string; weight: number; cost?: number }[], totalCapital?: number, riskTolerance?: string) => {
@@ -786,6 +895,7 @@ export const api = {
           quick_model: quickModel || undefined,
           deep_model: deepModel || undefined,
         }),
+        timeoutMs: 120_000,
       }).then(r => handleResponse<any>(r))
     },
     optimize: (strategyType: string, paramRanges?: Record<string, any>) => {
@@ -801,21 +911,34 @@ export const api = {
           quick_model: quickModel || undefined,
           deep_model: deepModel || undefined,
         }),
+        timeoutMs: 120_000,
       }).then(r => handleResponse<any>(r))
     },
+    screeningSignals: (candidates?: string[]) =>
+      fetch(`${API_BASE}/api/ai-strategy/screening-signals`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidates: candidates && candidates.length > 0 ? candidates : undefined }),
+        timeoutMs: 120_000,
+      }).then(r => handleResponse<any>(r)),
   },
 
   // 多智能体辩论
   agent: {
     analyze: (code: string, asyncMode: boolean = true) => {
       const { apiKey, baseUrl, quickModel, deepModel } = getLlmRequestConfig()
-      const params = new URLSearchParams({ code, async_mode: String(asyncMode) })
-      if (apiKey) params.append("api_key", apiKey)
-      if (baseUrl) params.append("base_url", baseUrl)
-      if (quickModel) params.append("quick_model", quickModel)
-      if (deepModel) params.append("deep_model", deepModel)
-      return fetch(`${API_BASE}/api/agent/analyze?${params}`, {
+      return fetch(`${API_BASE}/api/agent/analyze`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          code,
+          async_mode: asyncMode,
+          api_key: apiKey || undefined,
+          base_url: baseUrl || undefined,
+          quick_model: quickModel || undefined,
+          deep_model: deepModel || undefined,
+        }),
+        timeoutMs: 30_000,
       }).then(r => handleResponse<any>(r))
     },
     report: (taskId: string) =>

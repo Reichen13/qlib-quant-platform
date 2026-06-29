@@ -35,5 +35,25 @@ class DataManagementRebuildStaleTests(unittest.TestCase):
         self.assertIn("以状态卡实际覆盖数量为准", page_source)
 
 
+    def test_data_management_displays_price_adjustment_diagnostic(self):
+        page_source = (ROOT / "src" / "pages" / "data-management" / "index.tsx").read_text(encoding="utf-8")
+        api_source = (ROOT / "src" / "lib" / "api.ts").read_text(encoding="utf-8")
+
+        self.assertIn("priceAdjustment", api_source)
+        self.assertIn("src.price_adjustment", api_source)
+        self.assertIn("复权口径诊断", page_source)
+        self.assertIn("factor_field_status", page_source)
+        self.assertIn("实盘成交价", page_source)
+        self.assertIn("需关注", page_source)
+        self.assertIn("suspect_examples", page_source)
+        self.assertIn("修正列表中的疑似标的", page_source)
+        self.assertIn("handleRepairAdjustmentSuspects", page_source)
+        self.assertIn("startDate", api_source)
+        self.assertIn("start_date", api_source)
+        self.assertIn("endDate", api_source)
+        self.assertIn("overwriteExisting", api_source)
+        self.assertIn("overwrite_existing", api_source)
+
+
 if __name__ == "__main__":
     unittest.main()

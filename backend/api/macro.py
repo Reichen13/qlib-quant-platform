@@ -4,6 +4,7 @@
 """
 
 from datetime import date, datetime, timedelta
+from typing import Optional
 import pandas as pd
 import numpy as np
 from fastapi import APIRouter, HTTPException
@@ -78,6 +79,59 @@ def _compute_indicator(close: pd.Series, name: str, symbol: str) -> MacroIndicat
     )
 
 
+def _parse_cn_period(value) -> pd.Timestamp:
+    """解析 akshare 常见的中文月份/日期字段。"""
+    text = str(value).strip()
+    text = text.replace("月份", "").replace("年", "-").replace("月", "-01")
+    return pd.to_datetime(text, errors="coerce")
+
+
+def _series_by_date(df: pd.DataFrame, value_col: str, date_col: str) -> pd.Series:
+    data = df[[date_col, value_col]].copy()
+    data["_date"] = data[date_col].map(_parse_cn_period)
+    data[value_col] = pd.to_numeric(data[value_col], errors="coerce")
+    data = data.dropna(subset=["_date", value_col]).sort_values("_date")
+    return data.set_index("_date")[value_col]
+
+
+def _indicator_from_series(
+    series: pd.Series,
+    *,
+    name: str,
+    symbol: str,
+    threshold: Optional[float] = None,
+    change_as_diff: bool = False,
+    precision: int = 2,
+) -> Optional[MacroIndicator]:
+    values = pd.to_numeric(series, errors="coerce").dropna()
+    if values.empty:
+        return None
+
+    latest = float(values.iloc[-1])
+    prev = float(values.iloc[-2]) if len(values) > 1 else latest
+    if change_as_diff:
+        change = latest - prev
+    else:
+        change = ((latest - prev) / abs(prev)) * 100 if prev != 0 else 0
+    hist = values.tail(252 if len(values) > 60 else 24)
+    z = (latest - hist.mean()) / (hist.std() or 1) if len(hist) > 1 else 0
+
+    if threshold is not None:
+        trend = "up" if latest >= threshold else "down"
+    else:
+        ma = values.tail(min(20, len(values))).mean()
+        trend = "up" if latest >= ma else "down"
+
+    return MacroIndicator(
+        name=name,
+        symbol=symbol,
+        value=round(latest, precision),
+        change_pct=round(float(change), 2),
+        trend=trend,
+        z_score=round(float(z), 2),
+    )
+
+
 def _fetch_sp500() -> pd.DataFrame:
     """获取标普500历史数据 (akshare)"""
     import akshare as ak
@@ -100,19 +154,15 @@ def _fetch_china_macro_data() -> dict:
     try:
         pmi_df = ak.macro_china_pmi()
         if not pmi_df.empty:
-            pmi_mfg = pmi_df[pmi_df["指标"] == "制造业PMI"].tail(24)
-            if not pmi_mfg.empty:
-                latest = float(pmi_mfg.iloc[-1]["今值"])
-                prev = float(pmi_mfg.iloc[-min(13, len(pmi_mfg))] if len(pmi_mfg) > 1 else pmi_mfg.iloc[-1]["今值"])
-                z = (latest - pmi_mfg["今值"].astype(float).mean()) / (pmi_mfg["今值"].astype(float).std() or 1)
-                indicators["CN_PMI_Mfg"] = MacroIndicator(
-                    name="制造业PMI", symbol="PMI",
-                    value=round(latest, 2),
-                    change_pct=round((latest - prev) / prev * 100, 2) if prev != 0 else 0,
-                    trend="up" if latest > 50 else "down",
-                    z_score=round(float(z), 2),
-                )
-                logger.info(f"中国制造业PMI: {latest}")
+            if {"指标", "今值"}.issubset(pmi_df.columns):
+                pmi_mfg = pmi_df[pmi_df["指标"] == "制造业PMI"].copy()
+                series = pd.to_numeric(pmi_mfg["今值"], errors="coerce").dropna().tail(24)
+            else:
+                series = _series_by_date(pmi_df, "制造业-指数", "月份").tail(24)
+            indicator = _indicator_from_series(series, name="制造业PMI", symbol="PMI", threshold=50)
+            if indicator:
+                indicators["CN_PMI_Mfg"] = indicator
+                logger.info(f"中国制造业PMI: {indicator.value}")
     except Exception as e:
         logger.warning(f"获取中国PMI失败: {e}")
 
@@ -120,99 +170,112 @@ def _fetch_china_macro_data() -> dict:
     try:
         pmi_df = ak.macro_china_pmi()
         if not pmi_df.empty:
-            pmi_nonmfg = pmi_df[pmi_df["指标"] == "非制造业PMI"].tail(24)
-            if not pmi_nonmfg.empty:
-                latest = float(pmi_nonmfg.iloc[-1]["今值"])
-                prev = float(pmi_nonmfg.iloc[-2]["今值"]) if len(pmi_nonmfg) > 1 else latest
-                z = (latest - pmi_nonmfg["今值"].astype(float).mean()) / (pmi_nonmfg["今值"].astype(float).std() or 1)
-                indicators["CN_PMI_NonMfg"] = MacroIndicator(
-                    name="非制造业PMI", symbol="NMI",
-                    value=round(latest, 2),
-                    change_pct=round((latest - prev) / prev * 100, 2) if prev != 0 else 0,
-                    trend="up" if latest > 50 else "down",
-                    z_score=round(float(z), 2),
-                )
-                logger.info(f"中国非制造业PMI: {latest}")
+            if {"指标", "今值"}.issubset(pmi_df.columns):
+                pmi_nonmfg = pmi_df[pmi_df["指标"] == "非制造业PMI"].copy()
+                series = pd.to_numeric(pmi_nonmfg["今值"], errors="coerce").dropna().tail(24)
+            else:
+                series = _series_by_date(pmi_df, "非制造业-指数", "月份").tail(24)
+            indicator = _indicator_from_series(series, name="非制造业PMI", symbol="NMI", threshold=50)
+            if indicator:
+                indicators["CN_PMI_NonMfg"] = indicator
+                logger.info(f"中国非制造业PMI: {indicator.value}")
     except Exception as e:
         logger.warning(f"获取非制造业PMI失败: {e}")
 
     # 3. M2 货币供应
     try:
         m2_df = ak.macro_china_money_supply()
-        if not m2_df.empty and "M2" in m2_df.columns:
-            m2 = m2_df["M2"].dropna()
-            if len(m2) >= 3:
-                latest = float(m2.iloc[-1])
-                prev = float(m2.iloc[-2])
-                m2_growth = (latest - prev) / abs(prev) * 100
-                z = (latest - m2.mean()) / (m2.std() or 1)
-                indicators["CN_M2"] = MacroIndicator(
-                    name="M2同比增速", symbol="M2",
-                    value=round(m2_growth, 2),
-                    change_pct=round(m2_growth - float((m2.iloc[-2] - m2.iloc[-3]) / abs(m2.iloc[-3]) * 100), 2) if len(m2) >= 3 else 0,
-                    trend="up" if m2_growth > 8 else "down",
-                    z_score=round(float(z), 2),
-                )
-                logger.info(f"M2同比增速: {m2_growth:.1f}%")
+        if not m2_df.empty:
+            if "货币和准货币(M2)-同比增长" in m2_df.columns:
+                series = _series_by_date(m2_df, "货币和准货币(M2)-同比增长", "月份")
+            elif "M2" in m2_df.columns:
+                raw = pd.to_numeric(m2_df["M2"], errors="coerce").dropna()
+                series = raw.pct_change() * 100
+            else:
+                series = pd.Series(dtype="float64")
+            indicator = _indicator_from_series(
+                series,
+                name="M2同比增速",
+                symbol="M2",
+                threshold=8,
+                change_as_diff=True,
+            )
+            if indicator:
+                indicators["CN_M2"] = indicator
+                logger.info(f"M2同比增速: {indicator.value:.1f}%")
     except Exception as e:
         logger.warning(f"获取M2失败: {e}")
 
     # 4. SHIBOR 利率
     try:
-        shibor_df = ak.macro_china_shibor()
-        if not shibor_df.empty and "O/N" in shibor_df.columns:
-            shibor_on = shibor_df["O/N"].dropna()
-            if len(shibor_on) >= 20:
-                latest = float(shibor_on.iloc[-1])
-                prev_20 = float(shibor_on.iloc[-min(21, len(shibor_on))])
-                change_pct = (latest - prev_20) / prev_20 * 100 if prev_20 != 0 else 0
-                z = (latest - shibor_on.mean()) / (shibor_on.std() or 1)
-                indicators["CN_SHIBOR_ON"] = MacroIndicator(
-                    name="SHIBOR隔夜", symbol="SHIBOR",
-                    value=round(latest, 4),
-                    change_pct=round(change_pct, 2),
-                    trend="down" if latest < shibor_on.iloc[-60:].mean() else "up",
-                    z_score=round(float(z), 2),
-                )
-                logger.info(f"SHIBOR隔夜: {latest:.2f}%")
+        shibor_func = getattr(ak, "macro_china_shibor", None) or getattr(ak, "macro_china_shibor_all", None)
+        if shibor_func:
+            shibor_df = shibor_func()
+            if not shibor_df.empty:
+                on_col = "O/N" if "O/N" in shibor_df.columns else "O/N-定价"
+                one_month_col = "1M" if "1M" in shibor_df.columns else "1M-定价"
+                date_col = "日期" if "日期" in shibor_df.columns else shibor_df.columns[0]
+                if on_col in shibor_df.columns:
+                    indicator = _indicator_from_series(
+                        _series_by_date(shibor_df, on_col, date_col),
+                        name="SHIBOR隔夜",
+                        symbol="SHIBOR",
+                        precision=4,
+                    )
+                    if indicator:
+                        indicators["CN_SHIBOR_ON"] = indicator
+                        logger.info(f"SHIBOR隔夜: {indicator.value:.2f}%")
+                if one_month_col in shibor_df.columns:
+                    indicator = _indicator_from_series(
+                        _series_by_date(shibor_df, one_month_col, date_col),
+                        name="SHIBOR 1月",
+                        symbol="SHIBOR1M",
+                        precision=4,
+                    )
+                    if indicator:
+                        indicators["CN_SHIBOR_1M"] = indicator
     except Exception as e:
         logger.warning(f"获取SHIBOR失败: {e}")
 
     # 5. 10年中债收益率
     try:
-        bond_df = ak.bond_china_close_return()
+        try:
+            bond_df = ak.bond_china_close_return()
+        except Exception:
+            bond_df = ak.bond_china_yield()
         if not bond_df.empty:
-            # 找10年期列
+            if "曲线名称" in bond_df.columns:
+                bond_df = bond_df[bond_df["曲线名称"].astype(str).str.contains("国债", na=False)]
+            date_col = "日期" if "日期" in bond_df.columns else None
             ten_year_col = None
             for col in bond_df.columns:
-                if "10" in str(col) and ("年" in str(col) or "国债" in str(col)):
+                if "10" in str(col) and "年" in str(col):
                     ten_year_col = col
                     break
-            if ten_year_col is None and len(bond_df.columns) > 0:
-                ten_year_col = bond_df.columns[0]
 
             if ten_year_col:
-                bond_10y = bond_df[ten_year_col].dropna()
-                if len(bond_10y) >= 20:
-                    latest = float(bond_10y.iloc[-1])
-                    prev_20 = float(bond_10y.iloc[-min(21, len(bond_10y))])
-                    change_pct = (latest - prev_20) / prev_20 * 100 if prev_20 != 0 else 0
-                    z = (latest - bond_10y.mean()) / (bond_10y.std() or 1)
-                    indicators["CN_Bond_10Y"] = MacroIndicator(
-                        name="10年中债收益率", symbol="CN10Y",
-                        value=round(latest, 4),
-                        change_pct=round(change_pct, 2),
-                        trend="up" if latest > bond_10y.iloc[-60:].mean() else "down",
-                        z_score=round(float(z), 2),
-                    )
-                    logger.info(f"10年中债收益率: {latest:.2f}%")
+                series = _series_by_date(bond_df, ten_year_col, date_col) if date_col else pd.to_numeric(bond_df[ten_year_col], errors="coerce")
+                if not series.empty and isinstance(series.index, pd.DatetimeIndex):
+                    latest_date = series.index[-1]
+                    if latest_date < pd.Timestamp(datetime.now() - timedelta(days=180)):
+                        logger.warning(f"中债收益率数据过旧: {latest_date.date()}")
+                        series = pd.Series(dtype="float64")
+                indicator = _indicator_from_series(
+                    series,
+                    name="10年中债收益率",
+                    symbol="CN10Y",
+                    precision=4,
+                )
+                if indicator:
+                    indicators["CN_Bond_10Y"] = indicator
+                    logger.info(f"10年中债收益率: {indicator.value:.2f}%")
     except Exception as e:
         logger.warning(f"获取中债收益率失败: {e}")
 
     # 6. 北向资金净流入
     try:
-        north_df = ak.stock_hsgt_north_net_flow_in_em()
-        if not north_df.empty:
+        if hasattr(ak, "stock_hsgt_north_net_flow_in_em"):
+            north_df = ak.stock_hsgt_north_net_flow_in_em()
             date_col = north_df.columns[0]
             flow_col = north_df.columns[1] if len(north_df.columns) > 1 else north_df.columns[0]
             if date_col == flow_col:
@@ -233,6 +296,22 @@ def _fetch_china_macro_data() -> dict:
                     z_score=round(float(z), 2),
                 )
                 logger.info(f"北向资金净流入: {latest:.0f}元 (20日: {total_20d:.0f}元)")
+        elif hasattr(ak, "stock_hsgt_fund_flow_summary_em"):
+            north_df = ak.stock_hsgt_fund_flow_summary_em()
+            if not north_df.empty and {"资金方向", "成交净买额"}.issubset(north_df.columns):
+                north_rows = north_df[north_df["资金方向"].astype(str).str.contains("北向", na=False)]
+                flows = pd.to_numeric(north_rows["成交净买额"], errors="coerce").dropna()
+                if not flows.empty:
+                    latest = float(flows.sum())
+                    indicators["CN_North_Flow"] = MacroIndicator(
+                        name="北向资金净流入",
+                        symbol="NORTH",
+                        value=round(latest, 2),
+                        change_pct=0,
+                        trend="up" if latest > 0 else "down",
+                        z_score=0,
+                    )
+                    logger.info(f"北向资金净流入汇总: {latest:.2f}亿")
     except Exception as e:
         logger.warning(f"获取北向资金失败: {e}")
 
@@ -509,11 +588,37 @@ async def get_macro_indicators():
         if "SP500" in us_indicators and "Gold" in us_indicators:
             us_derived["risk_on_ratio"] = round(us_indicators["SP500"].value / us_indicators["Gold"].value, 2)
 
+        missing_cn = [
+            config["name"]
+            for key, config in CN_INDICATOR_CONFIG.items()
+            if key not in china_indicators
+        ]
+        missing_us = [
+            config["name"]
+            for key, config in US_INDICATOR_CONFIG.items()
+            if key not in us_indicators
+        ]
+
         return {
             "china_indicators": list(china_indicators.values()),
             "us_indicators": list(us_indicators.values()),
             "china_derived": cn_derived,
             "us_derived": us_derived,
+            "data_status": {
+                "china": {
+                    "status": "ok" if not missing_cn else "partial" if china_indicators else "unavailable",
+                    "available": len(china_indicators),
+                    "missing": missing_cn,
+                },
+                "us": {
+                    "status": "ok" if not missing_us else "partial" if us_indicators else "unavailable",
+                    "available": len(us_indicators),
+                    "missing": missing_us,
+                },
+            },
+            "warnings": [
+                f"中国宏观数据源缺少：{'、'.join(missing_cn)}"
+            ] if missing_cn else [],
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -562,6 +667,21 @@ def _compute_cn_regime_scores(indicators: dict) -> dict:
 
     if inflation_count > 0:
         inflation_z = inflation_z / inflation_count
+    if growth_count == 0 or inflation_count == 0:
+        missing = []
+        if growth_count == 0:
+            missing.append("PMI")
+        if inflation_count == 0:
+            missing.append("M2/SHIBOR")
+        return {
+            "growth_score": 0.0,
+            "inflation_score": 0.0,
+            "regime": "unknown",
+            "regime_label": "数据不足",
+            "confidence": 0.0,
+            "quadrant": "Q0",
+            "warnings": [f"中国宏观关键指标不足：缺少 {'、'.join(missing)}，暂不生成明确宏观状态。"],
+        }
     inflation_score = max(-2, min(2, inflation_z))
 
     # 象限
@@ -592,6 +712,7 @@ def _compute_cn_regime_scores(indicators: dict) -> dict:
         "regime_label": regime_label,
         "confidence": round(confidence, 2),
         "quadrant": quadrant,
+        "warnings": [],
     }
 
 
@@ -619,6 +740,7 @@ async def classify_regime(request: MacroRegimeRequest, market: str = "china"):
             regime_label=regime["regime_label"],
             confidence=regime["confidence"],
             quadrant=regime["quadrant"],
+            warnings=regime.get("warnings") or None,
         )
 
     except HTTPException:
@@ -696,6 +818,15 @@ async def get_allocation(request: MacroRegimeRequest, market: str = "china"):
         else:
             indicators = _fetch_china_macro_data()
             regime = _compute_cn_regime_scores(indicators)
+            if regime["regime"] == "unknown":
+                return AllocationResponse(
+                    regime=regime["regime"],
+                    regime_label=regime["regime_label"],
+                    allocation=[],
+                    risk_level="待确认",
+                    summary="中国宏观关键指标不足，暂不生成全天候配置建议。请先确认 PMI、M2 或 SHIBOR 数据源是否恢复。",
+                    warnings=regime.get("warnings") or None,
+                )
             allocation_config = CN_ALLOCATION_MAP.get(regime["regime"], CN_ALLOCATION_MAP["recovery"])
 
         return AllocationResponse(
@@ -704,6 +835,7 @@ async def get_allocation(request: MacroRegimeRequest, market: str = "china"):
             allocation=allocation_config["allocation"],
             risk_level=allocation_config["risk_level"],
             summary=allocation_config["summary"],
+            warnings=regime.get("warnings") or None,
         )
 
     except HTTPException:
@@ -781,14 +913,22 @@ async def get_regime_history(months: int = 12, market: str = "china"):
                 pmi_df = ak.macro_china_pmi()
                 if pmi_df.empty:
                     return {"history": [], "message": "无法获取中国PMI历史数据"}
-                pmi_mfg = pmi_df[pmi_df["指标"] == "制造业PMI"].copy()
-                if pmi_mfg.empty:
+                if {"指标", "今值"}.issubset(pmi_df.columns):
+                    pmi_mfg = pmi_df[pmi_df["指标"] == "制造业PMI"].copy()
+                    if pmi_mfg.empty:
+                        return {"history": [], "message": "无制造业PMI数据"}
+                    pmi_mfg["今值"] = pd.to_numeric(pmi_mfg["今值"], errors="coerce")
+                    pmi_mfg = pmi_mfg.dropna(subset=["今值"]).tail(months + 1)
+                    rows = [
+                        (str(row.get("日期", "")), float(row["今值"]))
+                        for _, row in pmi_mfg.iterrows()
+                    ]
+                elif {"月份", "制造业-指数"}.issubset(pmi_df.columns):
+                    series = _series_by_date(pmi_df, "制造业-指数", "月份").tail(months + 1)
+                    rows = [(idx.strftime("%Y-%m"), float(value)) for idx, value in series.items()]
+                else:
                     return {"history": [], "message": "无制造业PMI数据"}
-                pmi_mfg["今值"] = pd.to_numeric(pmi_mfg["今值"], errors="coerce")
-                pmi_mfg = pmi_mfg.dropna(subset=["今值"])
-                pmi_mfg = pmi_mfg.tail(months + 1)
-                for _, row in pmi_mfg.iterrows():
-                    pmi_val = float(row["今值"])
+                for row_date, pmi_val in rows:
                     growth_score = max(-2, min(2, (pmi_val - 50) / 5))
                     inflation_score = 0  # 流动性维度简化处理
                     if growth_score >= 0 and inflation_score >= 0:
@@ -800,7 +940,7 @@ async def get_regime_history(months: int = 12, market: str = "china"):
                     else:
                         regime, label = "stagflation", "紧货币扩张期"
                     history.append({
-                        "date": str(row.get("日期", "")),
+                        "date": row_date,
                         "growth_score": round(growth_score, 2),
                         "inflation_score": round(inflation_score, 2),
                         "regime": regime,

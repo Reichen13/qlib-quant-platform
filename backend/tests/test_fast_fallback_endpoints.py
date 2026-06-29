@@ -71,13 +71,31 @@ class FastFallbackEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(listing["total"], 0)
         self.assertTrue(all(item["data_status"] == "unavailable" for item in listing["etfs"]))
 
-    async def test_pair_list_does_not_recalculate_qlib_correlations(self):
-        with patch.object(pair, "calc_correlation_from_qlib", side_effect=AssertionError("qlib should not be called")) as calc:
+    async def test_pair_list_uses_real_metric_calculation(self):
+        fake_metrics = {
+            **pair.PAIR_DEFINITIONS[0],
+            "correlation": 0.88,
+            "pValue": 0.05,
+            "zScore": 1.2,
+            "signal": "关注",
+            "status": "观察中",
+            "data_status": "ok",
+        }
+        with patch.object(pair, "_compute_pair_metrics", return_value=fake_metrics) as calc:
             response = await pair.list_pairs()
 
-        calc.assert_not_called()
+        self.assertEqual(calc.call_count, len(pair.PAIR_DEFINITIONS))
         self.assertGreater(len(response["pairs"]), 0)
+        self.assertEqual(response["pairs"][0]["correlation"], 0.88)
         self.assertEqual(response["total"], len(response["pairs"]))
+
+    async def test_pair_metric_success_marks_data_status_ok(self):
+        pair._pair_cache.clear()
+        with patch.object(pair, "calc_correlation_from_qlib", return_value=0.88), \
+             patch.object(pair, "calc_zscore_from_qlib", return_value=1.2):
+            metrics = pair._compute_pair_metrics(pair.PAIR_DEFINITIONS[0])
+
+        self.assertEqual(metrics["data_status"], "ok")
 
     async def test_index_performance_reports_unavailable_when_data_source_unavailable(self):
         with patch.object(index.provider, "_get_bs_client", return_value=None), \

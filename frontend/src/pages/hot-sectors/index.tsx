@@ -36,14 +36,14 @@ export function HotSectorsPage() {
   const [isUpdating, setIsUpdating] = useState(false)
 
   const { data: sectorData, isLoading, isError, refetch } = useQuery({
-    queryKey: ["sectors-performance", period],
-    queryFn: () => api.sectors.performance(parseInt(period.replace('d', ''))),
+    queryKey: ["hot-sectors", period],
+    queryFn: () => api.hot.sectors(period),
   })
 
   // 获取板块成分股
   const { data: sectorStocks } = useQuery({
-    queryKey: ["sectors-stocks", expandedSector],
-    queryFn: () => api.sectors.stocks(expandedSector!),
+    queryKey: ["hot-sector-stocks", expandedSector],
+    queryFn: () => api.hot.sectorStocks(expandedSector!),
     enabled: !!expandedSector,
   })
 
@@ -53,9 +53,9 @@ export function HotSectorsPage() {
 
   if (sectorData?.sectors && sectorData.sectors.length > 0) {
     sectors = sectorData.sectors.map((s: any) => ({
-      name: s.industry,
+      name: s.name,
       change: s.change_pct,
-      volume: null,
+      volume: typeof s.volume === "number" ? s.volume : null,
       stocks: s.stock_count,
       factorScore: undefined,
       advice: s.change_pct > 2 ? "强势" : s.change_pct > 0 ? "关注" : s.change_pct > -2 ? "观望" : "规避",

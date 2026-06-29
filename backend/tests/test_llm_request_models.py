@@ -47,6 +47,8 @@ class LlmRequestModelTests(unittest.TestCase):
         self.assertIn("deep_model: Optional[str] = None", source)
         self.assertIn("quick_model=quick_model", source)
         self.assertIn("deep_model=deep_model", source)
+        self.assertIn("AgentAnalyzeRequest", source)
+        self.assertIn("request.api_key", source)
 
 
 if __name__ == "__main__":

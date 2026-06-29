@@ -99,7 +99,7 @@ async def lifespan(app: FastAPI):
         stocks, hot, quote, factors, backtest, etf,
         pair, mean_reversion, financials, industry, index, sectors, risk, portfolio,
         macro, data, dashboard, news_analysis, ai_strategy, agent_debate,
-        dl_models, stock_pool, llm_config,
+        dl_models, stock_pool, llm_config, screening,
     )
 
     app.include_router(stocks.router, prefix="/api/stocks", tags=["stocks"])
@@ -124,6 +124,7 @@ async def lifespan(app: FastAPI):
     app.include_router(agent_debate.router, prefix="/api/agent", tags=["agent"])
     app.include_router(dl_models.router, prefix="/api/dl-models", tags=["dl-models"])
     app.include_router(stock_pool.router, prefix="/api/stock-pool", tags=["stock-pool"])
+    app.include_router(screening.router, prefix="/api/screening", tags=["screening"])
     app.include_router(llm_config.router, tags=["llm"])
 
     logger.info("✅ 所有路由已注册")
@@ -132,6 +133,9 @@ async def lifespan(app: FastAPI):
     try:
         from db.task_store import task_store
         task_store.init_db()
+        interrupted_count = backtest.mark_interrupted_backtest_tasks()
+        if interrupted_count:
+            logger.warning(f"已标记 {interrupted_count} 个中断的回测任务，请重新提交")
     except Exception as e:
         logger.warning(f"⚠️ 数据库初始化跳过（非致命）: {e}")
 

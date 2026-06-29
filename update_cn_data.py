@@ -40,18 +40,32 @@ def load_calendar() -> list[str]:
         return [l.strip() for l in f if l.strip()]
 
 
+def _normalize_calendar_dates(dates: list[str]) -> list[str]:
+    return sorted(dict.fromkeys(str(d).strip() for d in dates if str(d).strip()))
+
+
+def _write_calendar(dates: list[str]) -> None:
+    cal_path = DATA_DIR / "calendars" / "day.txt"
+    normalized = _normalize_calendar_dates(dates)
+    with open(cal_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(normalized))
+        if normalized:
+            f.write("\n")
+
+
 def extend_calendar(new_dates: list[str]) -> list[str]:
     """把新交易日追加到日历"""
-    cal_path = DATA_DIR / "calendars" / "day.txt"
-    cal = load_calendar()
-    existing = set(cal)
-    added = [d for d in sorted(new_dates) if d not in existing]
-    if added:
-        with open(cal_path, "a") as f:
-            f.write("\n" + "\n".join(added))
-        cal = cal + added
-        print(f"  日历新增 {len(added)} 天，最新: {cal[-1]}")
-    return cal
+    old_cal = load_calendar()
+    old_set = set(old_cal)
+    calendar = _normalize_calendar_dates(old_cal + list(new_dates))
+    added = [d for d in calendar if d not in old_set]
+    if added or calendar != old_cal:
+        _write_calendar(calendar)
+        if added:
+            print(f"  日历新增 {len(added)} 天，最新: {calendar[-1]}")
+        else:
+            print(f"  日历已去重并按日期重排，最新: {calendar[-1]}")
+    return calendar
 
 
 # ── 代码转换 ──
@@ -312,6 +326,20 @@ def fetch(yf_code: str, start: str, end: str) -> pd.DataFrame:
     return fetch_eastmoney(yf_code, start, end)
 
 
+def _clip_to_requested_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    """Keep only rows that fall inside the requested inclusive date window."""
+    if not isinstance(df, pd.DataFrame):
+        return df
+    if df.empty:
+        return df
+
+    index = pd.to_datetime(df.index, errors="coerce")
+    mask = (index >= pd.Timestamp(start)) & (index <= pd.Timestamp(end))
+    clipped = df.loc[mask].copy()
+    clipped.index = pd.Index([ts.strftime("%Y-%m-%d") for ts in pd.to_datetime(clipped.index)])
+    return clipped
+
+
 # ── Qlib bin 追加 ──
 
 def _date_to_calendar_index(calendar_index: dict[str, int], date_str: str) -> int | None:
@@ -341,8 +369,9 @@ def _repair_existing_stale_values(
     field: str,
     calendar_index: dict[str, int],
     rebuild_stale: bool,
+    overwrite_existing: bool = False,
 ) -> int:
-    if not rebuild_stale:
+    if not rebuild_stale and not overwrite_existing:
         return 0
 
     values = raw[1:].copy()
@@ -358,7 +387,9 @@ def _repair_existing_stale_values(
 
         pos = cal_idx - start_idx
         old_val = values[pos]
-        if not np.isfinite(old_val) or old_val == 0:
+        should_repair_stale = not np.isfinite(old_val) or old_val == 0
+        should_overwrite = overwrite_existing and field != "factor" and abs(float(old_val) - new_val) > 1e-8
+        if should_repair_stale or should_overwrite:
             values[pos] = new_val
             repaired += 1
 
@@ -373,6 +404,7 @@ def append_to_bin(
     df: pd.DataFrame,
     calendar: list[str],
     rebuild_stale: bool = False,
+    overwrite_existing: bool = False,
 ) -> int:
     """把 df 追加到已有 bin 文件，返回追加的行数"""
     if df.empty:
@@ -417,6 +449,7 @@ def append_to_bin(
             field,
             calendar_index,
             rebuild_stale,
+            overwrite_existing,
         )
         appended = max(appended, repaired)
 
@@ -487,6 +520,7 @@ def update(
     max_stocks: int = None,
     codes: list[str] | None = None,
     rebuild_stale: bool = False,
+    overwrite_existing: bool = False,
 ) -> int:
     if end is None:
         end = (pd.Timestamp.now() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
@@ -496,6 +530,7 @@ def update(
     # 1. 用沪深300ETF 获取新交易日，扩展日历
     print("\n[1] 获取新交易日...")
     ref_df = fetch("510300.SS", start, end)
+    ref_df = _clip_to_requested_range(ref_df, start, end)
     if ref_df.empty:
         print("  ERROR: 无法获取参考数据，请检查网络")
         return 2
@@ -525,11 +560,18 @@ def update(
 
         # 拉取新数据
         df = fetch(yf_code, start, end)
+        df = _clip_to_requested_range(df, start, end)
 
         if df.empty:
             fail += 1
         else:
-            appended = append_to_bin(qlib_code, df, calendar, rebuild_stale=rebuild_stale)
+            appended = append_to_bin(
+                qlib_code,
+                df,
+                calendar,
+                rebuild_stale=rebuild_stale,
+                overwrite_existing=overwrite_existing,
+            )
             if appended > 0:
                 success += 1
             else:
@@ -567,7 +609,8 @@ def update(
 def _update_instruments_end(new_end: str):
     """把所有 instruments 文件的结束日期更新到 new_end"""
     for inst_path in (DATA_DIR / "instruments").glob("*.txt"):
-        lines = open(inst_path).readlines()
+        with open(inst_path, encoding="utf-8") as fp:
+            lines = fp.readlines()
         new_lines = []
         for line in lines:
             parts = line.strip().split("\t")
@@ -590,6 +633,7 @@ if __name__ == "__main__":
     parser.add_argument("--code", action="append", default=None, help="只更新指定 Qlib 代码，可重复传入，如 --code sz300750")
     parser.add_argument("--codes-file", default=None, help="只更新文件中列出的 Qlib 代码，每行一个")
     parser.add_argument("--rebuild-stale", action="store_true", help="重建明显异常的短历史文件，用于修复少量核心股票缺口")
+    parser.add_argument("--overwrite-existing", action="store_true", help="覆盖指定日期窗口内已有的非 0 价格/成交字段；不会覆盖已有 factor")
     args = parser.parse_args()
 
     if args.check:
@@ -609,5 +653,6 @@ if __name__ == "__main__":
                 max_stocks=args.max,
                 codes=codes or None,
                 rebuild_stale=args.rebuild_stale,
+                overwrite_existing=args.overwrite_existing,
             )
         )

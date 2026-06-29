@@ -139,11 +139,20 @@ def _format_indicators(code: str) -> str:
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - pd.Timedelta(days=120)).strftime("%Y-%m-%d")
 
-        prices = D.features([inst], ["$close"], start, end)
+        prices = D.features([inst], ["$close", "$volume"], start, end)
         if prices is not None and not prices.empty:
-            close = prices.xs(inst, level="instrument", axis=1)["$close"].dropna()
+            if isinstance(prices.index, pd.MultiIndex):
+                level = "instrument" if "instrument" in (prices.index.names or []) else 0
+                stock_prices = prices.xs(inst, level=level)
+            else:
+                stock_prices = prices
+
+            close = pd.to_numeric(stock_prices["$close"], errors="coerce").dropna().sort_index()
             if len(close) >= 20:
-                # 计算指标
+                volume = pd.Series(dtype="float64")
+                if "$volume" in stock_prices.columns:
+                    volume = pd.to_numeric(stock_prices["$volume"], errors="coerce").dropna().sort_index()
+
                 delta = close.diff()
                 gain = delta.clip(lower=0)
                 loss = -delta.clip(upper=0)
@@ -152,21 +161,59 @@ def _format_indicators(code: str) -> str:
                 rs = avg_gain / avg_loss.replace(0, np.nan)
                 rsi = 100 - (100 / (1 + rs))
                 ma5 = close.rolling(5).mean()
+                ma10 = close.rolling(10).mean()
                 ma20 = close.rolling(20).mean()
+                ma60 = close.rolling(60).mean()
+                macd = close.ewm(span=12, adjust=False).mean() - close.ewm(span=26, adjust=False).mean()
+                macd_signal = macd.ewm(span=9, adjust=False).mean()
+                macd_hist = macd - macd_signal
+                vol_ma5 = volume.rolling(5).mean() if not volume.empty else pd.Series(dtype="float64")
+                vol_ma20 = volume.rolling(20).mean() if not volume.empty else pd.Series(dtype="float64")
 
                 latest_close = float(close.iloc[-1])
-                latest_rsi = float(rsi.iloc[-1]) if not np.isnan(rsi.iloc[-1]) else None
-                latest_ma5 = float(ma5.iloc[-1]) if not np.isnan(ma5.iloc[-1]) else None
-                latest_ma20 = float(ma20.iloc[-1]) if not np.isnan(ma20.iloc[-1]) else None
+                latest_rsi = float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else None
+                latest_ma5 = float(ma5.iloc[-1]) if pd.notna(ma5.iloc[-1]) else None
+                latest_ma10 = float(ma10.iloc[-1]) if pd.notna(ma10.iloc[-1]) else None
+                latest_ma20 = float(ma20.iloc[-1]) if pd.notna(ma20.iloc[-1]) else None
+                latest_ma60 = float(ma60.iloc[-1]) if pd.notna(ma60.iloc[-1]) else None
+                latest_macd = float(macd.iloc[-1]) if pd.notna(macd.iloc[-1]) else None
+                latest_signal = float(macd_signal.iloc[-1]) if pd.notna(macd_signal.iloc[-1]) else None
+                latest_hist = float(macd_hist.iloc[-1]) if pd.notna(macd_hist.iloc[-1]) else None
                 ret_20d = float((close.iloc[-1] / close.iloc[-20] - 1) * 100) if len(close) >= 20 else None
+                latest_volume = float(volume.iloc[-1]) if not volume.empty else None
+                latest_vol_ma5 = float(vol_ma5.iloc[-1]) if not vol_ma5.empty and pd.notna(vol_ma5.iloc[-1]) else None
+                latest_vol_ma20 = float(vol_ma20.iloc[-1]) if not vol_ma20.empty and pd.notna(vol_ma20.iloc[-1]) else None
+                volume_ratio = (
+                    latest_volume / latest_vol_ma20
+                    if latest_volume is not None and latest_vol_ma20 and latest_vol_ma20 > 0
+                    else None
+                )
+                latest_date = pd.to_datetime(close.index[-1]).strftime("%Y-%m-%d")
 
-                lines = [f"=== {code} 技术指标 ==="]
+                if latest_ma5 is not None and latest_ma20 is not None and latest_close > latest_ma20 and latest_ma5 > latest_ma20:
+                    trend = "上涨"
+                elif latest_ma5 is not None and latest_ma20 is not None and latest_close < latest_ma20 and latest_ma5 < latest_ma20:
+                    trend = "下跌"
+                else:
+                    trend = "震荡"
+
+                lines = [f"=== {code} 技术指标 ===", f"数据日期: {latest_date}"]
                 lines.append(f"最新收盘价: {latest_close:.2f}")
-                lines.append(f"RSI(14): {latest_rsi:.1f}" if latest_rsi else "RSI(14): N/A")
-                lines.append(f"MA5: {latest_ma5:.2f}" if latest_ma5 else "MA5: N/A")
-                lines.append(f"MA20: {latest_ma20:.2f}" if latest_ma20 else "MA20: N/A")
-                lines.append(f"20日涨跌幅: {ret_20d:.1f}%" if ret_20d else "20日涨跌幅: N/A")
-                lines.append("趋势: " + ("上涨" if latest_ma5 and latest_ma20 and latest_ma5 > latest_ma20 else "下跌/震荡"))
+                lines.append(f"RSI(14): {latest_rsi:.1f}" if latest_rsi is not None else "RSI(14): N/A")
+                lines.append(
+                    "均线: "
+                    + (f"MA5={latest_ma5:.2f}" if latest_ma5 is not None else "MA5=N/A")
+                    + ", "
+                    + (f"MA10={latest_ma10:.2f}" if latest_ma10 is not None else "MA10=N/A")
+                    + ", "
+                    + (f"MA20={latest_ma20:.2f}" if latest_ma20 is not None else "MA20=N/A")
+                    + ", "
+                    + (f"MA60={latest_ma60:.2f}" if latest_ma60 is not None else "MA60=N/A")
+                )
+                lines.append(f"MACD: {latest_macd:.4f}, Signal: {latest_signal:.4f}, Histogram: {latest_hist:.4f}" if latest_macd is not None and latest_signal is not None and latest_hist is not None else "MACD: N/A")
+                lines.append(f"20日涨跌幅: {ret_20d:.1f}%" if ret_20d is not None else "20日涨跌幅: N/A")
+                lines.append(f"成交量: {latest_volume:.0f}, 5日均量: {latest_vol_ma5:.0f}, 20日均量: {latest_vol_ma20:.0f}, 量比: {volume_ratio:.2f}" if latest_volume is not None and latest_vol_ma5 is not None and latest_vol_ma20 is not None and volume_ratio is not None else "成交量: N/A")
+                lines.append(f"趋势: {trend}")
                 return "\n".join(lines)
     except Exception:
         pass

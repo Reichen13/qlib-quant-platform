@@ -30,6 +30,22 @@ from backend.api import data
 from backend.db.task_store import TaskStore
 
 
+class FakeConfiguredTdxProvider:
+    is_configured = True
+
+    def safe_status(self):
+        return {
+            "configured": True,
+            "url": "https://mcp.tdx.com.cn:3001/mcp",
+            "stock_list_tool": None,
+            "stock_list_enabled": False,
+            "wenda_tool": "tdx_wenda_quotes",
+        }
+
+    def list_tools(self):
+        raise AssertionError("TDX MCP should not be called by default")
+
+
 class DataApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
@@ -54,11 +70,14 @@ class DataApiTests(unittest.IsolatedAsyncioTestCase):
             (qlib_dir / "instruments" / "csi300.txt").write_text("sh600519\t2020-01-01\t2026-06-18\n", encoding="utf-8")
 
             with patch.object(Path, "home", return_value=Path(tmpdir)), \
-                 patch.object(data, "_check_baostock_industry", side_effect=AssertionError("baostock should not be called")):
+                 patch.object(data, "_check_baostock_industry", side_effect=AssertionError("baostock should not be called")), \
+                 patch("services.tdx_mcp_provider.TdxMcpProvider.from_env", return_value=FakeConfiguredTdxProvider()):
                 response = await data.data_health_check()
 
         self.assertIn("sources", response)
         self.assertEqual(response["sources"]["baostock_industry"]["status"], "unknown")
+        self.assertEqual(response["sources"]["tdx_mcp"]["status"], "unknown")
+        self.assertTrue(response["sources"]["tdx_mcp"]["configured"])
         self.assertIn("stocks", response["sources"])
 
     async def test_stocks_health_uses_latest_feature_bin_date_not_calendar_tail(self):
@@ -99,6 +118,111 @@ class DataApiTests(unittest.IsolatedAsyncioTestCase):
                 response = data._check_qlib_data()
 
         self.assertEqual(response["last_date"], "2026-05-06")
+
+    async def test_adjustment_health_flags_placeholder_factor_field(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            qlib_dir = Path(tmpdir) / ".qlib" / "qlib_data" / "cn_data"
+            stock_dir = qlib_dir / "features" / "sh600519"
+            (qlib_dir / "calendars").mkdir(parents=True)
+            stock_dir.mkdir(parents=True)
+            (qlib_dir / "calendars" / "day.txt").write_text(
+                "2026-06-18\n2026-06-19\n2026-06-22\n",
+                encoding="utf-8",
+            )
+            np.array([0.0, 10.0, 10.2, 10.3], dtype="<f").tofile(stock_dir / "close.day.bin")
+            np.array([0.0, 1.0, 1.0, 1.0], dtype="<f").tofile(stock_dir / "factor.day.bin")
+
+            with patch.object(Path, "home", return_value=Path(tmpdir)):
+                response = data._check_price_adjustment_policy()
+
+        self.assertEqual(response["status"], "warning")
+        self.assertEqual(response["adjustment_mode"], "qfq_price_with_placeholder_factor")
+        self.assertEqual(response["factor_field_status"], "placeholder_1.0")
+        self.assertIn("前复权", response["message"])
+
+    async def test_adjustment_health_flags_mixed_factor_when_latest_values_are_mostly_one(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            qlib_dir = Path(tmpdir) / ".qlib" / "qlib_data" / "cn_data"
+            (qlib_dir / "features").mkdir(parents=True)
+            for idx in range(5):
+                stock_dir = qlib_dir / "features" / f"sh6000{idx}"
+                stock_dir.mkdir(parents=True)
+                np.array([0.0, 10.0, 10.2, 10.3], dtype="<f").tofile(stock_dir / "close.day.bin")
+                np.array([0.0, 0.5, 0.8, 1.0], dtype="<f").tofile(stock_dir / "factor.day.bin")
+            stock_dir = qlib_dir / "features" / "sh600099"
+            stock_dir.mkdir(parents=True)
+            np.array([0.0, 10.0, 10.2, 10.3], dtype="<f").tofile(stock_dir / "close.day.bin")
+            np.array([0.0, 0.5, 0.8, 0.9], dtype="<f").tofile(stock_dir / "factor.day.bin")
+
+            with patch.object(Path, "home", return_value=Path(tmpdir)):
+                response = data._check_price_adjustment_policy()
+
+        self.assertEqual(response["status"], "warning")
+        self.assertEqual(response["factor_field_status"], "mixed_real_and_placeholder")
+
+    async def test_adjustment_health_returns_suspect_jump_examples(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            qlib_dir = Path(tmpdir) / ".qlib" / "qlib_data" / "cn_data"
+            stock_dir = qlib_dir / "features" / "sh600519"
+            (qlib_dir / "calendars").mkdir(parents=True)
+            stock_dir.mkdir(parents=True)
+            (qlib_dir / "calendars" / "day.txt").write_text(
+                "2026-06-18\n2026-06-19\n2026-06-22\n",
+                encoding="utf-8",
+            )
+            np.array([0.0, 10.0, 15.0, 15.2], dtype="<f").tofile(stock_dir / "close.day.bin")
+            np.array([0.0, 1.0, 1.0, 1.0], dtype="<f").tofile(stock_dir / "factor.day.bin")
+
+            with patch.object(Path, "home", return_value=Path(tmpdir)):
+                response = data._check_price_adjustment_policy()
+
+        self.assertEqual(response["possible_unadjusted_jump_count"], 1)
+        self.assertEqual(response["suspect_examples"][0]["code"], "sh600519")
+        self.assertEqual(response["suspect_examples"][0]["date"], "2026-06-19")
+        self.assertGreater(response["suspect_examples"][0]["jump_pct"], 0.49)
+
+    async def test_adjustment_health_ignores_index_feature_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            qlib_dir = Path(tmpdir) / ".qlib" / "qlib_data" / "cn_data"
+            (qlib_dir / "calendars").mkdir(parents=True)
+            (qlib_dir / "calendars" / "day.txt").write_text(
+                "2026-06-18\n2026-06-19\n2026-06-22\n",
+                encoding="utf-8",
+            )
+            index_dir = qlib_dir / "features" / "sh000300"
+            index_dir.mkdir(parents=True)
+            np.array([0.0, 10.0, 30.0, 30.2], dtype="<f").tofile(index_dir / "close.day.bin")
+            np.array([0.0, 1.0, 1.0, 1.0], dtype="<f").tofile(index_dir / "factor.day.bin")
+            stock_dir = qlib_dir / "features" / "sh600519"
+            stock_dir.mkdir(parents=True)
+            np.array([0.0, 10.0, 10.1, 10.2], dtype="<f").tofile(stock_dir / "close.day.bin")
+            np.array([0.0, 1.0, 1.0, 1.0], dtype="<f").tofile(stock_dir / "factor.day.bin")
+
+            with patch.object(Path, "home", return_value=Path(tmpdir)):
+                response = data._check_price_adjustment_policy()
+
+        self.assertEqual(response["sample_size"], 1)
+        self.assertEqual(response["possible_unadjusted_jump_count"], 0)
+        self.assertEqual(response["suspect_examples"], [])
+
+    async def test_health_includes_price_adjustment_policy(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            qlib_dir = Path(tmpdir) / ".qlib" / "qlib_data" / "cn_data"
+            stock_dir = qlib_dir / "features" / "sh600519"
+            (qlib_dir / "calendars").mkdir(parents=True)
+            (qlib_dir / "instruments").mkdir(parents=True)
+            stock_dir.mkdir(parents=True)
+            (qlib_dir / "calendars" / "day.txt").write_text("2026-06-18\n", encoding="utf-8")
+            (qlib_dir / "instruments" / "csi300.txt").write_text("sh600519\t2020-01-01\t2026-06-18\n", encoding="utf-8")
+            np.array([0.0, 10.0], dtype="<f").tofile(stock_dir / "close.day.bin")
+            np.array([0.0, 1.0], dtype="<f").tofile(stock_dir / "factor.day.bin")
+
+            with patch.object(Path, "home", return_value=Path(tmpdir)), \
+                 patch("services.tdx_mcp_provider.TdxMcpProvider.from_env", return_value=FakeConfiguredTdxProvider()):
+                response = await data.data_health_check()
+
+        self.assertIn("price_adjustment", response["sources"])
+        self.assertEqual(response["sources"]["price_adjustment"]["factor_field_status"], "placeholder_1.0")
 
     async def test_stocks_health_counts_unique_instruments_case_insensitive(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -246,6 +370,16 @@ class DataApiTests(unittest.IsolatedAsyncioTestCase):
         command = start_thread.call_args.args[1]
         self.assertIn("--rebuild-stale", command)
 
+    async def test_start_update_can_pass_overwrite_existing_flag(self):
+        data._update_tasks.clear()
+
+        with patch.object(data, "_resolve_update_script", return_value=Path(__file__)), \
+             patch.object(data, "_start_update_thread") as start_thread:
+            await data.start_data_update(data.DataUpdateRequest(type="stocks", max_stocks=1, overwrite_existing=True))
+
+        command = start_thread.call_args.args[1]
+        self.assertIn("--overwrite-existing", command)
+
     async def test_start_update_can_pass_target_stock_codes(self):
         data._update_tasks.clear()
 
@@ -333,6 +467,35 @@ class DataApiTests(unittest.IsolatedAsyncioTestCase):
             await data.start_data_update(data.DataUpdateRequest(type="etf"))
 
         self.assertEqual(ctx.exception.status_code, 400)
+
+    async def test_completed_update_refreshes_runtime_caches(self):
+        data._update_tasks.clear()
+        task_id = "task-refresh"
+
+        with patch.object(data, "_refresh_runtime_after_update", return_value={"qlib_reloaded": True, "cache_cleared": True}) as refresh_hook:
+            data._save_task(
+                task_id,
+                task_id=task_id,
+                type="stocks",
+                status="running",
+                progress=30,
+                message="更新中",
+            )
+            data._save_task(
+                task_id,
+                status="completed",
+                progress=100,
+                message="更新完成",
+                finished_at="2026-06-23T09:00:00",
+            )
+
+        refresh_hook.assert_called()
+        persisted = self.store.get_task(task_id)
+        self.assertIsNotNone(persisted)
+        result = json.loads(persisted["result_json"])
+        self.assertEqual(result["status"], "completed")
+        self.assertTrue(result["runtime_refresh"]["qlib_reloaded"])
+        self.assertTrue(result["runtime_refresh"]["cache_cleared"])
 
 
 if __name__ == "__main__":

@@ -40,6 +40,23 @@ class FakeTdxProvider:
         ]
 
 
+class FakeMcpResponse:
+    def __init__(self, body, session_id=None):
+        self._body = body.encode("utf-8")
+        self.headers = {}
+        if session_id:
+            self.headers["mcp-session-id"] = session_id
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
 class TdxMcpProviderTests(unittest.TestCase):
     def test_from_env_is_disabled_without_api_key(self):
         with patch.dict(os.environ, {}, clear=True):
@@ -60,7 +77,50 @@ class TdxMcpProviderTests(unittest.TestCase):
 
         self.assertTrue(status["configured"])
         self.assertEqual(status["stock_list_tool"], "stock_list")
+        self.assertEqual(status["wenda_tool"], "tdx_wenda_quotes")
         self.assertNotIn("test-placeholder-key", str(status))
+
+    def test_call_tool_uses_official_mcp_session_and_sse_response(self):
+        responses = [
+            FakeMcpResponse(
+                'event: message\n'
+                'data: {"result":{"protocolVersion":"2025-06-18"},"jsonrpc":"2.0","id":1}\n',
+                session_id="session-1",
+            ),
+            FakeMcpResponse(
+                'event: message\n'
+                'data: {"result":{"content":[{"type":"text","text":"{\\"meta\\":{\\"code\\":0},\\"data\\":[[\\"600519\\"]] }"}]},"jsonrpc":"2.0","id":2}\n',
+                session_id="session-1",
+            ),
+        ]
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append(request)
+            return responses.pop(0)
+
+        provider = TdxMcpProvider(api_key="test-placeholder-key", timeout=3)
+        with patch("backend.services.tdx_mcp_provider.urllib.request.urlopen", side_effect=fake_urlopen):
+            result = provider.call_tool("tdx_wenda_quotes", {"question": "贵州茅台最新行情"})
+
+        self.assertEqual(result["meta"]["code"], 0)
+        self.assertEqual(result["data"][0][0], "600519")
+        self.assertEqual(requests[0].headers.get("Accept"), "application/json, text/event-stream")
+        self.assertNotIn("Mcp-session-id", requests[0].headers)
+        self.assertEqual(requests[1].headers.get("Mcp-session-id"), "session-1")
+
+    def test_query_uses_default_official_wenda_tool(self):
+        provider = TdxMcpProvider(api_key="test-placeholder-key")
+        with patch.object(provider, "call_tool", return_value={"ok": True}) as call_tool:
+            result = provider.query("贵州茅台600519最新行情", size=5)
+
+        self.assertEqual(result, {"ok": True})
+        call_tool.assert_called_once_with("tdx_wenda_quotes", {
+            "question": "贵州茅台600519最新行情",
+            "range": "AG",
+            "page": "1",
+            "size": "5",
+        })
 
     def test_data_provider_prefers_tdx_stock_list_when_available(self):
         provider = DataProvider()

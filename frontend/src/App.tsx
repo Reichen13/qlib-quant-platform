@@ -19,6 +19,7 @@ import { AiStrategyPage } from "./pages/ai-strategy"
 import { AgentDebatePage } from "./pages/agent-debate"
 import { DlModelsPage } from "./pages/dl-models"
 import { StockPoolPage } from "./pages/stock-pool"
+import { ScreeningWorkflowPage } from "./pages/screening-workflow"
 import { SettingsPage } from "./pages/settings"
 
 // 创建路由
@@ -98,6 +99,10 @@ const router = createBrowserRouter([
       {
         path: "stock-pool",
         element: <StockPoolPage />,
+      },
+      {
+        path: "screening-workflow",
+        element: <ScreeningWorkflowPage />,
       },
       {
         path: "settings",

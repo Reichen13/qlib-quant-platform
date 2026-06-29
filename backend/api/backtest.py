@@ -3,6 +3,7 @@
 """
 
 import os
+import importlib.util
 from pathlib import Path
 from datetime import date, datetime, timedelta
 from typing import List, Optional
@@ -33,8 +34,150 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from stock_names import get_stock_name
 from db.task_store import task_store
 
+INTERRUPTED_TASK_ERROR = "回测任务已中断：服务重启或后台进程退出，请重新提交回测。"
+ALPHA158_LABEL_LOOKAHEAD_STEPS = 2
+SUPPORTED_BACKTEST_MODELS = {
+    "lightgbm": {"dependency": None, "label": "LightGBM"},
+    "xgboost": {"dependency": "xgboost", "label": "XGBoost"},
+}
+
+
+def validate_backtest_model_available(model: str) -> str:
+    normalized = str(model or "lightgbm").lower()
+    if normalized not in SUPPORTED_BACKTEST_MODELS:
+        raise HTTPException(status_code=400, detail=f"暂不支持的回测模型: {model}")
+    model_info = SUPPORTED_BACKTEST_MODELS[normalized]
+    dependency = model_info["dependency"]
+    if dependency and importlib.util.find_spec(dependency) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"当前服务器未安装 {model_info['label']}，请先使用 LightGBM 回测。",
+        )
+    return normalized
+
 
 from core.compat import fix_parallel_ext
+
+
+def _parse_date_value(value) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if hasattr(value, "date"):
+        try:
+            return value.date()
+        except Exception:
+            pass
+    return datetime.fromisoformat(str(value)[:10]).date()
+
+
+def _normalize_calendar(calendars) -> list[date]:
+    dates = sorted({_parse_date_value(item) for item in calendars})
+    if not dates:
+        raise ValueError("交易日历为空，无法构建防未来函数回测区间")
+    return dates
+
+
+def _calendar_on_or_after(calendars: list[date], target: date) -> date:
+    for item in calendars:
+        if item >= target:
+            return item
+    raise ValueError(f"交易日历中找不到不早于 {target.isoformat()} 的日期")
+
+
+def _calendar_on_or_before(calendars: list[date], target: date) -> date:
+    for item in reversed(calendars):
+        if item <= target:
+            return item
+    raise ValueError(f"交易日历中找不到不晚于 {target.isoformat()} 的日期")
+
+
+def _calendar_shift(calendars: list[date], base: date, steps: int) -> date:
+    try:
+        idx = calendars.index(base)
+    except ValueError as exc:
+        raise ValueError(f"交易日 {base.isoformat()} 不在日历中") from exc
+    shifted = idx + steps
+    if shifted < 0 or shifted >= len(calendars):
+        raise ValueError(f"交易日历不足，无法从 {base.isoformat()} 偏移 {steps} 个交易日")
+    return calendars[shifted]
+
+
+def _calendar_next(calendars: list[date], base: date) -> date | None:
+    try:
+        return _calendar_shift(calendars, base, 1)
+    except ValueError:
+        return None
+
+
+def build_leak_safe_segments(
+    train_start: str | date,
+    train_end: str | date,
+    test_start: str | date,
+    backtest_end: str | date,
+    calendars,
+    label_lookahead_steps: int = ALPHA158_LABEL_LOOKAHEAD_STEPS,
+) -> dict[str, tuple[str, str]]:
+    """Build non-overlapping Qlib segments with an embargo for forward labels.
+
+    Alpha158's default label looks ahead two trading steps. The last training or
+    validation feature date must therefore leave those future label dates outside
+    the next segment.
+    """
+    calendar = _normalize_calendar(calendars)
+    train_start_dt = _calendar_on_or_after(calendar, _parse_date_value(train_start))
+    requested_train_end = _calendar_on_or_before(calendar, _parse_date_value(train_end))
+    test_start_dt = _calendar_on_or_after(calendar, _parse_date_value(test_start))
+    test_end_dt = _calendar_on_or_before(calendar, _parse_date_value(backtest_end))
+
+    if test_start_dt > test_end_dt:
+        raise ValueError("测试开始日期晚于回测结束日期")
+
+    last_pre_test_label_date = _calendar_shift(calendar, test_start_dt, -(label_lookahead_steps + 1))
+    safe_train_end = min(requested_train_end, last_pre_test_label_date)
+    if train_start_dt > safe_train_end:
+        raise ValueError("训练区间在防未来函数缓冲后为空，请拉开训练结束和测试开始日期")
+
+    segments: dict[str, tuple[str, str]] = {
+        "train": (train_start_dt.isoformat(), safe_train_end.isoformat()),
+        "test": (test_start_dt.isoformat(), test_end_dt.isoformat()),
+    }
+
+    valid_start = _calendar_next(calendar, requested_train_end)
+    valid_end = last_pre_test_label_date
+    if valid_start and valid_start <= valid_end:
+        train_end_before_valid = _calendar_shift(calendar, valid_start, -(label_lookahead_steps + 1))
+        safe_train_end = min(requested_train_end, train_end_before_valid)
+        if train_start_dt <= safe_train_end:
+            segments["train"] = (train_start_dt.isoformat(), safe_train_end.isoformat())
+            segments["valid"] = (valid_start.isoformat(), valid_end.isoformat())
+
+    return segments
+
+
+def build_selected_factor_warning(selected_factors: list[str] | None) -> str | None:
+    if not selected_factors:
+        return None
+    factors = ", ".join(str(item) for item in selected_factors if item)
+    suffix = f"（来源因子：{factors}）" if factors else ""
+    return f"当前结果使用完整 Alpha158 特征训练，不是单因子专属回测{suffix}。"
+
+
+def mark_interrupted_backtest_tasks(limit: int = 200) -> int:
+    """Mark persisted running tasks as failed after a service restart.
+
+    FastAPI BackgroundTasks run in the current process. If the backend restarts,
+    those workers are gone, so persisted "running" tasks cannot finish.
+    """
+    marked = 0
+    task_store.init_db()
+    for task in task_store.list_tasks(limit=limit):
+        if task.get("status") != "running":
+            continue
+        task_store.set_failed(task["task_id"], INTERRUPTED_TASK_ERROR)
+        marked += 1
+    return marked
 
 
 def _check_a_share_constraints(codes: list, start_date: str, end_date: str) -> dict:
@@ -154,7 +297,10 @@ def run_backtest_task(task_id: str, params: BacktestParams):
     - 科创板/创业板: 自动排除（±20% 涨跌幅不匹配 0.095 阈值）
     """
     try:
-        task_store.create_task(task_id, params.model_dump_json())
+        params.model = validate_backtest_model_available(params.model)
+        task_store.init_db()
+        if task_store.get_task(task_id) is None:
+            task_store.create_task(task_id, params.model_dump_json())
 
         import qlib
         from qlib.utils import init_instance_by_config
@@ -175,20 +321,25 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         test_start = str(params.test_start)
         test_end = str(params.test_end)
 
-        # valid 段取 train_end ~ test_start
-        valid_start = train_end
-        valid_end = test_start
-
         # 回测结束日期不能超过 Qlib 数据范围，提前2天避免边界问题
         from qlib.data import D
         calendars = D.calendar(freq="day")
         test_end_dt = pd.Timestamp(test_end)
         available_end = calendars[-1] if len(calendars) > 0 else test_end_dt
         backtest_end = min(test_end_dt, available_end - pd.Timedelta(days=2))
+        segments = build_leak_safe_segments(
+            train_start=train_start,
+            train_end=train_end,
+            test_start=test_start,
+            backtest_end=str(backtest_end),
+            calendars=calendars,
+        )
+        safe_train_start, safe_train_end = segments["train"]
+        safe_test_start, safe_backtest_end = segments["test"]
 
         task_store.update_progress(task_id, 20)
 
-        logger.info(f"回测参数: train={train_start}~{train_end}, test={test_start}~{backtest_end}")
+        logger.info(f"回测参数: segments={segments}")
 
         dataset = init_instance_by_config({
             "class": "DatasetH",
@@ -198,10 +349,10 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                     "class": "Alpha158",
                     "module_path": "qlib.contrib.data.handler",
                     "kwargs": {
-                        "start_time": train_start,
-                        "end_time": str(backtest_end),
-                        "fit_start_time": train_start,
-                        "fit_end_time": train_end,
+                        "start_time": safe_train_start,
+                        "end_time": safe_backtest_end,
+                        "fit_start_time": safe_train_start,
+                        "fit_end_time": safe_train_end,
                         "instruments": "csi300",
                         "infer_processors": [
                             {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature", "clip_outlier": True}},
@@ -214,11 +365,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                         "process_type": "independent",
                     },
                 },
-                "segments": {
-                    "train": (train_start, train_end),
-                    "valid": (valid_start, valid_end),
-                    "test": (test_start, str(backtest_end)),
-                },
+                "segments": segments,
             },
         })
 
@@ -272,9 +419,9 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         # 获取沪深300成分股并运行A股约束检测
         instruments = D.instruments("csi300")
         all_csi300 = D.list_instruments(instruments, as_list=True)
-        constraint_analysis = _check_a_share_constraints(all_csi300, train_start, str(backtest_end))
+        constraint_analysis = _check_a_share_constraints(all_csi300, safe_train_start, safe_backtest_end)
 
-        task_store.update_progress(task_id, 55)
+        task_store.update_progress(task_id, 65)
 
         exchange_kwargs = {
             "codes": "csi300",
@@ -291,9 +438,11 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         n_drop = max(1, topk // 5)  # 每次换手约20%持仓
         strategy = TopkDropoutStrategy(topk=topk, n_drop=n_drop, signal=pred)
 
+        task_store.update_progress(task_id, 70)
+
         report, positions_dict = backtest_daily(
-            start_time=test_start,
-            end_time=str(backtest_end),
+            start_time=safe_test_start,
+            end_time=safe_backtest_end,
             strategy=strategy,
             executor={
                 "class": "SimulatorExecutor",
@@ -389,8 +538,8 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         attribution_result = _compute_brinson_attribution(
             positions_dict=positions_dict,
             benchmark="SH000300",
-            start_date=test_start,
-            end_date=str(backtest_end),
+            start_date=safe_test_start,
+            end_date=safe_backtest_end,
             instruments=instruments,
         )
 
@@ -422,6 +571,10 @@ def run_backtest_task(task_id: str, params: BacktestParams):
 
         top_buys = []
         top_sells = []
+        result_warnings = []
+        selected_factor_warning = build_selected_factor_warning(params.selected_factors)
+        if selected_factor_warning:
+            result_warnings.append(selected_factor_warning)
 
         try:
             pred_df = pred.reset_index()
@@ -496,6 +649,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 attribution_curve=[AttributionPoint(**p) for p in attribution_result["curve"]] if attribution_result else None,
                 attribution_interpretation=attribution_result["interpretation"] if attribution_result else None,
                 cost_impact_estimate=cost_impact_estimate,
+                warnings=result_warnings or None,
             )
         task_store.set_completed(task_id, result.model_dump_json())
 
@@ -812,7 +966,15 @@ async def run_backtest(params: BacktestParams, background_tasks: BackgroundTasks
     """
     启动回测任务
     """
+    params.model = validate_backtest_model_available(params.model)
     task_id = str(uuid.uuid4())
+    try:
+        task_store.init_db()
+        task_store.create_task(task_id, params.model_dump_json())
+    except Exception as e:
+        logger.error(f"创建回测任务失败: {e}")
+        raise HTTPException(status_code=500, detail=f"创建回测任务失败: {e}")
+
     background_tasks.add_task(run_backtest_task, task_id, params)
 
     return {

@@ -30,6 +30,35 @@ def get_calendar_range():
     return lines[0], lines[-1]
 
 
+def _instrument_field_series(df: pd.DataFrame, code: str, field: str) -> pd.Series:
+    if df is None or df.empty or field not in df.columns:
+        return pd.Series(dtype="float64")
+    try:
+        if isinstance(df.index, pd.MultiIndex):
+            level = "instrument" if "instrument" in (df.index.names or []) else 0
+            series = df.xs(code, level=level)[field]
+        else:
+            series = df[field]
+        return pd.to_numeric(series, errors="coerce").dropna().sort_index()
+    except Exception:
+        return pd.Series(dtype="float64")
+
+
+def _sector_change_from_qlib_frame(df: pd.DataFrame, stock_codes: list[str]) -> tuple[float | None, int]:
+    changes = []
+    for code in stock_codes:
+        close = _instrument_field_series(df, code, "$close")
+        if len(close) < 2:
+            continue
+        first_price = float(close.iloc[0])
+        last_price = float(close.iloc[-1])
+        if first_price > 0:
+            changes.append((last_price - first_price) / first_price)
+    if not changes:
+        return None, 0
+    return round(float(np.mean(changes)) * 100, 2), len(changes)
+
+
 @router.get("/sectors", response_model=HotSectorsResponse)
 async def get_hot_sectors(
     days: int = Query(default=10, ge=1, le=60, description="统计周期（天）")
@@ -71,28 +100,13 @@ async def get_hot_sectors(
                 if df.empty:
                     continue
 
-                # 计算板块涨跌幅
-                # 获取期初期末价格
-                first_prices = df.iloc[0]
-                last_prices = df.iloc[-1]
-
-                # 计算平均涨跌幅
-                changes = []
-                for code in stock_codes:
-                    if (code, '$close') in first_prices.index and (code, '$close') in last_prices.index:
-                        p1 = first_prices[(code, '$close')]
-                        p2 = last_prices[(code, '$close')]
-                        if pd.notna(p1) and pd.notna(p2) and p1 > 0:
-                            change = (p2 - p1) / p1
-                            changes.append(change)
-
-                if changes:
-                    avg_change = np.mean(changes)
+                change_pct, stock_count = _sector_change_from_qlib_frame(df, stock_codes)
+                if change_pct is not None:
                     sector_results.append(SectorInfo(
                         name=sector_name,
-                        change_pct=round(avg_change * 100, 2),
-                        volume=len(changes),
-                        stock_count=len(changes)
+                        change_pct=change_pct,
+                        volume=stock_count,
+                        stock_count=stock_count
                     ))
 
             except Exception as e:
@@ -152,29 +166,24 @@ async def get_sector_stocks(
         if df.empty:
             return {"sector": sector_name, "stocks": []}
 
-        # 计算涨跌幅
         results = []
-        first_prices = df.iloc[0]
-        last_prices = df.iloc[-1]
 
         from models.schemas import SectorStockInfo
 
         for code in stock_codes:
-            if (code, '$close') in first_prices.index:
-                p1 = first_prices[(code, '$close')]
-                p2 = last_prices.get((code, '$close'), p1)
-                vol = last_prices.get((code, '$volume'), 0)
-
-                if pd.notna(p1) and pd.notna(p2) and p1 > 0:
-                    change_pct = (p2 - p1) / p1 * 100
-
-                    results.append(SectorStockInfo(
-                        code=code,
-                        name=get_stock_name(code),
-                        change_pct=round(change_pct, 2),
-                        volume=float(vol) if pd.notna(vol) else 0,
-                        factor_score=None  # TODO: 添加因子评分
-                    ))
+            close = _instrument_field_series(df, code, "$close")
+            if len(close) < 2 or float(close.iloc[0]) <= 0:
+                continue
+            volume = _instrument_field_series(df, code, "$volume")
+            change_pct = (float(close.iloc[-1]) - float(close.iloc[0])) / float(close.iloc[0]) * 100
+            vol = float(volume.iloc[-1]) if len(volume) else 0
+            results.append(SectorStockInfo(
+                code=code,
+                name=get_stock_name(code),
+                change_pct=round(change_pct, 2),
+                volume=vol,
+                factor_score=None
+            ))
 
         # 按涨跌幅排序
         results.sort(key=lambda x: x.change_pct, reverse=True)

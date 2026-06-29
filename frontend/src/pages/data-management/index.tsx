@@ -112,7 +112,10 @@ export function DataManagementPage() {
     .map((code) => code.trim())
     .filter(Boolean)
 
-  const handleUpdate = async (type: "stocks" | "etf" | "index" | "all") => {
+  const handleUpdate = async (
+    type: "stocks" | "etf" | "index" | "all",
+    options?: { rebuildStale?: boolean; overwriteExisting?: boolean; codes?: string[]; startDate?: string; endDate?: string },
+  ) => {
     setDataManagementParams({
       updateTaskId: null,
       isUpdating: true,
@@ -125,7 +128,13 @@ export function DataManagementPage() {
     })
 
     try {
-      const result = await api.data.update(type, { rebuildStale: repairStale, codes: parseTargetCodes() })
+      const result = await api.data.update(type, {
+        rebuildStale: options?.rebuildStale ?? repairStale,
+        overwriteExisting: options?.overwriteExisting ?? false,
+        codes: options?.codes ?? parseTargetCodes(),
+        startDate: options?.startDate,
+        endDate: options?.endDate,
+      })
       const taskId = result.task_id
       setDataManagementParams({
         updateTaskId: taskId,
@@ -156,6 +165,27 @@ export function DataManagementPage() {
     }
   }
 
+  const handleRepairAdjustmentSuspects = () => {
+    const suspects = priceAdjustment?.suspect_examples || []
+    const codes: string[] = Array.from(new Set<string>(
+      suspects
+        .map((item: any) => item.code)
+        .filter((code: unknown): code is string => typeof code === "string" && code.length > 0),
+    ))
+    const dates: string[] = suspects
+      .map((item: any) => item.previous_date || item.date)
+      .filter((date: unknown): date is string => typeof date === "string" && date.length > 0)
+      .sort()
+    if (codes.length === 0) return
+
+    handleUpdate("stocks", {
+      rebuildStale: true,
+      overwriteExisting: true,
+      codes,
+      startDate: dates[0],
+    })
+  }
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case "normal":
@@ -181,6 +211,35 @@ export function DataManagementPage() {
         return <Badge variant="outline">未知</Badge>
     }
   }
+
+  const getDiagnosticBadge = (status: string) => {
+    switch (status) {
+      case "normal":
+        return <Badge variant="default">正常</Badge>
+      case "warning":
+        return <Badge className="bg-yellow-600">需关注</Badge>
+      case "error":
+        return <Badge variant="destructive">异常</Badge>
+      default:
+        return <Badge variant="outline">未知</Badge>
+    }
+  }
+
+  const getAdjustmentModeLabel = (mode?: string) => {
+    switch (mode) {
+      case "adjusted_price_with_factor":
+        return "可审计复权价格"
+      case "qfq_price_with_placeholder_factor":
+        return "前复权价格 + factor占位"
+      case "qfq_price_with_mixed_factor":
+        return "历史factor混合占位"
+      default:
+        return "口径未知"
+    }
+  }
+
+  const priceAdjustment = dataStatus?.priceAdjustment
+  const adjustmentSuspects = priceAdjustment?.suspect_examples || []
 
   const today = new Date()
   const lastTradeDate = new Date(today)
@@ -388,6 +447,96 @@ export function DataManagementPage() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <CardTitle>复权口径诊断</CardTitle>
+              <CardDescription>检查历史价格是否具备清晰的除权复权口径</CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              {getStatusIcon(priceAdjustment?.status || "unknown")}
+              {getDiagnosticBadge(priceAdjustment?.status || "unknown")}
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-4 md:grid-cols-4 text-sm">
+            <div className="space-y-1">
+              <p className="text-muted-foreground">当前判断</p>
+              <p className="font-medium">{getAdjustmentModeLabel(priceAdjustment?.adjustment_mode)}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-muted-foreground">factor_field_status</p>
+              <p className="font-medium">{priceAdjustment?.factor_field_status || "--"}</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-muted-foreground">抽样数量</p>
+              <p className="font-medium">{priceAdjustment?.sample_size ?? "--"} 只</p>
+            </div>
+            <div className="space-y-1">
+              <p className="text-muted-foreground">疑似异常跳变</p>
+              <p className="font-medium">{priceAdjustment?.possible_unadjusted_jump_count ?? "--"} 只</p>
+            </div>
+          </div>
+          <div className="mt-4 space-y-2 text-sm">
+            <p>{priceAdjustment?.message || "暂无复权口径诊断结果"}</p>
+            <p className="text-muted-foreground">
+              历史研究、因子分析和回测优先按前复权价格理解；实盘成交价、下单价格和当日资金测算仍应以实时未复权行情或券商行情为准。
+            </p>
+            {priceAdjustment?.warnings?.length ? (
+              <div className="space-y-1">
+                {priceAdjustment.warnings.map((warning: string, index: number) => (
+                  <p key={index} className="text-xs text-yellow-700">- {warning}</p>
+                ))}
+              </div>
+            ) : null}
+            {adjustmentSuspects.length > 0 ? (
+              <div className="mt-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium">疑似风险样本</p>
+                    <p className="text-xs text-muted-foreground">先展示前 {adjustmentSuspects.length} 个样本，修正会按这些代码发起受保护的数据重拉任务。</p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleRepairAdjustmentSuspects}
+                    disabled={isUpdating}
+                  >
+                    {isUpdating ? "修正任务运行中" : "修正列表中的疑似标的"}
+                  </Button>
+                </div>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>代码</TableHead>
+                      <TableHead>日期</TableHead>
+                      <TableHead>前收</TableHead>
+                      <TableHead>收盘</TableHead>
+                      <TableHead>跳变</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {adjustmentSuspects.map((item: any, index: number) => (
+                      <TableRow key={`${item.code}-${item.date}-${index}`}>
+                        <TableCell>{item.code}</TableCell>
+                        <TableCell>{item.date || "--"}</TableCell>
+                        <TableCell>{typeof item.previous_close === "number" ? item.previous_close.toFixed(2) : "--"}</TableCell>
+                        <TableCell>{typeof item.close === "number" ? item.close.toFixed(2) : "--"}</TableCell>
+                        <TableCell className={item.jump_pct >= 0 ? "text-up" : "text-down"}>
+                          {typeof item.jump_pct === "number" ? `${(item.jump_pct * 100).toFixed(1)}%` : "--"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
 
       {/* 数据来源说明 */}
       <Card>

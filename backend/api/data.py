@@ -23,6 +23,8 @@ from utils.code_normalization import normalize_stock_code
 
 router = APIRouter()
 _MAX_FEATURE_DATE_SAMPLE = 300
+_MAX_ADJUSTMENT_SAMPLE = 80
+_ONE_FACTOR_TOLERANCE = 1e-6
 
 
 class DataUpdateRequest(BaseModel):
@@ -34,6 +36,7 @@ class DataUpdateRequest(BaseModel):
     max_stocks: int | None = Field(default=None, ge=1, le=5000, description="最多更新多少只股票，测试时可填较小值")
     codes: list[str] | None = Field(default=None, description="可选：只更新/修复指定股票代码")
     rebuild_stale: bool = Field(default=False, description="Repair existing stale zero/NaN OHLC rows")
+    overwrite_existing: bool = Field(default=False, description="Overwrite existing non-zero price fields in the requested window")
 
 
 _update_tasks: dict[str, dict] = {}
@@ -124,6 +127,206 @@ def _get_stock_feature_latest_date(data_dir: Path, calendar: list[str]) -> str:
     return _get_stock_feature_date_summary(data_dir, calendar)["representative_date"]
 
 
+def _read_feature_values(bin_path: Path) -> list[float]:
+    """Read Qlib float feature values, ignoring the leading start-index slot."""
+    try:
+        import numpy as np
+
+        raw = np.fromfile(bin_path, dtype="<f")
+        if len(raw) < 2:
+            return []
+        values = raw[1:]
+        finite = values[np.isfinite(values)]
+        return [float(v) for v in finite]
+    except Exception:
+        logger.debug(f"无法读取 Qlib 特征文件: {bin_path}")
+        return []
+
+
+def _read_calendar_dates(data_dir: Path) -> list[str]:
+    cal_path = data_dir / "calendars" / "day.txt"
+    if not cal_path.exists():
+        return []
+    return [line.strip() for line in cal_path.read_text().splitlines() if line.strip()]
+
+
+def _read_feature_points(bin_path: Path, calendar: list[str]) -> list[dict]:
+    try:
+        import numpy as np
+
+        raw = np.fromfile(bin_path, dtype="<f")
+        if len(raw) < 2:
+            return []
+        start_idx = int(raw[0])
+        points = []
+        for offset, value in enumerate(raw[1:]):
+            if not np.isfinite(value):
+                continue
+            cal_idx = start_idx + offset
+            points.append({
+                "date": calendar[cal_idx] if 0 <= cal_idx < len(calendar) else "",
+                "value": float(value),
+            })
+        return points
+    except Exception:
+        logger.debug(f"无法读取 Qlib 特征序列: {bin_path}")
+        return []
+
+
+def _find_large_price_jump(points: list[dict], threshold: float = 0.35) -> dict | None:
+    previous = None
+    for point in points:
+        value = point.get("value")
+        if value <= 0:
+            previous = None
+            continue
+        if previous and previous.get("value", 0) > 0:
+            jump_pct = value / previous["value"] - 1.0
+            if abs(jump_pct) >= threshold:
+                return {
+                    "date": point.get("date", ""),
+                    "previous_date": previous.get("date", ""),
+                    "close": round(value, 4),
+                    "previous_close": round(previous["value"], 4),
+                    "jump_pct": round(jump_pct, 4),
+                }
+        previous = point
+    return None
+
+
+def _check_price_adjustment_policy() -> dict:
+    """Diagnose whether price adjustment policy is visible and auditable."""
+    data_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data"
+    feature_dir = data_dir / "features"
+    calendar = _read_calendar_dates(data_dir)
+    if not feature_dir.exists():
+        return {
+            "source": "Qlib cn_data 复权口径",
+            "status": "error",
+            "adjustment_mode": "unknown",
+            "factor_field_status": "missing",
+            "message": "未找到 Qlib 特征目录，无法判断复权口径",
+            "sample_size": 0,
+        }
+
+    close_files = sorted(
+        path for path in feature_dir.glob("*/close.day.bin")
+        if _is_a_share_feature_code(path.parent.name)
+    )
+    sample_files = _sample_feature_files(close_files)
+    if len(sample_files) > _MAX_ADJUSTMENT_SAMPLE:
+        sample_files = _sample_feature_files(sample_files)[:_MAX_ADJUSTMENT_SAMPLE]
+
+    sampled = 0
+    factor_missing = 0
+    factor_empty = 0
+    all_one_factor = 0
+    has_non_one_factor = 0
+    latest_one_factor = 0
+    possible_unadjusted_jumps = 0
+    examples: list[dict] = []
+    suspect_examples: list[dict] = []
+
+    for close_path in sample_files:
+        sampled += 1
+        code = close_path.parent.name
+        factor_path = close_path.parent / "factor.day.bin"
+
+        close_points = _read_feature_points(close_path, calendar)
+        jump = _find_large_price_jump(close_points)
+        if jump:
+            possible_unadjusted_jumps += 1
+            if len(suspect_examples) < 10:
+                suspect_examples.append({"code": code, **jump})
+
+        if not factor_path.exists():
+            factor_missing += 1
+            if len(examples) < 5:
+                examples.append({"code": code, "issue": "factor_missing"})
+            continue
+
+        factor_values = _read_feature_values(factor_path)
+        if not factor_values:
+            factor_empty += 1
+            if len(examples) < 5:
+                examples.append({"code": code, "issue": "factor_empty"})
+            continue
+
+        non_one_values = [v for v in factor_values if abs(v - 1.0) > _ONE_FACTOR_TOLERANCE]
+        if non_one_values:
+            has_non_one_factor += 1
+        else:
+            all_one_factor += 1
+
+        if abs(factor_values[-1] - 1.0) <= _ONE_FACTOR_TOLERANCE:
+            latest_one_factor += 1
+
+    if sampled == 0:
+        return {
+            "source": "Qlib cn_data 复权口径",
+            "status": "error",
+            "adjustment_mode": "unknown",
+            "factor_field_status": "missing",
+            "message": "未找到可诊断的股票日线文件",
+            "sample_size": 0,
+        }
+
+    available_factor_count = sampled - factor_missing - factor_empty
+    latest_one_ratio = latest_one_factor / available_factor_count if available_factor_count > 0 else 0.0
+
+    if factor_missing == sampled or (factor_missing + factor_empty) == sampled:
+        status = "warning"
+        adjustment_mode = "unknown"
+        factor_field_status = "missing"
+        message = "未找到可用 factor 字段，无法确认除权复权口径"
+    elif has_non_one_factor == 0:
+        status = "warning"
+        adjustment_mode = "qfq_price_with_placeholder_factor"
+        factor_field_status = "placeholder_1.0"
+        message = "价格源策略偏前复权，但 factor 字段全为 1.0，占位痕迹明显，不能审计真实除权因子"
+    elif latest_one_ratio >= 0.8:
+        status = "warning"
+        adjustment_mode = "qfq_price_with_mixed_factor"
+        factor_field_status = "mixed_real_and_placeholder"
+        message = "历史 factor 存在非 1 值，但多数最新样本 factor 为 1.0，疑似老数据有真实因子、增量数据为占位因子"
+    else:
+        status = "normal"
+        adjustment_mode = "adjusted_price_with_factor"
+        factor_field_status = "real_factor_present"
+        message = "样本中存在可用 factor 字段，价格复权口径相对可审计"
+
+    warnings: list[str] = []
+    if possible_unadjusted_jumps:
+        status = "warning"
+        message = f"{message}；另发现疑似大幅跳变，需要抽查是否为未复权或数据断点"
+        warnings.append(f"样本中 {possible_unadjusted_jumps} 只出现超过 35% 的单日跳变，建议抽查是否为未复权或数据修复断点")
+    warnings.append("更新脚本优先使用前复权/自动复权价格；若外部源缺少前复权数据，仍需人工复核")
+
+    return {
+        "source": "Qlib cn_data 复权口径",
+        "status": status,
+        "adjustment_mode": adjustment_mode,
+        "factor_field_status": factor_field_status,
+        "message": message,
+        "sample_size": sampled,
+        "factor_missing_count": factor_missing,
+        "factor_empty_count": factor_empty,
+        "all_one_factor_count": all_one_factor,
+        "non_one_factor_count": has_non_one_factor,
+        "latest_one_factor_count": latest_one_factor,
+        "possible_unadjusted_jump_count": possible_unadjusted_jumps,
+        "source_policy": {
+            "primary_use": "research_backtest_factor",
+            "expected_price_adjustment": "front_adjusted_or_auto_adjusted",
+            "update_sources": ["Tencent qfqday", "Eastmoney fqt=1", "Baostock adjustflag=2", "yfinance auto_adjust=True"],
+            "execution_price_note": "实盘成交价应以实时未复权行情或券商行情为准",
+        },
+        "warnings": warnings,
+        "examples": examples,
+        "suspect_examples": suspect_examples,
+    }
+
+
 def _get_stock_latest_trade_date() -> str:
     data_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data"
     cal_path = data_dir / "calendars" / "day.txt"
@@ -161,16 +364,21 @@ def _get_feature_stock_count(data_dir: Path) -> dict:
     codes = set()
     for bin_path in feature_dir.glob("*/close.day.bin"):
         code = bin_path.parent.name.lower()
-        if (
-            code.startswith("sh6")
-            or code.startswith("sz0")
-            or code.startswith("sz3")
-            or code.startswith("bj4")
-            or code.startswith("bj8")
-            or code.startswith("bj920")
-        ):
+        if _is_a_share_feature_code(code):
             codes.add(code)
     return {"total": len(codes)}
+
+
+def _is_a_share_feature_code(code: str) -> bool:
+    normalized = str(code or "").lower()
+    return (
+        normalized.startswith("sh6")
+        or normalized.startswith("sz0")
+        or normalized.startswith("sz3")
+        or normalized.startswith("bj4")
+        or normalized.startswith("bj8")
+        or normalized.startswith("bj920")
+    )
 
 
 def _check_qlib_data() -> dict:
@@ -307,6 +515,55 @@ def _baostock_skipped_status() -> dict:
     }
 
 
+def _check_tdx_mcp(include_external: bool = False) -> dict:
+    try:
+        from services.tdx_mcp_provider import TdxMcpProvider
+
+        provider = TdxMcpProvider.from_env()
+        status = provider.safe_status()
+        if not provider.is_configured:
+            return {
+                "source": "通达信官方 MCP",
+                "status": "unknown",
+                "configured": False,
+                "message": "未配置 TDX_API_KEY",
+                **status,
+            }
+        if not include_external:
+            return {
+                "source": "通达信官方 MCP",
+                "status": "unknown",
+                "configured": True,
+                "message": "已配置；快速检查模式未连接外部 MCP",
+                **status,
+            }
+
+        tools = provider.list_tools()
+        if tools:
+            return {
+                "source": "通达信官方 MCP",
+                "status": "normal",
+                "configured": True,
+                "message": f"服务可用，发现 {len(tools)} 个工具",
+                "tools": [tool.get("name") for tool in tools if isinstance(tool, dict)],
+                **status,
+            }
+        return {
+            "source": "通达信官方 MCP",
+            "status": "warning",
+            "configured": True,
+            "message": "已配置，但未能列出 MCP 工具",
+            **status,
+        }
+    except Exception as e:
+        return {
+            "source": "通达信官方 MCP",
+            "status": "warning",
+            "configured": bool(os.getenv("TDX_API_KEY")),
+            "message": str(e),
+        }
+
+
 def _resolve_update_script() -> Path:
     return Path(__file__).resolve().parents[2] / "update_cn_data.py"
 
@@ -325,6 +582,71 @@ def _normalize_update_codes(codes: list[str] | None) -> list[str]:
             seen.add(qlib_code)
             normalized.append(qlib_code)
     return normalized
+
+
+def _clear_module_caches() -> dict:
+    """Clear in-process caches that can hide freshly written Qlib data."""
+    cleared: list[str] = []
+    failures: dict[str, str] = {}
+
+    cache_specs = [
+        ("api.etf", "_cache"),
+        ("api.pair", "_pair_cache"),
+        ("api.sectors", "_cache"),
+    ]
+    for module_name, attr_name in cache_specs:
+        try:
+            module = __import__(module_name, fromlist=[attr_name])
+            cache = getattr(module, attr_name, None)
+            if hasattr(cache, "clear"):
+                cache.clear()
+                cleared.append(f"{module_name}.{attr_name}")
+        except Exception as exc:
+            failures[f"{module_name}.{attr_name}"] = str(exc)
+
+    try:
+        stocks_module = __import__("api.stocks", fromlist=["_full_name_cache", "_cache_loaded"])
+        stocks_module._full_name_cache.clear()
+        stocks_module._cache_loaded = False
+        cleared.append("api.stocks._full_name_cache")
+    except Exception as exc:
+        failures["api.stocks._full_name_cache"] = str(exc)
+
+    try:
+        factor_utils = __import__("core.factor_utils", fromlist=["_industry_cache"])
+        factor_utils._industry_cache.clear()
+        cleared.append("core.factor_utils._industry_cache")
+    except Exception as exc:
+        failures["core.factor_utils._industry_cache"] = str(exc)
+
+    return {
+        "cache_cleared": bool(cleared),
+        "cleared": cleared,
+        "cache_clear_failures": failures,
+    }
+
+
+def _reload_qlib_runtime() -> dict:
+    """Reinitialize Qlib so D.features sees files written by the update script."""
+    try:
+        from main import init_qlib
+
+        return {"qlib_reloaded": bool(init_qlib())}
+    except Exception as exc:
+        logger.warning(f"数据更新后刷新 Qlib 运行态失败: {exc}")
+        return {"qlib_reloaded": False, "qlib_reload_error": str(exc)}
+
+
+def _refresh_runtime_after_update() -> dict:
+    """Refresh local runtime state after a successful data update."""
+    cache_result = _clear_module_caches()
+    qlib_result = _reload_qlib_runtime()
+    result = {
+        **cache_result,
+        **qlib_result,
+    }
+    logger.info(f"数据更新后运行态刷新结果: {result}")
+    return result
 
 
 def _find_running_update() -> dict | None:
@@ -397,6 +719,8 @@ def _save_task(update_task_id: str, **updates):
     with _tasks_lock:
         current = _update_tasks.get(update_task_id, {})
         current.update(updates)
+        if current.get("status") == "completed" and "runtime_refresh" not in current:
+            current["runtime_refresh"] = _refresh_runtime_after_update()
         _update_tasks[update_task_id] = current
         task_snapshot = current.copy()
     _persist_task(update_task_id, task_snapshot)
@@ -478,13 +802,17 @@ async def data_health_check(include_external: bool = False):
     """
     qlib_check = _check_qlib_data()
     stocks_check = _check_stocks_data()
+    adjustment_check = _check_price_adjustment_policy()
     baostock_check = _check_baostock_industry() if include_external else _baostock_skipped_status()
+    tdx_check = _check_tdx_mcp(include_external)
 
     # 总体状态
     statuses = [
         qlib_check.get("status", "error"),
         stocks_check.get("status", "error"),
+        adjustment_check.get("status", "warning"),
         baostock_check.get("status", "error"),
+        tdx_check.get("status", "unknown"),
     ]
     if "error" in statuses:
         overall = "degraded"
@@ -501,6 +829,7 @@ async def data_health_check(include_external: bool = False):
         "checked_at": datetime.now().isoformat(),
         "sources": {
             "qlib": qlib_check,
+            "price_adjustment": adjustment_check,
             "stocks": {
                 **stocks_check,
                 "etf": stocks_check,
@@ -512,6 +841,7 @@ async def data_health_check(include_external: bool = False):
                 },
             },
             "baostock_industry": baostock_check,
+            "tdx_mcp": tdx_check,
         },
     }
 
@@ -525,7 +855,9 @@ async def data_update_logs(include_external: bool = False):
     """
     qlib_check = _check_qlib_data()
     stocks_check = _check_stocks_data()
+    adjustment_check = _check_price_adjustment_policy()
     baostock_check = _check_baostock_industry() if include_external else _baostock_skipped_status()
+    tdx_check = _check_tdx_mcp(include_external)
 
     now = datetime.now()
 
@@ -557,12 +889,27 @@ async def data_update_logs(include_external: bool = False):
         "time": now.strftime("%Y-%m-%d %H:%M"),
     })
 
+    logs.append({
+        "type": "success" if adjustment_check.get("status") == "normal" else "warning",
+        "title": "复权口径诊断",
+        "detail": adjustment_check.get("message", "未能判断复权口径"),
+        "time": now.strftime("%Y-%m-%d %H:%M"),
+    })
+
     # Baostock 行业数据
     bao_status = baostock_check.get("status", "error")
     logs.append({
         "type": bao_status if bao_status == "normal" else "warning",
         "title": f"Baostock 行业数据{'可用' if bao_status == 'normal' else '不可用'}",
         "detail": baostock_check.get("message", "未知"),
+        "time": now.strftime("%Y-%m-%d %H:%M"),
+    })
+
+    tdx_status = tdx_check.get("status", "unknown")
+    logs.append({
+        "type": "success" if tdx_status == "normal" else "warning",
+        "title": "通达信官方 MCP",
+        "detail": tdx_check.get("message", "未知"),
         "time": now.strftime("%Y-%m-%d %H:%M"),
     })
 
@@ -605,6 +952,8 @@ async def start_data_update(request: DataUpdateRequest):
         command.extend(["--code", code])
     if request.rebuild_stale:
         command.append("--rebuild-stale")
+    if request.overwrite_existing:
+        command.append("--overwrite-existing")
 
     task_id = str(uuid.uuid4())
     now = datetime.now().isoformat()

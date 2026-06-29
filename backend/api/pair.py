@@ -50,6 +50,23 @@ def _normalize_pair_code(code: str) -> str:
     return normalize_stock_code(code, target="qlib")
 
 
+def _instrument_field_series(df: pd.DataFrame, code: str, field: str) -> pd.Series:
+    """Extract one instrument field from Qlib's instrument/datetime MultiIndex frame."""
+    if df is None or df.empty or field not in df.columns:
+        return pd.Series(dtype="float64")
+
+    try:
+        if isinstance(df.index, pd.MultiIndex):
+            level = "instrument" if "instrument" in (df.index.names or []) else 0
+            series = df.xs(code, level=level)[field]
+        else:
+            series = df[field]
+        series = pd.to_numeric(series, errors="coerce").dropna()
+        return series.sort_index()
+    except Exception:
+        return pd.Series(dtype="float64")
+
+
 def calc_correlation_from_qlib(code1: str, code2: str, days: int = 60) -> float | None:
     """使用 Qlib 数据计算两只股票的相关性"""
     try:
@@ -62,14 +79,13 @@ def calc_correlation_from_qlib(code1: str, code2: str, days: int = 60) -> float 
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
 
-        df1 = D.features([qlib_code1], ["$close"], start_time=start_date, end_time=end_date)
-        df2 = D.features([qlib_code2], ["$close"], start_time=start_date, end_time=end_date)
+        df = D.features([qlib_code1, qlib_code2], ["$close"], start_time=start_date, end_time=end_date)
 
-        if df1.empty or df2.empty:
+        if df.empty:
             return None
 
-        ret1 = df1.xs(qlib_code1, level=1)["$close"].pct_change().dropna()
-        ret2 = df2.xs(qlib_code2, level=1)["$close"].pct_change().dropna()
+        ret1 = _instrument_field_series(df, qlib_code1, "$close").pct_change().dropna()
+        ret2 = _instrument_field_series(df, qlib_code2, "$close").pct_change().dropna()
 
         if len(ret1) < 10 or len(ret2) < 10:
             return None
@@ -98,14 +114,13 @@ def calc_zscore_from_qlib(code1: str, code2: str, days: int = 60) -> float | Non
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
 
-        df1 = D.features([qlib_code1], ["$close"], start_time=start_date, end_time=end_date)
-        df2 = D.features([qlib_code2], ["$close"], start_time=start_date, end_time=end_date)
+        df = D.features([qlib_code1, qlib_code2], ["$close"], start_time=start_date, end_time=end_date)
 
-        if df1.empty or df2.empty:
+        if df.empty:
             return None
 
-        p1 = df1.xs(qlib_code1, level=1)["$close"]
-        p2 = df2.xs(qlib_code2, level=1)["$close"]
+        p1 = _instrument_field_series(df, qlib_code1, "$close")
+        p2 = _instrument_field_series(df, qlib_code2, "$close")
 
         common = p1.index.intersection(p2.index)
         if len(common) < 20:
@@ -176,6 +191,7 @@ def _compute_pair_metrics(pair_def: dict) -> dict:
         "zScore": zscore,
         "signal": signal,
         "status": status,
+        "data_status": "ok",
     }
     _pair_cache[ck] = (now, result)
     return result
@@ -215,14 +231,13 @@ def calc_spread_data(code1: str, code2: str, days: int = 60) -> List[Dict]:
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y-%m-%d")
 
-        df1 = D.features([qlib_code1], ["$close"], start_time=start_date, end_time=end_date)
-        df2 = D.features([qlib_code2], ["$close"], start_time=start_date, end_time=end_date)
+        df = D.features([qlib_code1, qlib_code2], ["$close"], start_time=start_date, end_time=end_date)
 
-        if df1.empty or df2.empty:
+        if df.empty:
             return []
 
-        p1 = df1.xs(qlib_code1, level=1)["$close"]
-        p2 = df2.xs(qlib_code2, level=1)["$close"]
+        p1 = _instrument_field_series(df, qlib_code1, "$close")
+        p2 = _instrument_field_series(df, qlib_code2, "$close")
 
         common = p1.index.intersection(p2.index)
         p1, p2 = p1.loc[common], p2.loc[common]
@@ -265,7 +280,7 @@ async def list_pairs():
         updated_pairs = []
         for pair_def in PAIR_DEFINITIONS:
             try:
-                metrics = _cached_or_unavailable_pair_metrics(pair_def)
+                metrics = _compute_pair_metrics(pair_def)
                 updated_pairs.append(metrics)
             except Exception as e:
                 logger.warning(f"跳过配对 {pair_def['pair']}: {e}")

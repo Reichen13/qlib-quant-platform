@@ -6,9 +6,11 @@ import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { useQuery } from "@tanstack/react-query"
+import { useNavigate } from "react-router-dom"
 import { api } from "@/lib/api"
+import { mapAiStrategyParamsToBacktestParams } from "@/lib/ai-strategy-backtest"
 import { useAppStore } from "@/stores/app-store"
-import { Bot, Wand2, Lightbulb, AlertTriangle, ChevronRight, Loader2, Sparkles, Code2, BarChart3, CheckCircle } from "lucide-react"
+import { Bot, Wand2, Lightbulb, AlertTriangle, ChevronRight, Loader2, Sparkles, Code2, BarChart3, CheckCircle, ListChecks, RefreshCw } from "lucide-react"
 
 const CATEGORY_LABELS: Record<string, string> = {
   trend: "趋势跟踪",
@@ -18,8 +20,23 @@ const CATEGORY_LABELS: Record<string, string> = {
   factor_rotation: "因子轮动",
 }
 
+function getErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && error.message) {
+    return error.message
+  }
+  return fallback
+}
+
 export function AiStrategyPage() {
-  const { aiStrategyParams, setAiStrategyParams } = useAppStore()
+  const navigate = useNavigate()
+  const {
+    aiStrategyParams,
+    backtestParams,
+    backtestResult,
+    setAiStrategyParams,
+    setBacktestParams,
+    setBacktestActiveTab,
+  } = useAppStore()
   const {
     activeTab,
     nlInput,
@@ -30,9 +47,12 @@ export function AiStrategyPage() {
   const generated = aiStrategyParams.generated as any
   const analysis = aiStrategyParams.analysis as any
   const optimizeResult = aiStrategyParams.optimizeResult as any
+  const linkedBacktestResult = aiStrategyParams.backtestDraft ? backtestResult as any : null
+  const [screeningResult, setScreeningResult] = useState<any>(null)
   const [generating, setGenerating] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
   const [optimizing, setOptimizing] = useState(false)
+  const [screeningRunning, setScreeningRunning] = useState(false)
 
   // 获取模板
   const { data: templates } = useQuery({
@@ -48,8 +68,8 @@ export function AiStrategyPage() {
     try {
       const result = await api.aiStrategy.generate(nlInput, useDeep)
       setAiStrategyParams({ generated: result })
-    } catch {
-      setAiStrategyParams({ generated: { error: "生成失败，请检查 LLM 配置" } })
+    } catch (error) {
+      setAiStrategyParams({ generated: { error: `生成失败：${getErrorMessage(error, "请检查 LLM 配置")}` } })
     } finally {
       setGenerating(false)
     }
@@ -72,8 +92,8 @@ export function AiStrategyPage() {
 
       const result = await api.aiStrategy.analyze(holdings)
       setAiStrategyParams({ analysis: result })
-    } catch {
-      setAiStrategyParams({ analysis: { error: "分析失败，请检查 LLM 配置" } })
+    } catch (error) {
+      setAiStrategyParams({ analysis: { error: `分析失败：${getErrorMessage(error, "请检查 LLM 配置")}` } })
     } finally {
       setAnalyzing(false)
     }
@@ -86,11 +106,48 @@ export function AiStrategyPage() {
     try {
       const result = await api.aiStrategy.optimize(optimizeStrategy)
       setAiStrategyParams({ optimizeResult: result })
-    } catch {
-      setAiStrategyParams({ optimizeResult: { error: "优化失败，请检查 LLM 配置" } })
+    } catch (error) {
+      setAiStrategyParams({ optimizeResult: { error: `优化失败：${getErrorMessage(error, "请检查 LLM 配置")}` } })
     } finally {
       setOptimizing(false)
     }
+  }
+
+  const handleScreeningSignals = async () => {
+    setScreeningRunning(true)
+    setScreeningResult(null)
+    try {
+      const result = await api.aiStrategy.screeningSignals()
+      setScreeningResult(result)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "选股联动失败"
+      setScreeningResult({ error: message })
+    } finally {
+      setScreeningRunning(false)
+    }
+  }
+
+  const handleApplyGeneratedToBacktest = () => {
+    if (!generated?.params) return
+    setBacktestParams(mapAiStrategyParamsToBacktestParams(generated.params, backtestParams))
+    setAiStrategyParams({
+      backtestDraft: {
+        params: generated.params,
+        appliedAt: new Date().toISOString(),
+      },
+    })
+    setBacktestActiveTab("config")
+    navigate("/backtest")
+  }
+
+  const formatPercent = (value: unknown) => {
+    if (typeof value !== "number") return "--"
+    return `${(value * 100).toFixed(2)}%`
+  }
+
+  const formatMetric = (value: unknown) => {
+    if (typeof value !== "number") return "--"
+    return value.toFixed(2)
   }
 
   const actionLabel = (action: string) => {
@@ -126,6 +183,10 @@ export function AiStrategyPage() {
           <TabsTrigger value="optimize">
             <Sparkles className="h-4 w-4 mr-1" />
             参数优化
+          </TabsTrigger>
+          <TabsTrigger value="screening">
+            <ListChecks className="h-4 w-4 mr-1" />
+            选股联动
           </TabsTrigger>
           <TabsTrigger value="templates">
             <Lightbulb className="h-4 w-4 mr-1" />
@@ -204,6 +265,44 @@ export function AiStrategyPage() {
                       </div>
                     ))}
                   </div>
+                  <Button variant="outline" onClick={handleApplyGeneratedToBacktest}>
+                    <BarChart3 className="h-4 w-4 mr-2" />
+                    用此策略跑回测
+                  </Button>
+                  {aiStrategyParams.backtestDraft && (
+                    <div className="rounded-lg border bg-background p-3 text-sm">
+                      <div className="mb-2 flex items-center justify-between">
+                        <p className="font-medium">最近回测验证</p>
+                        <Badge variant={linkedBacktestResult?.status === "completed" ? "default" : "secondary"}>
+                          {linkedBacktestResult?.status || "待运行"}
+                        </Badge>
+                      </div>
+                      {linkedBacktestResult?.status === "completed" ? (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                          <div className="rounded bg-muted/50 p-2">
+                            <p className="text-xs text-muted-foreground">总收益</p>
+                            <p className="font-mono">{formatPercent(linkedBacktestResult.total_return)}</p>
+                          </div>
+                          <div className="rounded bg-muted/50 p-2">
+                            <p className="text-xs text-muted-foreground">最大回撤</p>
+                            <p className="font-mono">{formatPercent(linkedBacktestResult.max_drawdown)}</p>
+                          </div>
+                          <div className="rounded bg-muted/50 p-2">
+                            <p className="text-xs text-muted-foreground">夏普比率</p>
+                            <p className="font-mono">{formatMetric(linkedBacktestResult.sharpe_ratio)}</p>
+                          </div>
+                          <div className="rounded bg-muted/50 p-2">
+                            <p className="text-xs text-muted-foreground">胜率</p>
+                            <p className="font-mono">{formatPercent(linkedBacktestResult.win_rate)}</p>
+                          </div>
+                        </div>
+                      ) : linkedBacktestResult?.status === "failed" ? (
+                        <p className="text-red-600">{linkedBacktestResult.error || "回测失败，请回到模型回测页查看详情。"}</p>
+                      ) : (
+                        <p className="text-muted-foreground">策略参数已带入模型回测页，运行完成后可回到这里查看验证摘要。</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -359,7 +458,74 @@ export function AiStrategyPage() {
           </Card>
         </TabsContent>
 
-        {/* Tab 4: 策略模板 */}
+        {/* Tab 4: 选股联动 */}
+        <TabsContent value="screening" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">AI 策略 × 盘后选股</CardTitle>
+              <CardDescription>读取一站式盘后选股候选池，基于均值回归、因子分和短线热度生成 AI 策略评分</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <Button onClick={handleScreeningSignals} disabled={screeningRunning}>
+                {screeningRunning ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                ) : (
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                )}
+                运行选股联动评分
+              </Button>
+
+              {screeningResult?.summary?.status === "available" && (
+                <div className="grid gap-3 md:grid-cols-4">
+                  <div className="p-3 bg-muted/30 rounded-lg">
+                    <p className="text-xs text-muted-foreground">平均分</p>
+                    <p className="text-2xl font-bold">{screeningResult.summary.average_score}</p>
+                  </div>
+                  {Object.entries(screeningResult.summary.buckets || {}).map(([key, value]) => (
+                    <div key={key} className="p-3 bg-muted/30 rounded-lg">
+                      <p className="text-xs text-muted-foreground">{key}</p>
+                      <p className="text-2xl font-bold">{String(value)}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {screeningResult?.candidates?.length > 0 && (
+                <div className="space-y-2">
+                  {screeningResult.candidates.map((c: any) => (
+                    <div key={c.code} className="flex items-center gap-3 rounded-lg bg-muted/30 p-3">
+                      <div className="min-w-[120px]">
+                        <p className="text-sm font-medium">{c.name || c.code}</p>
+                        <p className="text-xs text-muted-foreground">{c.code}</p>
+                      </div>
+                      <Badge variant={(c.ai_strategy?.score || 0) >= 65 ? "default" : "secondary"}>
+                        {c.ai_strategy?.score ?? "--"} 分
+                      </Badge>
+                      <span className="text-sm text-muted-foreground">
+                        {c.ai_strategy?.action || "--"} · {c.ai_strategy?.recommendation || "--"}
+                      </span>
+                      <span className="flex-1 text-right text-sm text-muted-foreground">
+                        {c.ai_strategy?.reason || "暂无说明"}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {screeningResult?.warnings?.length > 0 && (
+                <div className="rounded-md bg-amber-50 p-3 text-sm text-amber-800">
+                  {screeningResult.warnings.map((w: string) => <p key={w}>{w}</p>)}
+                </div>
+              )}
+
+              {screeningResult?.error && (
+                <div className="p-3 bg-red-50 rounded text-sm text-red-700">{screeningResult.error}</div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Tab 5: 策略模板 */}
         <TabsContent value="templates" className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
             {(templates?.templates || []).map((t: any) => (

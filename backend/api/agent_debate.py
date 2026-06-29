@@ -12,12 +12,22 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from loguru import logger
+from pydantic import BaseModel
 from utils.code_normalization import normalize_stock_code
 
 router = APIRouter()
 
 # 内存缓存（加速查询），持久化在 SQLite
 _report_cache: dict = {}
+
+
+class AgentAnalyzeRequest(BaseModel):
+    code: Optional[str] = None
+    async_mode: Optional[bool] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    quick_model: Optional[str] = None
+    deep_model: Optional[str] = None
 
 
 def _check_llm(api_key: Optional[str] = None):
@@ -72,13 +82,14 @@ def _run_analysis_task(
 
 @router.post("/analyze")
 async def analyze_stock(
-    code: str,
     background_tasks: BackgroundTasks,
+    code: Optional[str] = None,
     async_mode: bool = True,
     api_key: Optional[str] = None,
     base_url: Optional[str] = None,
     quick_model: Optional[str] = None,
     deep_model: Optional[str] = None,
+    request: Optional[AgentAnalyzeRequest] = None,
 ):
     """单股多智能体分析
 
@@ -93,7 +104,15 @@ async def analyze_stock(
     Returns:
         task_id 用于后续查询报告
     """
-    raw_code = code
+    if request:
+        code = request.code or code
+        async_mode = request.async_mode if request.async_mode is not None else async_mode
+        api_key = request.api_key or api_key
+        base_url = request.base_url or base_url
+        quick_model = request.quick_model or quick_model
+        deep_model = request.deep_model or deep_model
+
+    raw_code = code or ""
     try:
         code = normalize_stock_code(raw_code, target="yf")
     except ValueError as exc:

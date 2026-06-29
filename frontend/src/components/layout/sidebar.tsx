@@ -19,6 +19,7 @@ import {
   MessageSquare,
   Brain,
   Layers,
+  ListChecks,
   Settings,
   ChevronLeft,
   ChevronRight,
@@ -46,6 +47,7 @@ const NAVIGATION_ITEMS = [
   { icon: MessageSquare, label: "智能体辩论", path: "/agent-debate" },
   { icon: Brain, label: "深度学习", path: "/dl-models" },
   { icon: Layers, label: "智能股票池", path: "/stock-pool" },
+  { icon: ListChecks, label: "盘后选股", path: "/screening-workflow" },
   { icon: Settings, label: "LLM 设置", path: "/settings" },
 ]
 

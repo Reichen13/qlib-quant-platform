@@ -239,6 +239,7 @@ class BacktestResponse(BaseModel):
     attribution_interpretation: Optional[str] = None
     # 交易成本估计
     cost_impact_estimate: Optional[str] = None
+    warnings: Optional[List[str]] = None
     # 错误信息
     error: Optional[str] = None
 
@@ -414,6 +415,7 @@ class MacroRegimeResponse(BaseModel):
     regime_label: str = Field(..., description="状态中文标签")
     confidence: float = Field(default=0.5, description="置信度")
     quadrant: str = Field(default="Q1", description="象限")
+    warnings: Optional[List[str]] = Field(default=None, description="数据质量提示")
 
 
 class AllocationAsset(BaseModel):
@@ -430,3 +432,4 @@ class AllocationResponse(BaseModel):
     allocation: List[AllocationAsset] = Field(..., description="资产配置方案")
     risk_level: str = Field(default="中性", description="风险等级")
     summary: str = Field(default="", description="配置总结")
+    warnings: Optional[List[str]] = Field(default=None, description="数据质量提示")

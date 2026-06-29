@@ -3,7 +3,7 @@ import { useMemo } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { useQuery } from "@tanstack/react-query"
-import { Globe, Activity, Loader2 } from "lucide-react"
+import { Globe, Activity, Loader2, AlertTriangle } from "lucide-react"
 import { api } from "@/lib/api"
 import { LineChartComponent } from "@/components/charts/line-chart"
 import { InstructionsPanel } from "@/components/features/instructions-panel"
@@ -141,6 +141,7 @@ export function MacroDashboardPage() {
   const usIndicators = indicatorsData?.us_indicators || (hasNewFormat ? [] : (indicatorsData?.indicators || []))
   const cnDerived = indicatorsData?.china_derived || {}
   const usDerived = indicatorsData?.us_derived || (hasNewFormat ? {} : (indicatorsData?.derived || {}))
+  const dataStatus = indicatorsData?.data_status || {}
   const regime = regimeData
   const allocation = allocationData?.allocation || []
 
@@ -164,6 +165,18 @@ export function MacroDashboardPage() {
         </h1>
         <p className="text-muted-foreground">Bridgewater 风格宏观仪表板 - 市场状态分类与全天候配置</p>
       </div>
+
+      {dataStatus?.china?.status && dataStatus.china.status !== "ok" && (
+        <Card className="border-amber-200 bg-amber-50">
+          <CardContent className="pt-4 text-sm text-amber-800 flex gap-2">
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+            <span>
+              中国宏观数据源当前为部分可用，已获取 {dataStatus.china.available || 0} 项。
+              {dataStatus.china.missing?.length > 0 && ` 暂缺：${dataStatus.china.missing.join("、")}`}
+            </span>
+          </CardContent>
+        </Card>
+      )}
 
       {/* 中国宏观指标 */}
       {cnIndicators.length > 0 && (
@@ -358,7 +371,9 @@ export function MacroDashboardPage() {
                 </div>
               </div>
             ) : (
-              <div className="text-center py-8 text-muted-foreground">暂无配置数据</div>
+              <div className="text-center py-8 text-muted-foreground">
+                {allocationData?.summary || "暂无配置数据"}
+              </div>
             )}
           </CardContent>
         </Card>

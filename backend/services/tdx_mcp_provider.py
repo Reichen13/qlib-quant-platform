@@ -18,6 +18,7 @@ from loguru import logger
 
 
 DEFAULT_TDX_MCP_URL = "https://mcp.tdx.com.cn:3001/mcp"
+DEFAULT_TDX_WENDA_TOOL = "tdx_wenda_quotes"
 
 
 class TdxMcpProvider:
@@ -26,11 +27,13 @@ class TdxMcpProvider:
         url: str = DEFAULT_TDX_MCP_URL,
         api_key: str | None = None,
         stock_list_tool: str | None = None,
+        wenda_tool: str | None = None,
         timeout: float = 15.0,
     ):
         self.url = url.rstrip("/")
         self.api_key = api_key or ""
         self.stock_list_tool = stock_list_tool or ""
+        self.wenda_tool = wenda_tool or DEFAULT_TDX_WENDA_TOOL
         self.timeout = timeout
 
     @classmethod
@@ -39,6 +42,7 @@ class TdxMcpProvider:
             url=os.getenv("TDX_MCP_URL", DEFAULT_TDX_MCP_URL),
             api_key=os.getenv("TDX_API_KEY"),
             stock_list_tool=os.getenv("TDX_MCP_STOCK_LIST_TOOL"),
+            wenda_tool=os.getenv("TDX_MCP_WENDA_TOOL", DEFAULT_TDX_WENDA_TOOL),
             timeout=float(os.getenv("TDX_MCP_TIMEOUT", "15")),
         )
 
@@ -56,12 +60,14 @@ class TdxMcpProvider:
             "url": self.url,
             "stock_list_tool": self.stock_list_tool or None,
             "stock_list_enabled": self.can_fetch_stock_list,
+            "wenda_tool": self.wenda_tool,
         }
 
     def call_tool(self, tool_name: str, arguments: dict[str, Any] | None = None) -> Any:
         if not self.is_configured:
             raise RuntimeError("TDX MCP is not configured")
 
+        session_id = self._initialize_session()
         payload = {
             "jsonrpc": "2.0",
             "id": str(uuid.uuid4()),
@@ -71,21 +77,104 @@ class TdxMcpProvider:
                 "arguments": arguments or {},
             },
         }
-        request = urllib.request.Request(
-            self.url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "content-type": "application/json",
-                "tdx-api-key": self.api_key,
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            body = json.loads(response.read().decode("utf-8"))
-
+        body, _ = self._post_json(payload, session_id=session_id)
         if body.get("error"):
             raise RuntimeError(str(body["error"]))
         return self._extract_result(body.get("result"))
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        if not self.is_configured:
+            return []
+
+        try:
+            session_id = self._initialize_session()
+            body, _ = self._post_json({
+                "jsonrpc": "2.0",
+                "id": str(uuid.uuid4()),
+                "method": "tools/list",
+                "params": {},
+            }, session_id=session_id)
+            tools = body.get("result", {}).get("tools", [])
+            return tools if isinstance(tools, list) else []
+        except Exception as exc:
+            logger.warning(f"TDX MCP tools/list unavailable: {exc}")
+            return []
+
+    def query(
+        self,
+        question: str,
+        market_range: str = "AG",
+        page: int | str = 1,
+        size: int | str = 10,
+        tool_name: str | None = None,
+    ) -> Any:
+        return self.call_tool(tool_name or self.wenda_tool, {
+            "question": question,
+            "range": market_range,
+            "page": str(page),
+            "size": str(size),
+        })
+
+    def _initialize_session(self) -> str | None:
+        body, session_id = self._post_json({
+            "jsonrpc": "2.0",
+            "id": str(uuid.uuid4()),
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "qlib-quant-platform",
+                    "version": "1.0",
+                },
+            },
+        })
+        if body.get("error"):
+            raise RuntimeError(str(body["error"]))
+        return session_id
+
+    def _post_json(self, payload: dict[str, Any], session_id: str | None = None) -> tuple[dict[str, Any], str | None]:
+        headers = {
+            "accept": "application/json, text/event-stream",
+            "content-type": "application/json",
+            "tdx-api-key": self.api_key,
+        }
+        if session_id:
+            headers["mcp-session-id"] = session_id
+
+        request = urllib.request.Request(
+            self.url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            raw_body = response.read().decode("utf-8")
+            response_session_id = response.headers.get("mcp-session-id")
+
+        return self._decode_response(raw_body), response_session_id
+
+    @staticmethod
+    def _decode_response(raw_body: str) -> dict[str, Any]:
+        try:
+            parsed = json.loads(raw_body)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            pass
+
+        for line in raw_body.splitlines():
+            if not line.startswith("data:"):
+                continue
+            data = line.split(":", 1)[1].strip()
+            if not data:
+                continue
+            try:
+                parsed = json.loads(data)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return {}
 
     def get_all_stocks(self) -> list[dict[str, Any]]:
         if not self.can_fetch_stock_list:

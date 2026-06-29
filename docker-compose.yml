@@ -12,6 +12,8 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - API_KEY=${API_KEY:-}
+      - TDX_API_KEY=${TDX_API_KEY:-}
+      - TDX_MCP_URL=${TDX_MCP_URL:-https://mcp.tdx.com.cn:3001/mcp}
     mem_limit: 1200m
     cpus: 1.5
     healthcheck:

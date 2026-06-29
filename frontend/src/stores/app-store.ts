@@ -114,10 +114,14 @@ export interface AgentDebateParams {
 }
 
 export interface AiStrategyParams {
-  activeTab: "generate" | "analyze" | "optimize" | "templates"
+  activeTab: "generate" | "analyze" | "optimize" | "screening" | "templates"
   nlInput: string
   useDeep: boolean
   generated: unknown | null
+  backtestDraft: {
+    params: Record<string, unknown>
+    appliedAt: string
+  } | null
   holdingsInput: string
   analysis: unknown | null
   optimizeStrategy: string
@@ -346,6 +350,7 @@ function createDefaultAiStrategyParams(): AiStrategyParams {
     nlInput: "",
     useDeep: false,
     generated: null,
+    backtestDraft: null,
     holdingsInput: "",
     analysis: null,
     optimizeStrategy: "",

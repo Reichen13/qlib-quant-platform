@@ -164,6 +164,8 @@ def _run_factor_analysis(params: FactorAnalysisRequest):
 
         fr_series = pd.Series(future_returns, name="future_return")
         fr_series.index = pd.MultiIndex.from_tuples(fr_series.index, names=["instrument", "datetime"])
+        label_dates = sorted(fr_series.index.get_level_values("datetime").unique()) if not fr_series.empty else []
+        label_available_until = str(label_dates[-1])[:10] if label_dates else None
 
         # ── 5. 加载行业映射（始终加载，用于行业加权 IC 分解）──
         all_codes = df_features.index.get_level_values("instrument").unique().tolist()
@@ -279,6 +281,11 @@ def _run_factor_analysis(params: FactorAnalysisRequest):
                 "effective_factors": cluster_result["n_effective"],
                 "factor_reduction_pct": cluster_result["reduction_pct"],
                 "clusters": cluster_result["clusters"],
+                "label_available_until": label_available_until,
+                "factor_window_start": start_str,
+                "factor_window_end": end_str,
+                "signal_as_of": end_str,
+                "leakage_guard": "factor IC uses realized forward returns; screening may use it only with label_available_until metadata",
             }
         )
 
