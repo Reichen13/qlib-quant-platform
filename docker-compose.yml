@@ -14,6 +14,10 @@ services:
       - API_KEY=${API_KEY:-}
       - TDX_API_KEY=${TDX_API_KEY:-}
       - TDX_MCP_URL=${TDX_MCP_URL:-https://mcp.tdx.com.cn:3001/mcp}
+      - LLM_BASE_URL=${LLM_BASE_URL:-}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_QUICK_MODEL=${LLM_QUICK_MODEL:-glm-5.1}
+      - LLM_DEEP_MODEL=${LLM_DEEP_MODEL:-glm-5.2}
     mem_limit: 1200m
     cpus: 1.5
     healthcheck:

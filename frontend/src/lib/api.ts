@@ -91,25 +91,44 @@ async function handleResponse<T>(response: Response): Promise<T> {
   return response.json()
 }
 
-function getLlmRequestConfig() {
-  const storedConfig = (() => {
-    try {
-      const raw = localStorage.getItem("qlib-app-store")
-      if (!raw) return {}
-      const parsed = JSON.parse(raw)
-      return parsed?.state || {}
-    } catch {
-      return {}
-    }
-  })()
-
-  return {
-    apiKey: localStorage.getItem("qlib-api-key") || storedConfig.llmApiKey || "",
-    baseUrl: localStorage.getItem("qlib-llm-base-url") || storedConfig.llmBaseUrl || "",
-    quickModel: localStorage.getItem("qlib-llm-quick-model") || storedConfig.llmQuickModel || "",
-    deepModel: localStorage.getItem("qlib-llm-deep-model") || storedConfig.llmDeepModel || "",
-  }
-}
+ // 缓存服务器 LLM 配置状态，避免每次请求都查询
+ let _serverLlmConfigured: boolean | null = null
+ 
+ async function checkServerLlmConfigured(): Promise<boolean> {
+   if (_serverLlmConfigured !== null) return _serverLlmConfigured
+   try {
+     const resp = await globalThis.fetch(`${API_BASE}/api/llm/status`)
+     const data = await resp.json()
+     _serverLlmConfigured = !!data?.server_configured
+   } catch {
+     _serverLlmConfigured = false
+   }
+   return _serverLlmConfigured
+ }
+ 
+ async function getLlmRequestConfig() {
+   // 如果服务器已配置 LLM，不传本地 key，让后端使用服务器配置
+   const serverReady = await checkServerLlmConfigured()
+   if (serverReady) return { apiKey: "", baseUrl: "", quickModel: "", deepModel: "" }
+ 
+   const storedConfig = (() => {
+     try {
+       const raw = localStorage.getItem("qlib-app-store")
+       if (!raw) return {}
+       const parsed = JSON.parse(raw)
+       return parsed?.state || {}
+     } catch {
+       return {}
+     }
+   })()
+ 
+   return {
+     apiKey: localStorage.getItem("qlib-api-key") || storedConfig.llmApiKey || "",
+     baseUrl: localStorage.getItem("qlib-llm-base-url") || storedConfig.llmBaseUrl || "",
+     quickModel: localStorage.getItem("qlib-llm-quick-model") || storedConfig.llmQuickModel || "",
+     deepModel: localStorage.getItem("qlib-llm-deep-model") || storedConfig.llmDeepModel || "",
+   }
+ }
 
 // 股票信息类型
 export interface Stock {
@@ -845,8 +864,8 @@ export const api = {
   news: {
     sentiment: (code: string, days: number = 7) =>
       fetch(`${API_BASE}/api/news/sentiment/${encodeURIComponent(code)}?days=${days}`).then(r => handleResponse<any>(r)),
-    dailyBrief: () => {
-      const { apiKey, baseUrl, quickModel, deepModel } = getLlmRequestConfig()
+     dailyBrief: async () => {
+     const { apiKey, baseUrl, quickModel, deepModel } = await getLlmRequestConfig()
       const params = new URLSearchParams()
       if (apiKey) params.append("api_key", apiKey)
       if (baseUrl) params.append("base_url", baseUrl)
@@ -865,8 +884,8 @@ export const api = {
   aiStrategy: {
     templates: () =>
       fetch(`${API_BASE}/api/ai-strategy/templates`).then(r => handleResponse<any>(r)),
-    generate: (description: string, useDeep: boolean = false) => {
-      const { apiKey, baseUrl, quickModel, deepModel } = getLlmRequestConfig()
+     generate: async (description: string, useDeep: boolean = false) => {
+      const { apiKey, baseUrl, quickModel, deepModel } = await getLlmRequestConfig()
       return fetch(`${API_BASE}/api/ai-strategy/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -881,8 +900,8 @@ export const api = {
         timeoutMs: 120_000,
       }).then(r => handleResponse<any>(r))
     },
-    analyze: (holdings: { code: string; name: string; weight: number; cost?: number }[], totalCapital?: number, riskTolerance?: string) => {
-      const { apiKey, baseUrl, quickModel, deepModel } = getLlmRequestConfig()
+     analyze: async (holdings: { code: string; name: string; weight: number; cost?: number }[], totalCapital?: number, riskTolerance?: string) => {
+      const { apiKey, baseUrl, quickModel, deepModel } = await getLlmRequestConfig()
       return fetch(`${API_BASE}/api/ai-strategy/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -898,8 +917,8 @@ export const api = {
         timeoutMs: 120_000,
       }).then(r => handleResponse<any>(r))
     },
-    optimize: (strategyType: string, paramRanges?: Record<string, any>) => {
-      const { apiKey, baseUrl, quickModel, deepModel } = getLlmRequestConfig()
+     optimize: async (strategyType: string, paramRanges?: Record<string, any>) => {
+      const { apiKey, baseUrl, quickModel, deepModel } = await getLlmRequestConfig()
       return fetch(`${API_BASE}/api/ai-strategy/optimize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -925,8 +944,8 @@ export const api = {
 
   // 多智能体辩论
   agent: {
-    analyze: (code: string, asyncMode: boolean = true) => {
-      const { apiKey, baseUrl, quickModel, deepModel } = getLlmRequestConfig()
+     analyze: async (code: string, asyncMode: boolean = true) => {
+      const { apiKey, baseUrl, quickModel, deepModel } = await getLlmRequestConfig()
       return fetch(`${API_BASE}/api/agent/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
