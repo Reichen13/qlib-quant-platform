@@ -151,7 +151,13 @@ def get_stock_name(code: str) -> str:
             _NAME_CACHE[code_upper] = name
             return name
 
-    # 4. 根据代码前缀推断市场。不要在热路径调用 yfinance，避免接口被外部网络拖慢。
+    # 4. akshare 全市场中文名兜底（首次 miss 时懒加载一次，之后纯内存查）
+    auto_name = _lookup_auto_name(code_upper)
+    if auto_name:
+        _NAME_CACHE[code_upper] = auto_name
+        return auto_name
+
+    # 5. 根据代码前缀推断市场。不要在热路径调用 yfinance，避免接口被外部网络拖慢。
     if pure_code.startswith(("6", "51", "50")):
         market = "沪市"
     elif pure_code.startswith(("0", "3", "15", "16")):
@@ -217,3 +223,47 @@ def add_transparency_to_df(df: pd.DataFrame, code_col: str = "代码") -> pd.Dat
         df["透明度"] = df[code_col].apply(lambda x: get_transparency_name(get_transparency_level(x)))
         df["透明度级别"] = df[code_col].apply(get_transparency_level)
     return df
+
+
+# ── akshare 全市场股票中文名懒加载（首次 miss 时触发一次）──
+_AUTO_NAMES = None
+_AUTO_LOADED = False
+
+
+def _load_auto_names() -> dict:
+    """从 akshare 加载全市场 A 股中文名映射。失败返回空 dict。"""
+    global _AUTO_NAMES
+    try:
+        import akshare as ak
+        # stock_info_a_code_name 返回 code/name 两列，覆盖全市场 A 股
+        df = ak.stock_info_a_code_name()
+        mapping = {}
+        for _, row in df.iterrows():
+            code = str(row["code"]).strip()
+            name = str(row["name"]).strip()
+            if not code or not name:
+                continue
+            # 还原成 Qlib 格式前缀
+            if code.startswith(("60", "68", "51", "50", "56", "58")):
+                qlib_code = "SH" + code
+            elif code.startswith(("00", "30", "15", "16")):
+                qlib_code = "SZ" + code
+            elif code.startswith(("43", "83", "87", "92", "88")):
+                qlib_code = "BJ" + code
+            else:
+                qlib_code = code
+            mapping[qlib_code] = name
+        return mapping
+    except Exception:
+        return {}
+
+
+def _lookup_auto_name(code_upper: str) -> str:
+    """懒加载全市场名表后查名字，找不到返回空串。"""
+    global _AUTO_NAMES, _AUTO_LOADED
+    if not _AUTO_LOADED:
+        _AUTO_NAMES = _load_auto_names()
+        _AUTO_LOADED = True
+    if _AUTO_NAMES:
+        return _AUTO_NAMES.get(code_upper, "")
+    return ""

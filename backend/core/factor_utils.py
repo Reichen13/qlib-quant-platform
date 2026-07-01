@@ -16,65 +16,94 @@ _industry_cache: dict = {}
 
 def load_industry_mapping(instruments: list[str]) -> dict[str, str]:
     """
-    用 Baostock 获取 Qlib 格式股票的行业分类。
+    ? akshare ?????????? Qlib ????????? Baostock ???????
 
-    Qlib 格式 SH600000 -> Baostock 格式 sh.600000
-    返回 {qlib_code: industry_name}，未找到的返回 "未知"
+    ??????????????? {qlib_code: industry} ?????????
+    ???????????? {qlib_code: industry_name}??????? "??"?
     """
     global _industry_cache
 
-    # 生成缓存键（排序后拼接，确保相同列表命中缓存）
     cache_key = ",".join(sorted(instruments))
     if cache_key in _industry_cache:
-        logger.info(f"行业映射缓存命中: {len(_industry_cache[cache_key])} 条")
         return _industry_cache[cache_key]
 
-    logger.info(f"加载行业映射: {len(instruments)} 只股票")
-    result = {}
+    logger.info(f"??????(akshare): {len(instruments)} ???")
+    result = {inst: "??" for inst in instruments}
+    wanted = set(instruments)
+    found = {}
 
-    try:
-        import baostock as bs
+    # 1. ??????
+    from pathlib import Path as _P
+    import json as _json
+    cache_file = _P.home() / ".qlib" / "industry_mapping_cache.json"
+    if cache_file.exists():
+        try:
+            cached = _json.loads(cache_file.read_text(encoding="utf-8"))
+            for code in wanted:
+                if code in cached:
+                    found[code] = cached[code]
+            logger.info(f"??????????: {len(found)}/{len(wanted)}")
+        except Exception:
+            pass
 
-        lg = bs.login()
-        if lg.error_code != "0":
-            logger.warning(f"Baostock 登录失败: {lg.error_msg}，行业中性化不可用")
-            for inst in instruments:
-                result[inst] = "未知"
-            return result
+    # 2. ?????? akshare ????????
+    if len(found) < len(wanted):
+        try:
+            import akshare as ak
+            import time as _time
 
-        for qlib_code in instruments:
+            def _ak_retry(fn, *args, retries=3, **kw):
+                last = None
+                for _ in range(retries):
+                    try:
+                        return fn(*args, **kw)
+                    except Exception as e:
+                        last = e
+                        _time.sleep(1.5)
+                raise last
+
+            boards = _ak_retry(ak.stock_board_industry_name_em)
+
+            for _, row in boards.iterrows():
+                industry = str(row.get("????") or "").strip()
+                if not industry:
+                    continue
+                try:
+                    cons = _ak_retry(ak.stock_board_industry_cons_em, symbol=industry)
+                    for _, crow in cons.iterrows():
+                        raw_code = str(crow.get("??") or "").strip()
+                        if not raw_code:
+                            continue
+                        if raw_code.startswith(("60", "68", "51", "50", "56", "58")):
+                            qlib_code = "SH" + raw_code
+                        elif raw_code.startswith(("00", "30", "15", "16")):
+                            qlib_code = "SZ" + raw_code
+                        elif raw_code.startswith(("43", "83", "87", "92", "88")):
+                            qlib_code = "BJ" + raw_code
+                        else:
+                            qlib_code = raw_code
+                        if qlib_code in wanted:
+                            found[qlib_code] = industry
+                except Exception:
+                    continue
+                if len(found) >= len(wanted):
+                    break
+
+            # ?????
             try:
-                # SH600000 -> sh.600000
-                market = qlib_code[:2].lower()
-                code_num = qlib_code[2:]
-                bs_code = f"{market}.{code_num}"
-
-                rs = bs.query_stock_industry(bs_code)
-                if rs.error_code == "0" and rs.next():
-                    row = rs.get_row_data()
-                    # row[3] 是申万行业分类，row[2] 是证监会行业分类
-                    industry = row[3] if row[3] else row[2]
-                    result[qlib_code] = industry if industry else "未知"
-                else:
-                    result[qlib_code] = "未知"
+                cache_file.parent.mkdir(parents=True, exist_ok=True)
+                cache_file.write_text(_json.dumps(found, ensure_ascii=False), encoding="utf-8")
             except Exception:
-                result[qlib_code] = "未知"
+                pass
+        except Exception as e:
+            logger.warning(f"????????(akshare): {e}")
 
-        bs.logout()
-        logger.info(f"行业映射完成: {sum(1 for v in result.values() if v != '未知')}/{len(instruments)} 只有效行业")
-
-    except ImportError:
-        logger.warning("baostock 未安装，行业中性化不可用")
-        for inst in instruments:
-            result[inst] = "未知"
-    except Exception as e:
-        logger.warning(f"行业映射加载失败: {e}")
-        for inst in instruments:
-            result[inst] = "未知"
+    result.update(found)
+    valid = sum(1 for v in result.values() if v != "??")
+    logger.info(f"??????(akshare): {valid}/{len(instruments)} ?????")
 
     _industry_cache[cache_key] = result
     return result
-
 
 def _load_market_cap(
     instruments: list[str],
