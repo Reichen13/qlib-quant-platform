@@ -88,15 +88,20 @@ python update_cn_data.py --max 10
 python update_cn_data.py --start 2026-06-01
 python update_cn_data.py --code sh600519
 python update_cn_data.py --rebuild-stale
+python update_cn_data.py --code sh600519 --rebuild-stale --overwrite-existing --start 2024-01-01
 
 # 受保护的数据更新接口示例
 curl -X POST http://127.0.0.1:8001/api/data/update \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $API_KEY" \
-  -d '{"type":"stocks","codes":["600036"]}'
+  -d '{"type":"stocks","codes":["600036"],"rebuild_stale":true,"overwrite_existing":true,"start_date":"2024-01-01"}'
 ```
 
 ## 部署与线上验证要点
+
+- 健康检查与更新起始日要看特征文件（`close.day.bin`）的真实最新日期，不是 Qlib 日历尾部；日历可能已扩展但个股数据没跟上，会误判为"新鲜"。
+- 更新 completed 后后端会自动清模块缓存并重载 Qlib 运行态；若任务详情里 `runtime_refresh.qlib_reloaded=false`，新写的 bin 不会被当次进程看到，需查 `qlib_reload_error`。
+
 
 - 常规容器模式：backend 监听宿主 `127.0.0.1:8001`，frontend 可监听 `127.0.0.1:9090`。
 - 当前线上可能使用宿主 Nginx 直接服务 `/var/www/quant`，API 反代到 `127.0.0.1:8001`；替换前端时先备份静态目录。
