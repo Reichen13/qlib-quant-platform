@@ -529,21 +529,28 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         try:
             avg_daily_turnover = report["turnover"].mean() if "turnover" in report.columns else 0
             daily_vol = r.std()
-            # 平方根冲击模型: impact ≈ σ * sqrt(turnover / ADV)
-            # 假设平均持仓股每笔交易占日成交量 5%
-            estimated_impact_per_trade = daily_vol * np.sqrt(max(avg_daily_turnover, 0.001) / 0.05)
-            annual_impact = estimated_impact_per_trade * 252 * 0.5  # 每次调仓半次换手（买卖各半）
-            fixed_cost_annual = (params.buy_cost + params.sell_cost) * 252 / max(int(params.turnover), 1)
+            # 平方根冲击模型（修正版）: 单次冲击 ≈ σ * sqrt(participation_rate)
+            # participation_rate 取持仓占日成交的比例，保守估计 2%（不再用 Qlib turnover 直接除）
+            participation_rate = 0.02
+            estimated_impact_per_trade = daily_vol * np.sqrt(participation_rate)
+            # 年化：按实际调仓频率，不是每天。调仓周期 params.turnover 天一次。
+            rebalance_days = max(int(params.turnover), 1)
+            trades_per_year = 252 / rebalance_days
+            annual_impact = estimated_impact_per_trade * trades_per_year * 0.5  # 每次调仓半次换手
+            # 钳制到合理区间：单次冲击不超 1%，年化不超 50%（避免短窗口高换手放大成荒诞值）
+            estimated_impact_per_trade = min(float(estimated_impact_per_trade), 0.01)
+            annual_impact = min(float(annual_impact), 0.5)
+            fixed_cost_annual = (params.buy_cost + params.sell_cost) * trades_per_year
             if annual_impact > fixed_cost_annual * 1.5:
                 cost_impact_estimate = (
-                    f"市场冲击成本估计约 {annual_impact:.2%}/年，显著高于固定佣金模型 "
-                    f"({fixed_cost_annual:.2%}/年)。实际交易中小盘股冲击成本可达 0.5-1.0%，"
-                    f"建议将回测收益下调 {annual_impact - fixed_cost_annual:.1%} 作为保守估计。"
+                    f"市场冲击成本估计约 {annual_impact:.2%}/年（单次约 {estimated_impact_per_trade:.2%}，"
+                    f"每 {rebalance_days} 天调仓），高于固定佣金 ({fixed_cost_annual:.2%}/年)。"
+                    f"小盘股实际冲击可达 0.5-1.0%/次，建议据此下调回测收益。"
                 )
             else:
                 cost_impact_estimate = (
-                    f"市场冲击成本估计约 {annual_impact:.2%}/年，与固定佣金模型 "
-                    f"({fixed_cost_annual:.2%}/年)接近。CSI300成分股流动性较好，冲击成本可控。"
+                    f"市场冲击成本估计约 {annual_impact:.2%}/年，与固定佣金 ({fixed_cost_annual:.2%}/年)接近，"
+                    f"流动性可控。"
                 )
         except Exception:
             cost_impact_estimate = None
