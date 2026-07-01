@@ -192,15 +192,13 @@ def _check_a_share_constraints(codes: list, start_date: str, end_date: str) -> d
     try:
         from qlib.data import D
 
-        # ── 1. 排除科创板(688xxx)和创业板(300xxx) ──
-        valid_codes = [
-            c for c in codes
-            if not c.startswith(("SH688", "SZ300", "SZ301"))
-        ]
-        excluded_codes = [
+        # ── 1. 按板块分类（不再硬排除科创/创业，回测已用动态阈值兼容 ±20%）──
+        chi_next_codes = [
             c for c in codes
             if c.startswith(("SH688", "SZ300", "SZ301"))
         ]
+        valid_codes = list(codes)  # 全部保留，涨跌停按板块阈值分别统计
+        excluded_codes = []
 
         # ── 2. 停牌检测 ──
         try:
@@ -242,10 +240,12 @@ def _check_a_share_constraints(codes: list, start_date: str, end_date: str) -> d
                 for code in valid_codes[:50]:  # 抽样检测
                     try:
                         code_data = high_df.xs(code, level="instrument")
+                        # 按板块动态阈值：科创/创业 ±20%，主板 ±10%
+                        thr = 0.195 if code.startswith(("SH688", "SZ300", "SZ301")) else 0.095
                         returns = code_data["$high"].pct_change()
-                        limit_up_hits += int((returns > 0.095).sum())
+                        limit_up_hits += int((returns > thr).sum())
                         returns_low = code_data["$low"].pct_change()
-                        limit_down_hits += int((returns_low < -0.095).sum())
+                        limit_down_hits += int((returns_low < -thr).sum())
                     except Exception:
                         continue
             else:
@@ -255,21 +255,24 @@ def _check_a_share_constraints(codes: list, start_date: str, end_date: str) -> d
             limit_up_hits = 0
             limit_down_hits = 0
 
+        has_chi_next = bool(chi_next_codes)
+        limit_label = "±20%(科创创业兼容)" if has_chi_next else "±10%(主板)"
         return {
             "original_universe": len(codes),
             "valid_universe": len(valid_codes),
-            "excluded_chi_next_star": len(excluded_codes),
-            "excluded_codes_sample": excluded_codes[:10],
+            "excluded_chi_next_star": 0,  # 不再排除，已用动态阈值兼容
+            "chi_next_star_count": len(chi_next_codes),
+            "limit_threshold_used": 0.195 if has_chi_next else 0.095,
             "limit_up_hits_estimated": limit_up_hits,
             "limit_down_hits_estimated": limit_down_hits,
             "suspension_days_estimated": suspension_days,
             "suspended_stocks_estimated": n_suspended_stocks,
             "constraints_active": [
-                "涨跌停板 (limit_threshold=0.095, 主板±10%)",
+                f"涨跌停板 (limit_threshold={0.195 if has_chi_next else 0.095}, {limit_label})",
                 "T+1 制度 (日频回测自动满足)",
                 "停牌排除 (NaN 数据自动跳过)",
                 "只做多不融券 (TopkDropoutStrategy)",
-                f"已排除科创板/创业板 {len(excluded_codes)} 只 (±20%涨跌幅不兼容)",
+                f"已兼容科创板/创业板 {len(chi_next_codes)} 只 (动态阈值±20%)" if has_chi_next else "无科创板/创业板",
             ],
         }
     except Exception as e:
@@ -424,10 +427,20 @@ def run_backtest_task(task_id: str, params: BacktestParams):
 
         task_store.update_progress(task_id, 65)
 
+        # 涨跌停阈值：全市场/含科创板创业板时用 0.195(±20%)，
+        # 纯沪深300等主板为主时用 0.095(±10%)。Qlib exchange 只支持单一阈值，
+        # 这里按 universe 取较宽松的值，避免把 ±20% 板的股票误判为涨跌停而排除。
+        has_chi_next = any(
+            c.startswith(("SH688", "SZ300", "SZ301"))
+            for c in all_csi300
+        )
+        limit_threshold = 0.195 if (params.universe == "all" or has_chi_next) else 0.095
+        logger.info(f"涨跌停阈值: {limit_threshold} (universe={params.universe}, 含科创创业={has_chi_next})")
+
         exchange_kwargs = {
             "codes": params.universe,
             "freq": "day",
-            "limit_threshold": 0.095,
+            "limit_threshold": limit_threshold,
             "deal_price": "close",
             "open_cost": params.buy_cost,
             "close_cost": params.sell_cost,
