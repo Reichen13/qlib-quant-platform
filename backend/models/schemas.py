@@ -1,4 +1,4 @@
-"""
+﻿"""
 Pydantic 数据模型
 定义 API 请求和响应的数据结构
 """
@@ -140,6 +140,9 @@ class BacktestParams(BaseModel):
     """回测参数"""
     # 模型设置
     model: str = Field(default="lightgbm", description="模型类型: lightgbm, xgboost")
+
+    # 股票池（universe）
+    universe: str = Field(default="csi300", description="回测股票池: csi300(默认,约650只,快)、all(全市场约4484只,慢)、csi500")
 
     # 数据设置
     train_start: date

@@ -353,7 +353,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                         "end_time": safe_backtest_end,
                         "fit_start_time": safe_train_start,
                         "fit_end_time": safe_train_end,
-                        "instruments": "csi300",
+                        "instruments": params.universe,
                         "infer_processors": [
                             {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature", "clip_outlier": True}},
                             {"class": "Fillna", "kwargs": {"fields_group": "feature"}},
@@ -417,14 +417,15 @@ def run_backtest_task(task_id: str, params: BacktestParams):
 
         # ── 执行回测 ──
         # 获取沪深300成分股并运行A股约束检测
-        instruments = D.instruments("csi300")
+        instruments = D.instruments(params.universe)
+        logger.info(f"回测股票池: {params.universe}, 成分数: {len(D.list_instruments(instruments, as_list=True))}")
         all_csi300 = D.list_instruments(instruments, as_list=True)
         constraint_analysis = _check_a_share_constraints(all_csi300, safe_train_start, safe_backtest_end)
 
         task_store.update_progress(task_id, 65)
 
         exchange_kwargs = {
-            "codes": "csi300",
+            "codes": params.universe,
             "freq": "day",
             "limit_threshold": 0.095,
             "deal_price": "close",
@@ -645,8 +646,8 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 position_advice=position_advice,
                 constraint_analysis=constraint_analysis,
                 factor_source=params.source_factor,
-                attribution=AttributionSummary(**attribution_result["summary"]) if attribution_result else None,
-                attribution_curve=[AttributionPoint(**p) for p in attribution_result["curve"]] if attribution_result else None,
+                attribution=_build_safe_attribution_summary(attribution_result) if attribution_result else None,
+                attribution_curve=_build_safe_attribution_curve(attribution_result) if attribution_result else None,
                 attribution_interpretation=attribution_result["interpretation"] if attribution_result else None,
                 cost_impact_estimate=cost_impact_estimate,
                 warnings=result_warnings or None,
@@ -660,6 +661,95 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         import traceback
         traceback.print_exc()
         task_store.set_failed(task_id, str(e))
+
+
+def _build_safe_attribution_curve(attribution_result):
+    """归因曲线防御性清洗：NaN/None/inf 归零，避免 Pydantic float 校验失败。"""
+    def _clean(val):
+        try:
+            v = float(val)
+            return round(v, 2) if np.isfinite(v) else 0.0
+        except Exception:
+            return 0.0
+
+    curve = []
+    for p in attribution_result.get("curve", []):
+        curve.append(AttributionPoint(
+            date=p.get("date", ""),
+            allocation=_clean(p.get("allocation", 0)),
+            selection=_clean(p.get("selection", 0)),
+            interaction=_clean(p.get("interaction", 0)),
+            total_active=_clean(p.get("total_active", 0)),
+        ))
+    return curve
+
+
+def _build_safe_attribution_summary(attribution_result):
+    """归因汇总防御性清洗：None/NaN 归零，避免 BacktestResponse 顶层 float 校验失败。"""
+    summary = dict(attribution_result.get("summary", {}) or {})
+    for key in ("allocation_effect", "selection_effect", "interaction_effect", "total_active_return"):
+        val = summary.get(key)
+        try:
+            v = float(val)
+            summary[key] = round(v, 2) if np.isfinite(v) else 0.0
+        except Exception:
+            summary[key] = 0.0
+    by_industry = summary.get("by_industry") or {}
+    clean_by_industry = {}
+    for ind, vals in by_industry.items():
+        if not isinstance(vals, dict):
+            continue
+        clean_vals = {}
+        for k in ("allocation", "selection"):
+            try:
+                v = float(vals.get(k))
+                clean_vals[k] = round(v, 2) if np.isfinite(v) else 0.0
+            except Exception:
+                clean_vals[k] = 0.0
+        clean_by_industry[ind] = clean_vals
+    summary["by_industry"] = clean_by_industry if clean_by_industry else None
+    return AttributionSummary(**summary)
+
+
+def _safe_validate_backtest_response(result_json_str):
+    """读取路径防御：把 result_json 里归因相关的 None/NaN float 清洗后再校验。
+
+    兼容历史任务数据（归因字段可能为 None），避免 status 接口 500。
+    """
+    import json as _json
+    try:
+        return BacktestResponse.model_validate_json(result_json_str)
+    except Exception:
+        data = _json.loads(result_json_str)
+        attribution = data.get("attribution")
+        if isinstance(attribution, dict):
+            for key in ("allocation_effect", "selection_effect", "interaction_effect", "total_active_return"):
+                val = attribution.get(key)
+                try:
+                    v = float(val)
+                    attribution[key] = round(v, 2) if np.isfinite(v) else 0.0
+                except Exception:
+                    attribution[key] = 0.0
+            by_industry = attribution.get("by_industry") or {}
+            for ind, vals in by_industry.items():
+                if isinstance(vals, dict):
+                    for k in ("allocation", "selection"):
+                        try:
+                            v = float(vals.get(k))
+                            vals[k] = round(v, 2) if np.isfinite(v) else 0.0
+                        except Exception:
+                            vals[k] = 0.0
+        curve = data.get("attribution_curve")
+        if isinstance(curve, list):
+            for point in curve:
+                if isinstance(point, dict):
+                    for k in ("allocation", "selection", "interaction", "total_active"):
+                        try:
+                            v = float(point.get(k))
+                            point[k] = round(v, 2) if np.isfinite(v) else 0.0
+                        except Exception:
+                            point[k] = 0.0
+        return BacktestResponse.model_validate(data)
 
 
 def _compute_brinson_attribution(
@@ -835,15 +925,21 @@ def _compute_brinson_attribution(
         cum_rin = (1 + rin_arr).cumprod() - 1
         cum_active = (1 + active_arr).cumprod() - 1
 
-        # 8. 构建归因曲线
+        # 8. 构建归因曲线（防御性清洗：NaN/inf 归零，避免 Pydantic float 校验失败）
+        def _safe_pct(val):
+            v = float(val) * 100
+            if not np.isfinite(v):
+                return 0.0
+            return round(v, 2)
+
         curve = []
         for i in range(len(date_labels)):
             curve.append({
                 "date": date_labels[i],
-                "allocation": round(float(cum_raa[i]) * 100, 2),
-                "selection": round(float(cum_rss[i]) * 100, 2),
-                "interaction": round(float(cum_rin[i]) * 100, 2),
-                "total_active": round(float(cum_active[i]) * 100, 2),
+                "allocation": _safe_pct(cum_raa[i]),
+                "selection": _safe_pct(cum_rss[i]),
+                "interaction": _safe_pct(cum_rin[i]),
+                "total_active": _safe_pct(cum_active[i]),
             })
 
         # 9. 行业贡献（乘以100转为百分比）
@@ -994,7 +1090,7 @@ async def get_backtest_status(task_id: str):
         raise HTTPException(status_code=404, detail="任务不存在")
 
     if task["status"] == "completed" and task["result_json"]:
-        return BacktestResponse.model_validate_json(task["result_json"])
+        return _safe_validate_backtest_response(task["result_json"])
     elif task["status"] == "failed":
         return BacktestResponse(
             task_id=task_id,
