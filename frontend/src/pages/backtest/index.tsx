@@ -132,6 +132,7 @@ export function BacktestPage() {
       sell_cost: parseFloat(params.slippage),
       max_position: parseFloat(params.singlePosition),
       stop_loss: parseFloat(params.stopLoss),
+      universe: params.universe,
     }
     if (params.sourceFactor) {
       snakeParams.source_factor = params.sourceFactor
@@ -201,6 +202,24 @@ export function BacktestPage() {
                       </SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>股票池</Label>
+                  <Select
+                    value={params.universe}
+                    onValueChange={(v) => setParams({ ...params, universe: v })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="csi300">沪深300（约650只，快）</SelectItem>
+                      <SelectItem value="all">全市场（约4484只，慢）</SelectItem>
+                      <SelectItem value="csi500">中证500</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">默认沪深300；选全市场标的更多但训练更慢</p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">

@@ -17,6 +17,7 @@ export interface BacktestParams {
   singlePosition: string
   stopLoss: string
   sourceFactor: string
+  universe: string
 }
 
 export interface PersistedBacktestResult {
@@ -251,6 +252,7 @@ function createDefaultBacktestParams(): BacktestParams {
     singlePosition: "0.05",
     stopLoss: "-0.08",
     sourceFactor: "",
+    universe: "csi300",
   }
 }
 

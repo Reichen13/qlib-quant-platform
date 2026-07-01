@@ -828,6 +828,7 @@ export function FactorAnalysisPage() {
                       singlePosition: "0.05",
                       stopLoss: "-0.08",
                       sourceFactor: selectedFactor,
+                      universe: "csi300",
                     })
                     setBacktestActiveTab("config")
                     navigate("/backtest")
