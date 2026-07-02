@@ -203,6 +203,64 @@ export interface ETFSignalsResponse {
   top_sell: string[]
 }
 
+export interface TurtleTradeCandidate {
+  code: string
+  name?: string
+  entry_price?: number | null
+  atr?: number | null
+  target_price?: number | null
+  source?: string
+}
+
+export interface TurtleTradePlanRequest {
+  account_equity: number
+  risk_percent: number
+  max_units?: number
+  atr_period?: number
+  min_reward_risk?: number
+  candidates: TurtleTradeCandidate[]
+}
+
+export interface TurtleTradePlan {
+  code: string
+  name: string
+  method: string
+  direction: string
+  account_equity: number
+  risk_percent: number
+  risk_budget: number
+  entry_price: number
+  atr: number
+  n_value: number
+  stop_distance: number
+  initial_stop: number
+  unit_shares: number
+  unit_position_value: number
+  planned_unit_risk: number
+  max_units: number
+  max_shares: number
+  max_position_value: number
+  add_on_prices: number[]
+  target_price?: number | null
+  reward_risk_ratio?: number | null
+  min_reward_risk: number
+  verdict: string
+  warnings: string[]
+  plan_text: string
+  source: string
+  data_status: string
+}
+
+export interface TurtleTradePlanResponse {
+  method: string
+  account_equity: number
+  risk_percent: number
+  total: number
+  plans: TurtleTradePlan[]
+  errors: Array<{ code: string; message: string }>
+  disclaimer: string
+}
+
 export interface ScreeningCandidate {
   code: string
   name: string
@@ -1006,6 +1064,16 @@ export const api = {
   system: {
     environment: () => fetch(`${API_BASE}/api/system/environment`).then(r => handleResponse<any>(r)),
     tasks: () => fetch(`${API_BASE}/api/system/tasks`).then(r => handleResponse<any>(r)),
+  },
+
+  tradePlan: {
+    turtle: (params: TurtleTradePlanRequest) =>
+      fetch(`${API_BASE}/api/trade-plan/turtle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(params),
+        timeoutMs: 60_000,
+      }).then(r => handleResponse<TurtleTradePlanResponse>(r)),
   },
 
   // LLM 配置

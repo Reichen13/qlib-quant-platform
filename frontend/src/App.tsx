@@ -20,6 +20,7 @@ import { AgentDebatePage } from "./pages/agent-debate"
 import { DlModelsPage } from "./pages/dl-models"
 import { StockPoolPage } from "./pages/stock-pool"
 import { ScreeningWorkflowPage } from "./pages/screening-workflow"
+import { TradePlanPage } from "./pages/trade-plan"
 import { SettingsPage } from "./pages/settings"
 import { SystemStatusPage } from "./pages/system-status"
 
@@ -104,6 +105,10 @@ const router = createBrowserRouter([
       {
         path: "screening-workflow",
         element: <ScreeningWorkflowPage />,
+      },
+      {
+        path: "trade-plan",
+        element: <TradePlanPage />,
       },
       {
         path: "system-status",

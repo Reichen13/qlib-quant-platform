@@ -129,6 +129,20 @@ export function ScreeningWorkflowPage() {
   })
 
   const data = mutation.data
+
+  const openTradePlan = () => {
+    const codes = Object.values(data?.buckets || {})
+      .flat()
+      .map((candidate: any) => candidate.code)
+      .filter(Boolean)
+      .slice(0, 20)
+      .join(",")
+    if (codes) {
+      window.location.href = `/trade-plan?codes=${encodeURIComponent(codes)}`
+    } else {
+      window.location.href = "/trade-plan"
+    }
+  }
   const health = healthText(data)
   const bucketCounts = useMemo(() => {
     return bucketConfig.map((bucket) => ({
@@ -149,19 +163,24 @@ export function ScreeningWorkflowPage() {
             汇总数据健康、热点、ETF、均值回归、配对和风险信号，生成候选分桶。
           </p>
         </div>
-        <Button onClick={() => mutation.mutate()} disabled={mutation.isPending}>
-          {mutation.isPending ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              正在运行
-            </>
-          ) : (
-            <>
-              <RefreshCw className="mr-2 h-4 w-4" />
-              运行盘后选股
-            </>
-          )}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={() => mutation.mutate()} disabled={mutation.isPending}>
+            {mutation.isPending ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                正在运行
+              </>
+            ) : (
+              <>
+                <RefreshCw className="mr-2 h-4 w-4" />
+                运行盘后选股
+              </>
+            )}
+          </Button>
+          <Button variant="outline" onClick={openTradePlan} disabled={!data}>
+            生成交易计划
+          </Button>
+        </div>
       </div>
 
       {mutation.isError && (
