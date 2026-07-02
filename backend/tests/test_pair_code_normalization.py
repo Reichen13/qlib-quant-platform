@@ -48,6 +48,27 @@ class PairCodeNormalizationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["stock1"], "SH600036")
         self.assertEqual(response["stock2"], "SZ000001")
 
+    def test_theme_universe_generates_pair_candidates(self):
+        candidates = pair.build_theme_pair_definitions()
+        cpo_pairs = [item for item in candidates if item["category"] == "CPO三皇"]
+
+        self.assertEqual(len(cpo_pairs), 3)
+        self.assertIn({
+            "pair": "中际旭创 / 新易盛",
+            "stock1": "SZ300308",
+            "stock2": "SZ300502",
+            "category": "CPO三皇",
+            "source": "theme_universe",
+        }, cpo_pairs)
+        self.assertGreater(len(candidates), len(pair.PAIR_DEFINITIONS))
+
+    async def test_pair_list_does_not_recalculate_all_theme_pairs(self):
+        with patch.object(pair, "_cached_or_unavailable_pair_metrics", side_effect=lambda item: item) as cached:
+            response = await pair.list_pairs()
+
+        self.assertGreater(response["total"], len(pair.PAIR_DEFINITIONS))
+        self.assertEqual(cached.call_count, response["total"])
+
 
 if __name__ == "__main__":
     unittest.main()
