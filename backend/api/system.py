@@ -112,16 +112,25 @@ def _parse_json(value: str | None) -> Any:
 
 
 def _normalize_task(row: dict[str, Any], task_type: str) -> dict[str, Any]:
-    return {
-        "task_id": row.get("task_id"),
+    task_id = row.get("task_id")
+    status = row.get("status")
+    task = {
+        "task_id": task_id,
         "type": task_type,
-        "status": row.get("status"),
+        "status": status,
         "progress": row.get("progress", 0),
         "params": _parse_json(row.get("params_json")),
         "error": row.get("error"),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
+        "detail_url": None,
+        "report_url": None,
     }
+    if task_type == "backtest" and task_id:
+        task["detail_url"] = f"/api/backtest/status/{task_id}"
+        if status == "completed":
+            task["report_url"] = f"/api/backtest/report/{task_id}.md"
+    return task
 
 
 def task_center(limit: int = 50) -> dict[str, Any]:

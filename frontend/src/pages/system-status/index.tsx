@@ -1,5 +1,5 @@
 ﻿import { useQuery } from "@tanstack/react-query"
-import { Activity, AlertTriangle, CheckCircle2, Clock, MonitorCog, RefreshCw } from "lucide-react"
+import { Activity, AlertTriangle, CheckCircle2, Clock, Download, ExternalLink, MonitorCog, RefreshCw } from "lucide-react"
 import { api } from "@/lib/api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -125,6 +125,7 @@ export function SystemStatusPage() {
                 <TableHead>进度</TableHead>
                 <TableHead>更新时间</TableHead>
                 <TableHead>错误</TableHead>
+                <TableHead className="text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -136,10 +137,30 @@ export function SystemStatusPage() {
                   <TableCell>{task.progress ?? 0}%</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{task.updated_at || "--"}</TableCell>
                   <TableCell className="text-xs text-red-600 max-w-[260px] truncate">{task.error || "--"}</TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-2">
+                      {task.detail_url && (
+                        <Button variant="outline" size="sm" asChild>
+                          <a href={task.detail_url} target="_blank" rel="noreferrer">
+                            <ExternalLink className="mr-1 h-3 w-3" />
+                            打开
+                          </a>
+                        </Button>
+                      )}
+                      {task.report_url && (
+                        <Button variant="outline" size="sm" asChild>
+                          <a href={task.report_url} download>
+                            <Download className="mr-1 h-3 w-3" />
+                            报告
+                          </a>
+                        </Button>
+                      )}
+                    </div>
+                  </TableCell>
                 </TableRow>
               )) : (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                  <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
                     暂无任务记录。
                   </TableCell>
                 </TableRow>

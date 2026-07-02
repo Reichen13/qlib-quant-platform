@@ -50,6 +50,20 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(result["tasks"][0]["progress"], 35)
         self.assertEqual(result["tasks"][0]["params"]["model"], "lightgbm")
 
+    def test_task_center_adds_backtest_action_urls(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = TaskStore(Path(tmpdir) / "tasks.db", table_name="backtest_tasks_test")
+            store.init_db()
+            store.create_task("task-actions", '{"model":"lightgbm"}')
+            store.set_completed("task-actions", '{"task_id":"task-actions","status":"completed"}')
+
+            with patch.object(system, "backtest_task_store", store):
+                result = system.task_center()
+
+        task = result["tasks"][0]
+        self.assertEqual(task["detail_url"], "/api/backtest/status/task-actions")
+        self.assertEqual(task["report_url"], "/api/backtest/report/task-actions.md")
+
 
 if __name__ == "__main__":
     unittest.main()
