@@ -16,6 +16,8 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 import uvicorn
 
+os.environ.setdefault('MLFLOW_ALLOW_FILE_STORE', 'true')
+
 # 添加路径以导入项目模块
 project_root = str(Path(__file__).parent.parent)
 backend_dir = str(Path(__file__).parent)

@@ -28,6 +28,9 @@ from backend.models.schemas import BacktestParams
 
 
 class BacktestStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def test_backtest_allows_local_mlflow_file_store(self):
+        self.assertEqual(backtest.os.environ.get("MLFLOW_ALLOW_FILE_STORE"), "true")
+
     async def test_leak_safe_segments_purge_train_valid_test_boundaries(self):
         calendars = [
             pd
