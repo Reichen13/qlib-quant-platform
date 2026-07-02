@@ -64,6 +64,28 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(task["detail_url"], "/api/backtest/status/task-actions")
         self.assertEqual(task["report_url"], "/api/backtest/report/task-actions.md")
 
+    def test_task_center_lists_agent_reports_with_open_url(self):
+        reports = [
+            {
+                "task_id": "agent-task-1",
+                "code": "600519.SH",
+                "status": "completed",
+                "created_at": "2026-07-02T11:00:00",
+                "rating": "BUY",
+                "thesis": "长期竞争优势较强",
+            }
+        ]
+
+        with patch.object(system, "list_agent_reports", return_value=reports):
+            result = system.task_center()
+
+        task = next(item for item in result["tasks"] if item["task_id"] == "agent-task-1")
+        self.assertEqual(task["type"], "agent_report")
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["params"]["code"], "600519.SH")
+        self.assertEqual(task["detail_url"], "/api/agent/report/agent-task-1")
+        self.assertEqual(task["report_url"], "/api/agent/report/agent-task-1")
+
 
 if __name__ == "__main__":
     unittest.main()

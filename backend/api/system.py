@@ -15,6 +15,11 @@ try:
 except Exception:  # pragma: no cover - startup fallback only
     backtest_task_store = None
 
+try:
+    from db.report_store import list_reports as list_agent_reports
+except Exception:  # pragma: no cover - startup fallback only
+    list_agent_reports = None
+
 router = APIRouter()
 
 
@@ -133,6 +138,26 @@ def _normalize_task(row: dict[str, Any], task_type: str) -> dict[str, Any]:
     return task
 
 
+def _normalize_agent_report(row: dict[str, Any]) -> dict[str, Any]:
+    task_id = row.get("task_id")
+    return {
+        "task_id": task_id,
+        "type": "agent_report",
+        "status": row.get("status"),
+        "progress": 100 if row.get("status") == "completed" else 0,
+        "params": {
+            "code": row.get("code"),
+            "rating": row.get("rating"),
+            "thesis": row.get("thesis"),
+        },
+        "error": row.get("error"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at") or row.get("created_at"),
+        "detail_url": f"/api/agent/report/{task_id}" if task_id else None,
+        "report_url": f"/api/agent/report/{task_id}" if task_id and row.get("status") == "completed" else None,
+    }
+
+
 def task_center(limit: int = 50) -> dict[str, Any]:
     tasks: list[dict[str, Any]] = []
     if backtest_task_store is not None:
@@ -141,6 +166,21 @@ def task_center(limit: int = 50) -> dict[str, Any]:
         except Exception as exc:
             tasks.append({
                 "task_id": "backtest-task-store-error",
+                "type": "system",
+                "status": "failed",
+                "progress": 0,
+                "params": None,
+                "error": str(exc),
+                "created_at": None,
+                "updated_at": None,
+            })
+
+    if list_agent_reports is not None:
+        try:
+            tasks.extend(_normalize_agent_report(row) for row in list_agent_reports(limit))
+        except Exception as exc:
+            tasks.append({
+                "task_id": "agent-report-store-error",
                 "type": "system",
                 "status": "failed",
                 "progress": 0,

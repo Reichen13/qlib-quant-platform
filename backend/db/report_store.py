@@ -114,6 +114,38 @@ def get_history(code: str, limit: int = 10) -> list:
     return results
 
 
+def list_reports(limit: int = 50) -> list[dict]:
+    """获取最近的智能体分析报告。"""
+    conn = _get_db()
+    rows = conn.execute(
+        "SELECT task_id, code, status, report_json, error, created_at FROM agent_reports ORDER BY created_at DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+
+    results = []
+    for row in rows:
+        entry = {
+            "task_id": row["task_id"],
+            "code": row["code"],
+            "status": row["status"],
+            "error": row["error"],
+            "created_at": datetime.fromtimestamp(row["created_at"]).isoformat(),
+            "updated_at": datetime.fromtimestamp(row["created_at"]).isoformat(),
+        }
+        if row["report_json"]:
+            try:
+                report = json.loads(row["report_json"])
+                if "pm_decision" in report:
+                    entry["rating"] = report["pm_decision"].get("rating", "?")
+                    entry["thesis"] = report["pm_decision"].get("thesis", "")[:200]
+            except json.JSONDecodeError:
+                pass
+        results.append(entry)
+
+    return results
+
+
 def cleanup_old_reports():
     """清理过期报告"""
     cutoff = time.time() - TTL_SECONDS

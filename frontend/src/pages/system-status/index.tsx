@@ -17,6 +17,24 @@ function yesNo(value: boolean) {
   return value ? "是" : "否"
 }
 
+function taskTypeLabel(type?: string) {
+  if (type === "backtest") return "回测"
+  if (type === "agent_report") return "AI 分析"
+  return type || "系统"
+}
+
+function taskSummary(task: any) {
+  if (task.type === "agent_report") {
+    const code = task.params?.code || "--"
+    const rating = task.params?.rating ? ` · ${task.params.rating}` : ""
+    return `${code}${rating}`
+  }
+  if (task.type === "backtest") {
+    return task.params?.model || "backtest"
+  }
+  return "--"
+}
+
 export function SystemStatusPage() {
   const environment = useQuery({
     queryKey: ["system-environment"],
@@ -121,6 +139,7 @@ export function SystemStatusPage() {
               <TableRow>
                 <TableHead>类型</TableHead>
                 <TableHead>任务 ID</TableHead>
+                <TableHead>摘要</TableHead>
                 <TableHead>状态</TableHead>
                 <TableHead>进度</TableHead>
                 <TableHead>更新时间</TableHead>
@@ -131,8 +150,9 @@ export function SystemStatusPage() {
             <TableBody>
               {taskRows.length ? taskRows.map((task: any) => (
                 <TableRow key={`${task.type}-${task.task_id}`}>
-                  <TableCell>{task.type}</TableCell>
+                  <TableCell>{taskTypeLabel(task.type)}</TableCell>
                   <TableCell className="font-mono text-xs max-w-[220px] truncate">{task.task_id}</TableCell>
+                  <TableCell className="text-xs max-w-[180px] truncate">{taskSummary(task)}</TableCell>
                   <TableCell>{statusBadge(task.status)}</TableCell>
                   <TableCell>{task.progress ?? 0}%</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{task.updated_at || "--"}</TableCell>
@@ -149,9 +169,12 @@ export function SystemStatusPage() {
                       )}
                       {task.report_url && (
                         <Button variant="outline" size="sm" asChild>
-                          <a href={task.report_url} download>
+                          <a
+                            href={task.report_url}
+                            {...(task.type === "agent_report" ? { target: "_blank", rel: "noreferrer" } : { download: true })}
+                          >
                             <Download className="mr-1 h-3 w-3" />
-                            报告
+                            {task.type === "agent_report" ? "分析" : "报告"}
                           </a>
                         </Button>
                       )}
@@ -160,7 +183,7 @@ export function SystemStatusPage() {
                 </TableRow>
               )) : (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
+                  <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
                     暂无任务记录。
                   </TableCell>
                 </TableRow>
