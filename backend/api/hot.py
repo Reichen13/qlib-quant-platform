@@ -8,6 +8,7 @@ from typing import List
 import pandas as pd
 import numpy as np
 from fastapi import APIRouter, HTTPException, Query
+from starlette.concurrency import run_in_threadpool
 
 from models.schemas import HotSectorsResponse, SectorInfo, SectorDetailResponse
 
@@ -59,70 +60,92 @@ def _sector_change_from_qlib_frame(df: pd.DataFrame, stock_codes: list[str]) -> 
     return round(float(np.mean(changes)) * 100, 2), len(changes)
 
 
-@router.get("/sectors", response_model=HotSectorsResponse)
-async def get_hot_sectors(
-    days: int = Query(default=10, ge=1, le=60, description="统计周期（天）")
-):
-    """
-    获取热门板块涨跌幅排行
+def _load_calendar() -> list[str]:
+    cal_path = Path.home() / ".qlib" / "qlib_data" / "cn_data" / "calendars" / "day.txt"
+    if not cal_path.exists():
+        return []
+    with open(cal_path, encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip()]
 
-    基于指定周期内的板块涨跌幅进行排行
-    """
+
+def _load_close_prices(code: str, start_index: int, end_index: int) -> pd.Series:
+    bin_path = Path.home() / ".qlib" / "qlib_data" / "cn_data" / "features" / code.lower() / "close.day.bin"
+    if not bin_path.exists():
+        return pd.Series(dtype="float64")
+
+    values = np.fromfile(bin_path, dtype="float32")
+    if len(values) <= 1:
+        return pd.Series(dtype="float64")
+
+    bin_start_index = int(values[0])
+    data = values[1:]
+    slice_start = max(start_index - bin_start_index, 0)
+    slice_end = min(end_index - bin_start_index + 1, len(data))
+    if slice_start >= slice_end:
+        return pd.Series(dtype="float64")
+
+    return pd.to_numeric(pd.Series(data[slice_start:slice_end]), errors="coerce").dropna()
+
+
+def _sector_change_from_local_bins(stock_codes: list[str], start_index: int, end_index: int) -> tuple[float | None, int]:
+    changes = []
+    for code in stock_codes:
+        close = _load_close_prices(code, start_index, end_index)
+        if len(close) < 2:
+            continue
+        first_price = float(close.iloc[0])
+        last_price = float(close.iloc[-1])
+        if first_price > 0:
+            changes.append((last_price - first_price) / first_price)
+    if not changes:
+        return None, 0
+    return round(float(np.mean(changes)) * 100, 2), len(changes)
+
+
+def _build_hot_sectors(days: int) -> HotSectorsResponse:
     try:
-        import qlib
-        from qlib.data import D
+        calendar = _load_calendar()
+        if not calendar:
+            raise RuntimeError("calendar data is unavailable")
 
-        # 获取最新日期
-        _, end_date_str = get_calendar_range()
-        if not end_date_str:
-            raise HTTPException(status_code=500, detail="无法获取日历数据")
-
-        end_date = pd.to_datetime(end_date_str)
-        start_date = end_date - timedelta(days=days + 20)  # 多取一些天数以确保有交易日
+        end_index = len(calendar) - 1
+        start_index = max(0, end_index - days - 20)
+        end_date = pd.to_datetime(calendar[end_index])
 
         from core.sector_definitions import get_sectors_qlib
 
-        # 使用统一的板块定义（Qlib 格式）
-        sectors = get_sectors_qlib()
-
         sector_results = []
-
-        for sector_name, stock_codes in sectors.items():
-            try:
-                # 获取板块内股票的收盘价
-                df = D.features(
-                    stock_codes,
-                    ["$close"],
-                    start_time=start_date.strftime("%Y-%m-%d"),
-                    end_time=end_date.strftime("%Y-%m-%d")
-                )
-
-                if df.empty:
-                    continue
-
-                change_pct, stock_count = _sector_change_from_qlib_frame(df, stock_codes)
-                if change_pct is not None:
-                    sector_results.append(SectorInfo(
-                        name=sector_name,
-                        change_pct=change_pct,
-                        volume=stock_count,
-                        stock_count=stock_count
-                    ))
-
-            except Exception as e:
-                # 跳过计算失败的板块
+        for sector_name, stock_codes in get_sectors_qlib().items():
+            change_pct, stock_count = _sector_change_from_local_bins(stock_codes, start_index, end_index)
+            if change_pct is None:
                 continue
+            sector_results.append(SectorInfo(
+                name=sector_name,
+                change_pct=change_pct,
+                volume=stock_count,
+                stock_count=stock_count,
+            ))
 
-        # 按涨跌幅排序
         sector_results.sort(key=lambda x: x.change_pct, reverse=True)
 
         return HotSectorsResponse(
             date=end_date.date(),
-            sectors=sector_results
+            sectors=sector_results,
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取板块数据失败: {str(e)}")
+        raise RuntimeError(f"failed to get sector data: {e}") from e
+
+
+@router.get("/sectors", response_model=HotSectorsResponse)
+async def get_hot_sectors(
+    days: int = Query(default=10, ge=1, le=60, description="period days")
+):
+    """Return hot sector ranking without blocking the API event loop."""
+    try:
+        return await run_in_threadpool(_build_hot_sectors, days)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/sector/{sector_name}/stocks")

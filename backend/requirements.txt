@@ -14,6 +14,8 @@ numpy==2.0.0
 
 # Qlib (量化引擎)
 pyqlib==0.9.6
+gym>=0.26,<0.27
+cvxpy>=1.6
 
 # 数据源
 yfinance==0.2.50

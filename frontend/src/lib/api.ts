@@ -1,6 +1,6 @@
 // API 客户端封装
 // 开发环境用 localhost，生产环境用相对路径（由 Nginx 代理）
-const API_BASE = import.meta.env.DEV ? "http://localhost:8000" : ""
+const API_BASE = import.meta.env.DEV ? "http://localhost:8001" : ""
 const DEFAULT_API_TIMEOUT_MS = 8000
 
 class ApiError extends Error {
@@ -1014,6 +1014,7 @@ export const api = {
           quick_model: quickModel || "",
           deep_model: deepModel || "",
         }),
+        timeoutMs: 60_000,
       }).then(r => handleResponse<any>(r)),
     status: () =>
       fetch(`${API_BASE}/api/llm/status`).then(r => handleResponse<any>(r)),

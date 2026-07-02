@@ -16,7 +16,7 @@ from loguru import logger
 # 全局禁用多进程（必须在 import qlib 之前设置）
 os.environ['NUMBA_NUM_THREADS'] = '1'
 os.environ['QLIB_NO_MULTI_PROCESS'] = '1'
-os.environ['JOBLIB_START_METHOD'] = 'forkserver'
+os.environ['JOBLIB_START_METHOD'] = 'spawn' if os.name == 'nt' else 'forkserver'
 os.environ['OMP_NUM_THREADS'] = '1'
 
 from models.schemas import (
