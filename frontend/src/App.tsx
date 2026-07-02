@@ -21,6 +21,7 @@ import { DlModelsPage } from "./pages/dl-models"
 import { StockPoolPage } from "./pages/stock-pool"
 import { ScreeningWorkflowPage } from "./pages/screening-workflow"
 import { SettingsPage } from "./pages/settings"
+import { SystemStatusPage } from "./pages/system-status"
 
 // 创建路由
 const router = createBrowserRouter([
@@ -103,6 +104,10 @@ const router = createBrowserRouter([
       {
         path: "screening-workflow",
         element: <ScreeningWorkflowPage />,
+      },
+      {
+        path: "system-status",
+        element: <SystemStatusPage />,
       },
       {
         path: "settings",

@@ -1002,6 +1002,11 @@ export const api = {
       }).then(r => handleResponse<any>(r)),
   },
 
+  system: {
+    environment: () => fetch(`${API_BASE}/api/system/environment`).then(r => handleResponse<any>(r)),
+    tasks: () => fetch(`${API_BASE}/api/system/tasks`).then(r => handleResponse<any>(r)),
+  },
+
   // LLM 配置
   llm: {
     testConnection: (apiKey: string, baseUrl?: string, quickModel?: string, deepModel?: string) =>

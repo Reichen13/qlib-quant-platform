@@ -21,6 +21,7 @@ import {
   Layers,
   ListChecks,
   Settings,
+  MonitorCog,
   ChevronLeft,
   ChevronRight,
   X,
@@ -48,6 +49,7 @@ const NAVIGATION_ITEMS = [
   { icon: Brain, label: "深度学习", path: "/dl-models" },
   { icon: Layers, label: "智能股票池", path: "/stock-pool" },
   { icon: ListChecks, label: "盘后选股", path: "/screening-workflow" },
+  { icon: MonitorCog, label: "系统状态", path: "/system-status" },
   { icon: Settings, label: "LLM 设置", path: "/settings" },
 ]
 
