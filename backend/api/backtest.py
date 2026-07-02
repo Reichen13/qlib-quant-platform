@@ -10,7 +10,9 @@ from typing import List, Optional
 import pandas as pd
 import numpy as np
 import uuid
+import json
 from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi.responses import Response
 from loguru import logger
 
 # 全局禁用多进程（必须在 import qlib 之前设置）
@@ -1077,6 +1079,86 @@ def _generate_sell_reason(score: float, name: str, code: str = "",
     return base
 
 
+def _format_report_percent(value) -> str:
+    if value is None:
+        return "暂无可靠数据"
+    try:
+        return f"{float(value) * 100:.2f}%"
+    except (TypeError, ValueError):
+        return "暂无可靠数据"
+
+
+def _format_report_number(value) -> str:
+    if value is None:
+        return "暂无可靠数据"
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "暂无可靠数据"
+
+
+def build_backtest_markdown_report(task: dict) -> str:
+    result = json.loads(task.get("result_json") or "{}")
+    params = json.loads(task.get("params_json") or "{}")
+    lines = [
+        "# 回测报告",
+        "",
+        f"- 任务 ID：{task.get('task_id', '未知')}",
+        f"- 状态：{task.get('status', '未知')}",
+        f"- 创建时间：{task.get('created_at') or '暂无可靠数据'}",
+        f"- 更新时间：{task.get('updated_at') or '暂无可靠数据'}",
+        "",
+        "## 参数摘要",
+        "",
+    ]
+
+    if params:
+        for key in sorted(params):
+            lines.append(f"- {key}：{params[key]}")
+    else:
+        lines.append("- 暂无可靠参数记录")
+
+    lines.extend([
+        "",
+        "## 核心指标",
+        "",
+        "| 指标 | 数值 |",
+        "| --- | ---: |",
+        f"| 总收益率 | {_format_report_percent(result.get('total_return'))} |",
+        f"| 年化收益率 | {_format_report_percent(result.get('annual_return'))} |",
+        f"| 最大回撤 | {_format_report_percent(result.get('max_drawdown'))} |",
+        f"| 夏普比率 | {_format_report_number(result.get('sharpe_ratio'))} |",
+        f"| 胜率 | {_format_report_percent(result.get('win_rate'))} |",
+    ])
+
+    if result.get("cost_impact_estimate"):
+        lines.extend(["", "## 交易成本提示", "", str(result["cost_impact_estimate"])])
+
+    if result.get("position_advice"):
+        lines.extend(["", "## 仓位建议", "", str(result["position_advice"])])
+
+    top_buys = result.get("top_buys") or []
+    if top_buys:
+        lines.extend(["", "## 推荐关注", "", "| 代码 | 名称 | 分数 | 理由 |", "| --- | --- | ---: | --- |"])
+        for item in top_buys[:10]:
+            lines.append(
+                f"| {item.get('code', '')} | {item.get('name', '')} | {_format_report_number(item.get('score'))} | {item.get('reason', '')} |"
+            )
+
+    warnings = result.get("warnings") or []
+    if warnings:
+        lines.extend(["", "## 风险与缺口", ""])
+        for warning in warnings:
+            lines.append(f"- {warning}")
+
+    lines.extend([
+        "",
+        "---",
+        "本报告由本地 Qlib 量化平台根据已保存的回测结果生成，仅供研究复盘，不构成投资建议。",
+    ])
+    return "\n".join(lines) + "\n"
+
+
 @router.post("/run")
 async def run_backtest(params: BacktestParams, background_tasks: BackgroundTasks):
     """
@@ -1123,6 +1205,24 @@ async def get_backtest_status(task_id: str):
             status="running",
             progress=task["progress"]
         )
+
+
+@router.get("/report/{task_id}.md")
+async def export_backtest_report(task_id: str):
+    """导出已完成回测的 Markdown 报告。"""
+    task = task_store.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    if task.get("status") != "completed" or not task.get("result_json"):
+        raise HTTPException(status_code=400, detail="只有已完成且包含结果的回测任务可以导出报告")
+
+    markdown = build_backtest_markdown_report(task)
+    filename = f"backtest-report-{task_id}.md"
+    return Response(
+        content=markdown.encode("utf-8"),
+        media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.delete("/tasks/{task_id}")

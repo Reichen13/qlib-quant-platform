@@ -166,5 +166,58 @@ class BacktestStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.error, "model training failed")
 
 
+    async def test_running_backtest_report_export_is_rejected(self):
+        task = {
+            "task_id": "task-running",
+            "status": "running",
+            "progress": 50,
+            "result_json": None,
+            "params_json": "{}",
+            "error": None,
+        }
+
+        with patch.object(backtest.task_store, "get_task", return_value=task):
+            with self.assertRaises(Exception) as ctx:
+                await backtest.export_backtest_report("task-running")
+
+        self.assertIn("已完成", str(ctx.exception))
+
+    async def test_completed_backtest_report_exports_markdown(self):
+        result_json = """{
+            "task_id": "task-report",
+            "status": "completed",
+            "total_return": 0.1234,
+            "annual_return": 0.2345,
+            "sharpe_ratio": 1.56,
+            "max_drawdown": -0.0789,
+            "win_rate": 0.61,
+            "top_buys": [{"code": "600519", "name": "贵州茅台", "score": 0.91, "reason": "质量较高"}],
+            "position_advice": "控制单票仓位，分批建仓",
+            "warnings": ["样本区间较短"]
+        }"""
+        task = {
+            "task_id": "task-report",
+            "status": "completed",
+            "progress": 100,
+            "result_json": result_json,
+            "params_json": "{}",
+            "error": None,
+            "created_at": "2026-07-02T10:00:00",
+            "updated_at": "2026-07-02T10:05:00",
+        }
+
+        with patch.object(backtest.task_store, "get_task", return_value=task):
+            response = await backtest.export_backtest_report("task-report")
+
+        self.assertEqual(response.media_type, "text/markdown; charset=utf-8")
+        body = response.body.decode("utf-8")
+        self.assertIn("# 回测报告", body)
+        self.assertIn("task-report", body)
+        self.assertIn("总收益率", body)
+        self.assertIn("12.34%", body)
+        self.assertIn("贵州茅台", body)
+        self.assertIn("样本区间较短", body)
+
+
 if __name__ == "__main__":
     unittest.main()

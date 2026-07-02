@@ -660,6 +660,7 @@ export const api = {
       }).then(r => handleResponse<{ task_id: string }>(r)),
     status: (id: string) =>
       fetch(`${API_BASE}/api/backtest/status/${id}`).then(r => handleResponse<any>(r)),
+    reportUrl: (id: string) => `${API_BASE}/api/backtest/report/${encodeURIComponent(id)}.md`,
   },
 
   // ETF

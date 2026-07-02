@@ -13,7 +13,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Zap, Play, Loader2, TrendingUp, Activity, Settings, BarChart3, ChevronDown, ChevronRight, AlertTriangle } from "lucide-react"
+import { Zap, Play, Loader2, TrendingUp, Activity, Settings, BarChart3, ChevronDown, ChevronRight, AlertTriangle, Download } from "lucide-react"
 import { LineChartComponent } from "@/components/charts/line-chart"
 import { DrawdownChart } from "@/components/charts/drawdown-chart"
 import {
@@ -145,6 +145,7 @@ export function BacktestPage() {
   const isCompleted = result.status === "completed"
   const isFailed = result.status === "failed"
   const isUnsupportedModel = params.model === "xgboost"
+  const reportUrl = result.task_id ? api.backtest.reportUrl(result.task_id) : ""
   const errorMessage = result.error || "未知错误"
   const isAuthError = errorMessage.includes("服务器管理 Key") || errorMessage.includes("API Key") || errorMessage.includes("X-API-Key")
 
@@ -492,6 +493,17 @@ export function BacktestPage() {
                     </div>
                   </CardContent>
                 </Card>
+              )}
+
+              {reportUrl && (
+                <div className="flex justify-end">
+                  <Button variant="outline" size="sm" asChild>
+                    <a href={reportUrl} download>
+                      <Download className="mr-2 h-4 w-4" />
+                      导出 Markdown 报告
+                    </a>
+                  </Button>
+                </div>
               )}
 
               {result.warnings && result.warnings.length > 0 && (

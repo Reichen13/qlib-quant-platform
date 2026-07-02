@@ -19,7 +19,10 @@ router = APIRouter()
 
 
 def _module_available(module_name: str) -> bool:
-    return importlib.util.find_spec(module_name) is not None
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
 
 
 def _qlib_data_status() -> dict[str, Any]:

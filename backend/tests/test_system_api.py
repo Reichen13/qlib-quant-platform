@@ -29,6 +29,10 @@ class SystemApiTests(unittest.TestCase):
         self.assertIn("exists", result["qlib_data"])
         self.assertIn(result["overall_status"], {"healthy", "warning"})
 
+    def test_module_available_handles_modules_without_spec(self):
+        with patch.object(system.importlib.util, "find_spec", side_effect=ValueError("missing spec")):
+            self.assertFalse(system._module_available("pandas"))
+
     def test_task_center_lists_backtest_tasks_from_store(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = TaskStore(Path(tmpdir) / "tasks.db", table_name="backtest_tasks_test")
