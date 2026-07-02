@@ -207,9 +207,9 @@ export function PairTradingPage() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {filteredPairs.map((pair: any) => (
+                    {filteredPairs.map((pair: any, index: number) => (
                       <TableRow
-                        key={pair.pair}
+                        key={`${pair.category}-${pair.stock1}-${pair.stock2}-${index}`}
                         className="cursor-pointer hover:bg-muted/50"
                         onClick={() => setPairTradingParams({ selectedPair: pair })}
                       >
@@ -246,9 +246,17 @@ export function PairTradingPage() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right">
-                          <a href={`/quote?stock=${pair.stock1}`} className="text-sm text-primary hover:underline">
-                            详情
-                          </a>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setPairTradingParams({ selectedPair: pair })
+                            }}
+                          >
+                            分析配对
+                          </Button>
                         </TableCell>
                       </TableRow>
                     ))}

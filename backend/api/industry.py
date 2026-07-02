@@ -72,8 +72,23 @@ async def list_industries():
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"获取行业列表失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.warning(f"获取行业列表失败，使用本地行业定义降级: {e}")
+        from core.sector_definitions import SECTOR_DEFINITIONS
+
+        fallback_industries = [
+            {
+                "name": name,
+                "count": len(codes),
+            }
+            for name, codes in SECTOR_DEFINITIONS.items()
+        ]
+        return {
+            "total": len(fallback_industries),
+            "industries": fallback_industries,
+            "data_status": "fallback",
+            "source": "local_sector_definitions",
+            "warning": "实时行业数据源暂不可用，已显示本地行业定义。",
+        }
 
 
 @router.get("/stocks")
