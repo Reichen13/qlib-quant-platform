@@ -63,6 +63,57 @@ class MacroDataAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response["history"][-1]["date"], "2026-06")
         self.assertEqual(response["history"][-1]["growth_score"], 0.08)
 
+    async def test_regime_timeout_returns_unknown_state_quickly(self):
+        from backend.api import macro
+        from backend.models.schemas import MacroRegimeRequest
+        import time
+
+        def slow_fetch():
+            time.sleep(1.5)
+            return {}
+
+        original_timeout = getattr(macro, "MACRO_FETCH_TIMEOUT_SECONDS", None)
+        macro.MACRO_FETCH_TIMEOUT_SECONDS = 0.05
+        started = time.perf_counter()
+        try:
+            with patch.object(macro, "_fetch_china_macro_data", side_effect=slow_fetch):
+                response = await macro.classify_regime(MacroRegimeRequest(), market="china")
+        finally:
+            macro.MACRO_FETCH_TIMEOUT_SECONDS = original_timeout
+
+        self.assertLess(time.perf_counter() - started, 0.5)
+        self.assertEqual(response.regime, "unknown")
+        self.assertTrue(response.warnings)
+
+
+    async def test_macro_indicators_timeout_does_not_block_event_loop(self):
+        from backend.api import macro
+        import time
+
+        def slow_fetch():
+            time.sleep(1.5)
+            return {}
+
+        original_timeout = getattr(macro, "MACRO_FETCH_TIMEOUT_SECONDS", None)
+        macro.MACRO_FETCH_TIMEOUT_SECONDS = 0.05
+        started = time.perf_counter()
+        try:
+            with patch.object(macro, "_fetch_macro_data", side_effect=slow_fetch), \
+                 patch.object(macro, "_fetch_china_macro_data", side_effect=slow_fetch):
+                response = await macro.get_macro_indicators()
+        finally:
+            if original_timeout is None:
+                delattr(macro, "MACRO_FETCH_TIMEOUT_SECONDS")
+            else:
+                macro.MACRO_FETCH_TIMEOUT_SECONDS = original_timeout
+
+        elapsed = time.perf_counter() - started
+        self.assertLess(elapsed, 0.5)
+        self.assertEqual(response["data_status"]["china"]["status"], "unavailable")
+        self.assertEqual(response["data_status"]["us"]["status"], "unavailable")
+        self.assertTrue(response["warnings"])
+
+
     def test_cn_regime_is_unknown_when_core_indicators_are_missing(self):
         from backend.api import macro
 

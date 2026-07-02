@@ -118,23 +118,6 @@ export function MacroDashboardPage() {
     refetchInterval: 5 * 60 * 1000, // 5分钟刷新
   })
 
-  const { data: regimeData, isLoading: regimeLoading } = useQuery({
-    queryKey: ["macro", "regime"],
-    queryFn: () => api.macro.regime({}),
-    enabled: !!indicatorsData,
-  })
-
-  const { data: allocationData, isLoading: allocLoading } = useQuery({
-    queryKey: ["macro", "allocation"],
-    queryFn: () => api.macro.allocation({}),
-    enabled: !!regimeData,
-  })
-
-  const { data: historyData } = useQuery({
-    queryKey: ["macro", "history"],
-    queryFn: () => api.macro.history(12),
-  })
-
   // 兼容新旧 API 格式: 新格式有 china_indicators/us_indicators, 旧格式有 indicators
   const hasNewFormat = !!(indicatorsData?.china_indicators || indicatorsData?.us_indicators)
   const cnIndicators = indicatorsData?.china_indicators || []
@@ -142,6 +125,27 @@ export function MacroDashboardPage() {
   const cnDerived = indicatorsData?.china_derived || {}
   const usDerived = indicatorsData?.us_derived || (hasNewFormat ? {} : (indicatorsData?.derived || {}))
   const dataStatus = indicatorsData?.data_status || {}
+  const hasMacroIndicators = cnIndicators.length > 0 || usIndicators.length > 0
+  const macroWarnings = indicatorsData?.warnings || []
+
+  const { data: regimeData, isLoading: regimeLoading } = useQuery({
+    queryKey: ["macro", "regime"],
+    queryFn: () => api.macro.regime({}),
+    enabled: !!indicatorsData && hasMacroIndicators,
+  })
+
+  const { data: allocationData, isLoading: allocLoading } = useQuery({
+    queryKey: ["macro", "allocation"],
+    queryFn: () => api.macro.allocation({}),
+    enabled: !!regimeData && hasMacroIndicators,
+  })
+
+  const { data: historyData } = useQuery({
+    queryKey: ["macro", "history"],
+    queryFn: () => api.macro.history(12),
+    enabled: hasMacroIndicators,
+  })
+
   const regime = regimeData
   const allocation = allocationData?.allocation || []
 
@@ -165,6 +169,18 @@ export function MacroDashboardPage() {
         </h1>
         <p className="text-muted-foreground">Bridgewater 风格宏观仪表板 - 市场状态分类与全天候配置</p>
       </div>
+
+
+      {macroWarnings.length > 0 && (
+        <Card className="border-amber-200 bg-amber-50">
+          <CardContent className="pt-4 text-sm text-amber-800 flex gap-2">
+            <AlertTriangle className="h-4 w-4 mt-0.5 shrink-0" />
+            <div className="space-y-1">
+              {macroWarnings.map((warning: string) => <p key={warning}>{warning}</p>)}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {dataStatus?.china?.status && dataStatus.china.status !== "ok" && (
         <Card className="border-amber-200 bg-amber-50">

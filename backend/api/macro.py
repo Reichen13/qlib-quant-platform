@@ -4,6 +4,7 @@
 """
 
 from datetime import date, datetime, timedelta
+import asyncio
 from typing import Optional
 import pandas as pd
 import numpy as np
@@ -16,6 +17,21 @@ from models.schemas import (
 )
 
 router = APIRouter()
+
+MACRO_FETCH_TIMEOUT_SECONDS = 8
+
+
+async def _fetch_macro_with_timeout(fetcher, label: str) -> tuple[dict, str | None]:
+    try:
+        data = await asyncio.wait_for(asyncio.to_thread(fetcher), timeout=MACRO_FETCH_TIMEOUT_SECONDS)
+        return data, None
+    except TimeoutError:
+        logger.warning(f"{label} 宏观数据源超时，已降级为空数据")
+        return {}, f"{label} 宏观数据源超时，暂时无法显示实时数据"
+    except Exception as exc:
+        logger.warning(f"{label} 宏观数据源获取失败: {exc}")
+        return {}, f"{label} 宏观数据源获取失败：{exc}"
+
 
 # ── 美国宏观指标配置（保留用于美股/ETF 策略）──
 US_INDICATOR_CONFIG = {
@@ -559,8 +575,12 @@ async def get_macro_indicators():
     - us_indicators: 美国宏观指标（标普/纳斯达克/美债/美元等）
     """
     try:
-        us_indicators = _fetch_macro_data()
-        china_indicators = _fetch_china_macro_data()
+        us_result, china_result = await asyncio.gather(
+            _fetch_macro_with_timeout(_fetch_macro_data, "美国"),
+            _fetch_macro_with_timeout(_fetch_china_macro_data, "中国"),
+        )
+        us_indicators, us_warning = us_result
+        china_indicators, china_warning = china_result
 
         # ── 中国衍生指标 ──
         cn_derived = {}
@@ -617,8 +637,13 @@ async def get_macro_indicators():
                 },
             },
             "warnings": [
-                f"中国宏观数据源缺少：{'、'.join(missing_cn)}"
-            ] if missing_cn else [],
+                warning for warning in [
+                    china_warning,
+                    us_warning,
+                    f"中国宏观数据源缺少：{'、'.join(missing_cn)}" if missing_cn else None,
+                    f"美国宏观数据源缺少：{'、'.join(missing_us)}" if missing_us else None,
+                ] if warning
+            ],
             "timestamp": datetime.now().isoformat(),
         }
 
@@ -727,11 +752,13 @@ async def classify_regime(request: MacroRegimeRequest, market: str = "china"):
     """
     try:
         if market == "us":
-            indicators = _fetch_macro_data()
+            indicators, warning = await _fetch_macro_with_timeout(_fetch_macro_data, "美国")
             regime = _compute_regime_scores(indicators)
         else:
-            indicators = _fetch_china_macro_data()
+            indicators, warning = await _fetch_macro_with_timeout(_fetch_china_macro_data, "中国")
             regime = _compute_cn_regime_scores(indicators)
+        if warning:
+            regime["warnings"] = [*regime.get("warnings", []), warning]
 
         return MacroRegimeResponse(
             growth_score=regime["growth_score"],
@@ -812,12 +839,16 @@ async def get_allocation(request: MacroRegimeRequest, market: str = "china"):
     """
     try:
         if market == "us":
-            indicators = _fetch_macro_data()
+            indicators, warning = await _fetch_macro_with_timeout(_fetch_macro_data, "美国")
             regime = _compute_regime_scores(indicators)
+            if warning:
+                regime["warnings"] = [*regime.get("warnings", []), warning]
             allocation_config = ALLOCATION_MAP.get(regime["regime"], ALLOCATION_MAP["recovery"])
         else:
-            indicators = _fetch_china_macro_data()
+            indicators, warning = await _fetch_macro_with_timeout(_fetch_china_macro_data, "中国")
             regime = _compute_cn_regime_scores(indicators)
+            if warning:
+                regime["warnings"] = [*regime.get("warnings", []), warning]
             if regime["regime"] == "unknown":
                 return AllocationResponse(
                     regime=regime["regime"],
