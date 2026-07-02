@@ -47,6 +47,7 @@ export function AiStrategyPage() {
   const generated = aiStrategyParams.generated as any
   const analysis = aiStrategyParams.analysis as any
   const optimizeResult = aiStrategyParams.optimizeResult as any
+  const savedTemplates = aiStrategyParams.savedTemplates || []
   const linkedBacktestResult = aiStrategyParams.backtestDraft ? backtestResult as any : null
   const [screeningResult, setScreeningResult] = useState<any>(null)
   const [generating, setGenerating] = useState(false)
@@ -60,6 +61,7 @@ export function AiStrategyPage() {
     queryFn: () => api.aiStrategy.templates(),
     staleTime: 10 * 60 * 1000,
   })
+  const mergedTemplates = [...savedTemplates, ...(templates?.templates || [])]
 
   const handleGenerate = async () => {
     if (!nlInput.trim()) return
@@ -127,17 +129,44 @@ export function AiStrategyPage() {
     }
   }
 
-  const handleApplyGeneratedToBacktest = () => {
-    if (!generated?.params) return
-    setBacktestParams(mapAiStrategyParamsToBacktestParams(generated.params, backtestParams))
+  const applyParamsToBacktest = (params: Record<string, unknown>) => {
+    setBacktestParams(mapAiStrategyParamsToBacktestParams(params, backtestParams))
     setAiStrategyParams({
       backtestDraft: {
-        params: generated.params,
+        params,
         appliedAt: new Date().toISOString(),
       },
     })
     setBacktestActiveTab("config")
     navigate("/backtest")
+  }
+
+  const handleApplyGeneratedToBacktest = () => {
+    if (!generated?.params) return
+    applyParamsToBacktest(generated.params)
+  }
+
+  const handleApplyOptimizedToBacktest = (candidate: any) => {
+    if (!candidate?.params) return
+    applyParamsToBacktest(candidate.params)
+  }
+
+  const handleSaveGeneratedAsTemplate = () => {
+    if (!generated?.params) return
+    const now = new Date().toISOString()
+    const template = {
+      id: `local-generated-${Date.now()}`,
+      name: generated.params.name || generated.params.strategy_name || nlInput.slice(0, 24) || "本地生成策略",
+      description: generated.params.interpretation || nlInput || "本地生成策略",
+      category: generated.params.strategy_type || generated.params.category || "custom",
+      default_params: generated.params,
+      source: "local-generated" as const,
+      created_at: now,
+    }
+    setAiStrategyParams({
+      savedTemplates: [template, ...savedTemplates.filter((item: any) => item.id !== template.id)],
+      activeTab: "templates",
+    })
   }
 
   const formatPercent = (value: unknown) => {
@@ -265,10 +294,16 @@ export function AiStrategyPage() {
                       </div>
                     ))}
                   </div>
-                  <Button variant="outline" onClick={handleApplyGeneratedToBacktest}>
-                    <BarChart3 className="h-4 w-4 mr-2" />
-                    用此策略跑回测
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="outline" onClick={handleApplyGeneratedToBacktest}>
+                      <BarChart3 className="h-4 w-4 mr-2" />
+                      用此策略跑回测
+                    </Button>
+                    <Button variant="outline" onClick={handleSaveGeneratedAsTemplate}>
+                      <Lightbulb className="h-4 w-4 mr-2" />
+                      保存到策略模板
+                    </Button>
+                  </div>
                   {aiStrategyParams.backtestDraft && (
                     <div className="rounded-lg border bg-background p-3 text-sm">
                       <div className="mb-2 flex items-center justify-between">
@@ -446,6 +481,10 @@ export function AiStrategyPage() {
                           </div>
                         ))}
                       </div>
+                      <Button variant="outline" size="sm" onClick={() => handleApplyOptimizedToBacktest(c)}>
+                        <BarChart3 className="h-4 w-4 mr-2" />
+                        用此参数跑回测
+                      </Button>
                     </div>
                   ))}
                 </div>
@@ -528,7 +567,7 @@ export function AiStrategyPage() {
         {/* Tab 5: 策略模板 */}
         <TabsContent value="templates" className="space-y-4">
           <div className="grid gap-4 md:grid-cols-2">
-            {(templates?.templates || []).map((t: any) => (
+            {mergedTemplates.map((t: any) => (
               <Card key={t.id} className="hover:shadow-md transition-shadow">
                 <CardHeader className="pb-2">
                   <div className="flex items-center justify-between">

@@ -119,6 +119,15 @@ export interface AiStrategyParams {
   nlInput: string
   useDeep: boolean
   generated: unknown | null
+  savedTemplates: Array<{
+    id: string
+    name: string
+    description: string
+    category: string
+    default_params: Record<string, unknown>
+    source: "local-generated"
+    created_at: string
+  }>
   backtestDraft: {
     params: Record<string, unknown>
     appliedAt: string
@@ -352,6 +361,7 @@ function createDefaultAiStrategyParams(): AiStrategyParams {
     nlInput: "",
     useDeep: false,
     generated: null,
+    savedTemplates: [],
     backtestDraft: null,
     holdingsInput: "",
     analysis: null,

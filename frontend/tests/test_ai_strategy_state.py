@@ -70,6 +70,22 @@ class AiStrategyStateTests(unittest.TestCase):
         self.assertIn("已纳入AI生成策略", page_source)
         self.assertIn("generated_strategy?:", api_source)
 
+    def test_generated_strategy_can_be_saved_as_local_template(self):
+        store_source = (ROOT / "src" / "stores" / "app-store.ts").read_text(encoding="utf-8")
+        page_source = (ROOT / "src" / "pages" / "ai-strategy" / "index.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("savedTemplates", store_source)
+        self.assertIn("handleSaveGeneratedAsTemplate", page_source)
+        self.assertIn("保存到策略模板", page_source)
+        self.assertIn("local-generated", page_source)
+
+    def test_optimized_candidate_can_be_applied_to_backtest_params(self):
+        page_source = (ROOT / "src" / "pages" / "ai-strategy" / "index.tsx").read_text(encoding="utf-8")
+
+        self.assertIn("handleApplyOptimizedToBacktest", page_source)
+        self.assertIn("用此参数跑回测", page_source)
+        self.assertIn("optimizeResult.candidates.map", page_source)
+
 
 if __name__ == "__main__":
     unittest.main()
