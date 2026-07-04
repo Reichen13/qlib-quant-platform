@@ -692,6 +692,40 @@ class UpdateCnDataTests(unittest.TestCase):
         self.assertAlmostEqual(float(factor_raw[1]), 1.0, places=4)
         self.assertAlmostEqual(float(factor_raw[2]), 6.015655, places=4)
 
+    def test_full_rebuild_forward_fills_factor_during_suspension(self):
+        """factor 是阶梯函数，停牌期间延续前值而非 NaN（避免下游 NaN 传播）。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "cn_data_new"
+            (data_dir / "calendars").mkdir(parents=True)
+            (data_dir / "features" / "sh600000").mkdir(parents=True)
+            # 06-20/06-23 有数据，06-24 停牌（无行），06-25 复牌
+            calendar = ["2014-06-20", "2014-06-23", "2014-06-24", "2014-06-25"]
+            (data_dir / "calendars" / "day.txt").write_text("\n".join(calendar) + "\n", encoding="utf-8")
+
+            df = pd.DataFrame(
+                {"open": [10.0, 11.0, 12.0],
+                 "close": [10.5, 11.5, 12.5],
+                 "high": [11.0, 12.0, 13.0],
+                 "low": [10.0, 11.0, 12.0],
+                 "volume": [100.0, 110.0, 120.0],
+                 "amount": [1050.0, 1265.0, 1500.0],
+                 "factor": [1.0, 6.015655, 6.015655]},
+                index=["2014-06-20", "2014-06-23", "2014-06-25"],
+            )
+
+            with patch.object(update_cn_data, "DATA_DIR", data_dir):
+                update_cn_data.full_rebuild_stock("sh600000", df, calendar)
+
+            import numpy as np
+            factor_raw = np.fromfile(data_dir / "features" / "sh600000" / "factor.day.bin", dtype="<f")
+            close_raw = np.fromfile(data_dir / "features" / "sh600000" / "close.day.bin", dtype="<f")
+
+        # idx: [0]=start_idx, [1]=06-20, [2]=06-23, [3]=06-24(停牌), [4]=06-25
+        # factor 停牌日延续前值 6.015655（非 NaN）
+        self.assertAlmostEqual(float(factor_raw[3]), 6.015655, places=4)
+        # close 停牌日仍为 NaN（停牌无行情）
+        self.assertFalse(np.isfinite(close_raw[3]))
+
     def test_full_rebuild_overwrites_existing_bin_completely(self):
         """--full-rebuild 整文件覆盖，不走 repair+append；旧 bin 的错误 start_idx 被丢弃。"""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -752,6 +786,29 @@ class UpdateCnDataTests(unittest.TestCase):
         # 无重叠不拦截合法增量（result 仍 None），但打印 warning
         self.assertIsNone(result)
         self.assertIn("无重叠日", output)
+
+    def test_write_sample_instruments_uses_real_ipo_date_when_available(self):
+        """instruments 起始日用真实上市日（baostock ipoDate），不硬编码 2014。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "cn_data_new"
+            (data_dir / "instruments").mkdir(parents=True)
+            # sh600000 真实上市日 1999-11-10
+            ipo_map = {"sh600000": "1999-11-10", "sh600519": "2001-08-27"}
+            with patch.object(update_cn_data, "DATA_DIR", data_dir):
+                update_cn_data._write_sample_instruments(
+                    ["sh600000", "sh600519"], "2026-07-04", ipo_map=ipo_map,
+                )
+            text = (data_dir / "instruments" / "all.txt").read_text(encoding="utf-8")
+
+        lines = text.strip().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("sh600000\t1999-11-10\t2026-07-04"))
+        self.assertTrue(lines[1].startswith("sh600519\t2001-08-27\t2026-07-04"))
+
+    def test_resolve_incremental_start_uses_last_effective_date_itself(self):
+        """脚本增量默认起始日应是'最新有效日本身'（有重叠），而非其后一天。"""
+        self.assertEqual(update_cn_data._resolve_incremental_start("2026-06-23"), "2026-06-23")
+        self.assertEqual(update_cn_data._resolve_incremental_start(""), "2020-09-26")
 
 
 if __name__ == "__main__":

@@ -710,6 +710,16 @@ def full_rebuild_stock(
                 continue
             offset = cal_idx - start_idx
             values[offset] = float(val)
+        # factor 是阶梯函数：停牌/缺失期间值已知（延续前值），不填 NaN
+        # 避免 $close/$factor 在停牌邻近日出现不必要的 NaN 传播
+        if field == "factor":
+            last_val = float("nan")
+            for i in range(length):
+                import math
+                if math.isfinite(values[i]):
+                    last_val = values[i]
+                elif math.isfinite(last_val):
+                    values[i] = last_val
 
         bin_path = stock_dir / f"{field}.day.bin"
         _write_bin(bin_path, start_idx, values)
@@ -755,6 +765,10 @@ def update(
 
     if full_rebuild:
         start = "1990-01-01"  # 重建模式从上市日起拉，覆盖完整历史
+    elif start == "2020-09-26":
+        # 增量默认：用最新有效日本身（有重叠），让混拼防护每次真实校验一个重叠日
+        last_eff = _get_market_last_effective_date()
+        start = _resolve_incremental_start(last_eff)
 
     mode = "全量重建" if full_rebuild else "增量更新"
     print(f"=== {mode} {start} ~ {end} ===")
@@ -847,7 +861,8 @@ def update(
     # 3. instruments 日期范围
     if full_rebuild:
         print("\n[3] 重建模式：只写小样本 instruments")
-        _write_sample_instruments(codes, calendar[-1])
+        ipo_map = _query_ipo_dates(codes)
+        _write_sample_instruments(codes, calendar[-1], ipo_map=ipo_map)
     elif max_stocks is None and not codes:
         print("\n[3] 更新股票池日期范围...")
         _update_instruments_end(calendar[-1])
@@ -879,6 +894,46 @@ def _update_instruments_end(new_end: str):
         print(f"  {inst_path.name}: 结束日期 → {new_end}")
 
 
+# ── 增量起始日 ──
+
+def _resolve_incremental_start(last_effective_date: str) -> str:
+    """增量默认起始日 = 最新有效日本身（有重叠），而非其后一天。
+
+    多拉一天零成本，但让 _check_overlap_consistency 每次能真实校验一个重叠日，
+    否则混拼防护对正常增量永远只剩一条 warning。无有效日时回退 2020-09-26。
+    """
+    last_effective_date = (last_effective_date or "").strip()
+    return last_effective_date if last_effective_date else "2020-09-26"
+
+
+def _get_market_last_effective_date() -> str:
+    """读本机全市场 close.day.bin 的代表性最新有效日（用于增量默认 start）。"""
+    try:
+        cal = load_calendar()
+        if not cal:
+            return ""
+        # 抽样：取 features 目录前若干只 close.bin 的末日索引对应日期的中位数
+        dates = []
+        for close_path in sorted(DATA_DIR.glob("features/*/close.day.bin"))[:50]:
+            raw = np.fromfile(close_path, dtype="<f")
+            if len(raw) < 2:
+                continue
+            # 从末尾往前找第一个有限且>0的值
+            for offset in range(len(raw) - 1, 0, -1):
+                val = float(raw[offset])
+                if np.isfinite(val) and val > 0:
+                    end_idx = int(raw[0]) + (offset - 1)
+                    if 0 <= end_idx < len(cal):
+                        dates.append(cal[end_idx])
+                    break
+        if not dates:
+            return ""
+        dates.sort()
+        return dates[len(dates) // 2]
+    except Exception:
+        return ""
+
+
 def _init_rebuild_skeleton(codes: list[str] | None) -> None:
     """初始化重建目录骨架：calendars/day.txt 从源日历复制（日历本身日期序列是对的，
     坏的是旧 bin 的索引），instruments 目录创建空。"""
@@ -900,12 +955,45 @@ def _init_rebuild_skeleton(codes: list[str] | None) -> None:
     (DATA_DIR / "features").mkdir(parents=True, exist_ok=True)
 
 
-def _write_sample_instruments(codes: list[str] | None, new_end: str) -> None:
-    """重建模式下只写小样本 instruments/all.txt，验收通过后再扩全量。"""
+def _query_ipo_dates(codes: list[str]) -> dict[str, str]:
+    """查 baostock query_stock_basic 拿真实上市日（ipoDate）。失败返回空映射。"""
+    ipo_map: dict[str, str] = {}
+    try:
+        bs = _get_baostock()
+        if bs is None:
+            return ipo_map
+        for qlib_code in codes:
+            rs = bs.query_stock_basic(code=yf_to_baostock(qlib_to_yf(qlib_code)))
+            if getattr(rs, "error_code", "0") != "0":
+                continue
+            while rs.next():
+                row = rs.get_row_data()
+                # fields: code, code_name, ipoDate, outDate, type, status
+                if len(row) >= 3 and row[2]:
+                    ipo_map[qlib_code.lower()] = row[2]
+                    break
+    except Exception as e:
+        print(f"  WARN: 查询上市日失败，instruments 将回退到 2014-01-01: {e}")
+    return ipo_map
+
+
+def _write_sample_instruments(
+    codes: list[str] | None,
+    new_end: str,
+    ipo_map: dict[str, str] | None = None,
+) -> None:
+    """重建模式下只写小样本 instruments/all.txt，验收通过后再扩全量。
+
+    起始日用真实上市日（ipo_map[code]），缺失时回退 2014-01-01。
+    """
     if not codes:
         return
+    ipo_map = ipo_map or {}
     inst_path = DATA_DIR / "instruments" / "all.txt"
-    lines = [f"{code.lower()}\t2014-01-01\t{new_end}" for code in codes]
+    lines = []
+    for code in codes:
+        start = ipo_map.get(code.lower(), "2014-01-01")
+        lines.append(f"{code.lower()}\t{start}\t{new_end}")
     inst_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"  {inst_path.name}: {len(lines)} 只小样本")
 
