@@ -167,7 +167,7 @@ def fetch_yfinance(yf_code: str, start: str, end: str) -> pd.DataFrame:
 def _query_baostock_history(bs, yf_code: str, start: str, end: str, adjustflag: str) -> pd.DataFrame:
     rs = bs.query_history_k_data_plus(
         yf_to_baostock(yf_code),
-        "date,code,open,high,low,close,volume,amount",
+        "date,code,open,high,low,close,volume,amount,tradestatus",
         start_date=start,
         end_date=end,
         frequency="d",
@@ -179,7 +179,12 @@ def _query_baostock_history(bs, yf_code: str, start: str, end: str, adjustflag: 
 
     rows = []
     while rs.next():
-        rows.append(rs.get_row_data())
+        row = rs.get_row_data()
+        # baostock 对停牌日返回 tradestatus!=1 的行（close 为前值假行情），
+        # 必须过滤掉，否则停牌期被当成正常交易日写入 bin
+        if len(row) >= 9 and row[8] != "1":
+            continue
+        rows.append(row[:8])  # 去掉 tradestatus 列，保持原 8 列结构
     if not rows:
         return pd.DataFrame()
 

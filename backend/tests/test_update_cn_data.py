@@ -53,6 +53,16 @@ class FakeBaostockResult:
         ]
         self.index = -1
 
+    @classmethod
+    def with_tradestatus(cls, rows_with_status):
+        """rows 每行末尾带 tradestatus 字段，模拟 baostock 真实返回。"""
+        obj = cls.__new__(cls)
+        obj.error_code = "0"
+        obj.error_msg = "success"
+        obj.rows = rows_with_status
+        obj.index = -1
+        return obj
+
     def next(self):
         self.index += 1
         return self.index < len(self.rows)
@@ -101,11 +111,11 @@ class FakeBaostockModule:
 
     @staticmethod
     def _history_rows(start_date: str, end_date: str):
-        # 原始价（不复权）合成行：覆盖 2014 事件前后与 2026 增量两个窗口
+        # 原始价（不复权）合成行，末尾带 tradestatus：覆盖 2014 事件前后与 2026 增量
         rows_by_date = {
-            "2014-06-23": ["2014-06-23", "sh.600519", "120.0", "121.0", "119.0", "120.0", "100000", "12000000.0"],
-            "2014-06-24": ["2014-06-24", "sh.600519", "121.0", "122.0", "120.0", "121.0", "110000", "13310000.0"],
-            "2026-05-07": ["2026-05-07", "sh.600519", "1375.00", "1388.00", "1370.01", "1371.05", "4046147", "5573286314.86"],
+            "2014-06-23": ["2014-06-23", "sh.600519", "120.0", "121.0", "119.0", "120.0", "100000", "12000000.0", "1"],
+            "2014-06-24": ["2014-06-24", "sh.600519", "121.0", "122.0", "120.0", "121.0", "110000", "13310000.0", "1"],
+            "2026-05-07": ["2026-05-07", "sh.600519", "1375.00", "1388.00", "1370.01", "1371.05", "4046147", "5573286314.86", "1"],
         }
         return [rows_by_date[d] for d in sorted(rows_by_date) if start_date <= d <= end_date]
 
@@ -225,6 +235,35 @@ class UpdateCnDataTests(unittest.TestCase):
         self.assertAlmostEqual(float(df.loc["2014-06-24", "factor"]), 6.015655, places=4)
         # 连乘 bug 下 2014-06-24 会是 6.015655，但后续事件会指数爆炸；
         # 这里只测首事件，但阶梯语义已成立（= baostock 原值，非连乘前序）
+
+    def test_fetch_baostock_drops_suspended_days(self):
+        """baostock 对停牌日返回 tradestatus!=1 的行（close 为前值假行情），必须过滤。"""
+        suspended_rows = [
+            ["2024-11-29", "sh.600289", "8.50", "8.60", "8.40", "8.55", "100000", "855000.0", "1"],
+            # 12-02~12-04 停牌（tradestatus=0），close 为前值假行情
+            ["2024-12-02", "sh.600289", "8.55", "8.55", "8.55", "8.55", "0", "0.0", "0"],
+            ["2024-12-03", "sh.600289", "8.55", "8.55", "8.55", "8.55", "0", "0.0", "0"],
+            ["2024-12-04", "sh.600289", "8.55", "8.55", "8.55", "8.55", "0", "0.0", "0"],
+            ["2024-12-05", "sh.600289", "8.60", "8.70", "8.50", "8.65", "110000", "951500.0", "1"],
+        ]
+
+        class SuspModule:
+            def login(self): return types.SimpleNamespace(error_code="0", error_msg="success")
+            def logout(self): return None
+            def query_history_k_data_plus(self, code, fields, start_date, end_date, frequency, adjustflag):
+                return FakeBaostockResult.with_tradestatus(suspended_rows)
+            def query_adjust_factor(self, code, start_date, end_date):
+                return FakeAdjustFactorResult()
+
+        update_cn_data._BAOSTOCK = None
+        update_cn_data._BAOSTOCK_LOGGED_IN = False
+        with patch.dict(sys.modules, {"baostock": SuspModule()}):
+            df = update_cn_data.fetch_baostock("600289.SS", "2024-11-28", "2024-12-06")
+
+        # 停牌日 12-02/03/04 必须被过滤掉，只剩 11-29 和 12-05 两个交易日
+        self.assertEqual(list(df.index), ["2024-11-29", "2024-12-05"])
+        # close 为后复权价（原始价 × 因子），只验证 12-05 有真实值即可（停牌假行情已被剔除）
+        self.assertTrue(np.isfinite(float(df.loc["2024-12-05", "close"])))
 
     def test_fetch_does_not_write_from_non_baostock_sources(self):
         """腾讯/东财/yfinance 即便能取到数据，也不能进入写入链路。"""
