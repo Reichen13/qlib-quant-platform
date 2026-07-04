@@ -29,7 +29,7 @@ EXTRA_FIELDS = ["amount", "factor"]
 _BAOSTOCK = None
 _BAOSTOCK_LOGGED_IN = False
 REBUILD_GAP_THRESHOLD = 500
-REQUEST_SLEEP_SECONDS = 0.05
+REQUEST_SLEEP_SECONDS = 0.15  # 全量重建长时间运行，提高到 150ms 避免被限流
 
 
 # ── 日历 ──
@@ -262,6 +262,44 @@ def _build_cumulative_back_factor(factor_rows: pd.DataFrame, raw_index: pd.Index
         if applicable is not None:
             base.iloc[i] = float(applicable)
     return base
+
+
+def _stock_already_rebuilt(qlib_code: str, calendar: list[str], min_density: float = 0.95) -> bool:
+    """断点续跑：检查该股是否已重建且密度达标、末尾数据新鲜。
+    全量重建可能中断，重跑时已完成的股票自动跳过。
+    """
+    close_path = DATA_DIR / "features" / qlib_code.lower() / "close.day.bin"
+    if not close_path.exists():
+        return False
+    raw = np.fromfile(close_path, dtype="<f")
+    if len(raw) < 3:
+        return False
+    arr = raw[1:]
+    valid = np.where(np.isfinite(arr) & (arr > 0))[0]
+    if len(valid) == 0:
+        return False
+    density = len(valid) / len(arr)
+    if density < min_density:
+        return False
+    # 末尾数据应接近日历末日（允许最近 10 天内即视为新鲜）
+    start_idx = int(raw[0])
+    last_valid_idx = start_idx + valid[-1]
+    if last_valid_idx < len(calendar) - 10:
+        return False
+    return True
+
+
+def _fetch_with_retry(yf_code: str, start: str, end: str, retries: int = 2) -> pd.DataFrame:
+    """带重试的抓取。baostock 长时间高频查询可能偶发失败，重试 2 次再放弃。"""
+    df = pd.DataFrame()
+    for attempt in range(retries + 1):
+        df = fetch(yf_code, start, end)
+        if not df.empty:
+            return df
+        if attempt < retries:
+            time.sleep(0.5 * (attempt + 1))  # 退避：0.5s, 1.0s
+    return df
+
 
 
 def fetch_baostock(yf_code: str, start: str, end: str) -> pd.DataFrame:
@@ -572,6 +610,7 @@ def append_to_bin(
     calendar: list[str],
     rebuild_stale: bool = False,
     overwrite_existing: bool = False,
+    migrate_instruments: bool = False,
 ) -> int:
     """把 df 追加到已有 bin 文件，返回追加的行数"""
     if df.empty:
@@ -764,6 +803,7 @@ def update(
     full_rebuild: bool = False,
     rebuild_stale: bool = False,
     overwrite_existing: bool = False,
+    migrate_instruments: bool = False,
 ) -> int:
     if end is None:
         end = (pd.Timestamp.now() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
@@ -821,18 +861,30 @@ def update(
     print(f"\n[2] 开始更新 {total} 只股票...")
 
     success = skip = fail = 0
+    failed_codes: list[str] = []
     start_time = time.time()
 
     for i, bin_path in enumerate(stocks):
         qlib_code = bin_path.name if full_rebuild else bin_path.parent.name
         yf_code = qlib_to_yf(qlib_code)
 
-        # 拉取新数据
-        df = fetch(yf_code, start, end)
+        # 断点续跑：重建模式下，已完成且密度达标的股票自动跳过（重跑即续跑）
+        if full_rebuild and _stock_already_rebuilt(qlib_code, calendar):
+            skip += 1
+            if (i + 1) % 200 == 0 or i == total - 1:
+                elapsed = time.time() - start_time
+                speed = (i + 1) / elapsed if elapsed > 0 else 0
+                print(f"  [{i+1}/{total}] 成功:{success} 跳过:{skip} 失败:{fail} "
+                      f"速度:{speed:.1f}只/s 剩余:{(total-i-1)/max(speed,0.01)/60:.1f}分")
+            continue
+
+        # 拉取新数据（带重试）
+        df = _fetch_with_retry(yf_code, start, end)
         df = _clip_to_requested_range(df, start, end)
 
         if df.empty:
             fail += 1
+            failed_codes.append(qlib_code)
         else:
             if full_rebuild:
                 appended = full_rebuild_stock(qlib_code, df, calendar)
@@ -868,6 +920,8 @@ def update(
         print("\n[3] 重建模式：只写小样本 instruments")
         ipo_map = _query_ipo_dates(codes)
         _write_sample_instruments(codes, calendar[-1], ipo_map=ipo_map)
+        if migrate_instruments:
+            _migrate_instrument_pools()
     elif max_stocks is None and not codes:
         print("\n[3] 更新股票池日期范围...")
         _update_instruments_end(calendar[-1])
@@ -876,8 +930,12 @@ def update(
 
     elapsed = time.time() - start_time
     print(f"\n完成！耗时 {elapsed/60:.1f} 分钟")
-    print(f"成功: {success}  跳过(无新数据): {skip}  失败: {fail}")
+    print(f"成功: {success}  跳过(已完成/无新数据): {skip}  失败: {fail}")
     print(f"数据最新日期: {calendar[-1]}")
+    if failed_codes:
+        fail_path = DATA_DIR / "rebuild_failed.txt"
+        fail_path.write_text("\n".join(failed_codes) + "\n", encoding="utf-8")
+        print(f"失败股票清单已写入: {fail_path} ({len(failed_codes)} 只)")
     return 0
 
 
@@ -1029,6 +1087,31 @@ def _write_sample_instruments(
     inst_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"  {inst_path.name}: {len(lines)} 只小样本")
 
+def _migrate_instrument_pools() -> None:
+    """从旧 cn_data/instruments 迁移 csi300/csi500/csi100 等股票池文件。
+
+    沿用现有“当前快照”口径（时点成分表是审计报告里的后续项）。
+    factors.py 硬编码 csi300，漏了它切换后因子分析直接跑不了。
+    """
+    src_dir = pathlib.Path.home() / ".qlib" / "qlib_data" / "cn_data" / "instruments"
+    dst_dir = DATA_DIR / "instruments"
+    if not src_dir.exists():
+        print(f"  WARN: 旧 instruments 目录不存在，跳过迁移")
+        return
+    migrated = []
+    for pool_file in ("csi300.txt", "csi500.txt", "csi100.txt"):
+        src = src_dir / pool_file
+        if src.exists():
+            dst = dst_dir / pool_file
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+            migrated.append(pool_file)
+    if migrated:
+        print(f"  股票池迁移: {', '.join(migrated)}（沿用当前快照口径，成分表时点另计）")
+    else:
+        print("  WARN: 未找到可迁移的股票池文件")
+
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -1038,6 +1121,8 @@ if __name__ == "__main__":
     parser.add_argument("--max",    type=int, default=None, help="最多更新几只（测试用）")
     parser.add_argument("--code", action="append", default=None, help="只更新指定 Qlib 代码，可重复传入，如 --code sz300750")
     parser.add_argument("--codes-file", default=None, help="只更新文件中列出的 Qlib 代码，每行一个")
+    parser.add_argument("--all", action="store_true", help="rebuild whole market from old all.txt")
+    parser.add_argument("--migrate-instruments", action="store_true", help="migrate csi300/csi500 pools from old dir")
     parser.add_argument("--data-dir", default=None, help="数据目录（默认 ~/.qlib/qlib_data/cn_data）；重建时指定 cn_data_new")
     parser.add_argument("--full-rebuild", action="store_true", help="全量重建模式：从 df 从零构造完整 bin，不走 repair+append；须配合 --data-dir 指向新目录")
     parser.add_argument("--rebuild-stale", action="store_true", help="重建明显异常的短历史文件，用于修复少量核心股票缺口")
@@ -1052,6 +1137,19 @@ if __name__ == "__main__":
         check()
     else:
         codes = list(args.code or [])
+        if args.all:
+            src_all = pathlib.Path.home() / ".qlib" / "qlib_data" / "cn_data" / "instruments" / "all.txt"
+            if not src_all.exists():
+                print(f"ERROR: --all needs old dir {src_all}")
+                sys.exit(5)
+            for line in src_all.read_text(encoding="utf-8").splitlines():
+                c = line.strip().split("\t")[0].lower()
+                if not c:
+                    continue
+                if c.startswith(("sh000", "sz399", "sh9", "sz9")):
+                    continue
+                codes.append(c)
+            print(f"  --all: loaded {len(codes)} stocks from old all.txt")
         if args.codes_file:
             codes.extend(
                 line.strip()
@@ -1067,5 +1165,6 @@ if __name__ == "__main__":
                 full_rebuild=args.full_rebuild,
                 rebuild_stale=args.rebuild_stale,
                 overwrite_existing=args.overwrite_existing,
+                migrate_instruments=args.migrate_instruments,
             )
         )
