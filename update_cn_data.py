@@ -786,11 +786,11 @@ def update(
     print("\n[1] 准备交易日历...")
     calendar = load_calendar() if full_rebuild else []
     if full_rebuild and not calendar:
-        print("  ERROR: 重建模式需要已有日历（应已从源目录复制），但当前为空")
+        print("  ERROR: 重建模式需要 baostock 重建的完整日历，但当前为空")
         return 2
     if not full_rebuild or not calendar:
         # 增量模式，或重建模式日历缺失时，用沪深300ETF 拉新交易日扩展日历
-        ref_df = fetch("510300.SS", start, end)
+        ref_df = fetch("510300.SS", start, end)  # noqa: ETF 仅用于增量日历扩展，不写入
         ref_df = _clip_to_requested_range(ref_df, start, end)
         if ref_df.empty and not calendar:
             print("  ERROR: 无法获取参考数据，请检查网络")
@@ -939,22 +939,49 @@ def _get_market_last_effective_date() -> str:
         return ""
 
 
+def _rebuild_calendar_from_baostock(start: str = "1990-01-01", end: str | None = None) -> list[str]:
+    """用 baostock query_trade_dates 全量重建官方交易日历。
+
+    旧源日历经审计发现有成段缺失（如 2016 春节段缺 16 个交易日），
+    不能直接复制——会导致 df 被静默丢弃这些日期的数据，并制造跨洞收益率。
+    """
+    if end is None:
+        end = (pd.Timestamp.now() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+    try:
+        bs = _get_baostock()
+        if bs is None:
+            return []
+        rs = bs.query_trade_dates(start_date=start, end_date=end)
+        if rs.error_code != "0":
+            print(f"  WARN: query_trade_dates 失败: {rs.error_code} {rs.error_msg}")
+            return []
+        trading_days = []
+        while rs.next():
+            row = rs.get_row_data()  # calendar_date, is_trading_day
+            if len(row) >= 2 and row[1] == "1":
+                trading_days.append(row[0])
+        return trading_days
+    except Exception as e:
+        print(f"  WARN: 从 baostock 重建日历失败: {e}")
+        return []
+
+
 def _init_rebuild_skeleton(codes: list[str] | None) -> None:
-    """初始化重建目录骨架：calendars/day.txt 从源日历复制（日历本身日期序列是对的，
-    坏的是旧 bin 的索引），instruments 目录创建空。"""
-    src_data_dir = pathlib.Path.home() / ".qlib" / "qlib_data" / "cn_data"
-    src_cal = src_data_dir / "calendars" / "day.txt"
+    """初始化重建目录骨架：日历用 baostock query_trade_dates 全量重建（旧源日历有洞，
+    不能复制），instruments/features 目录创建空。"""
     dst_cal = DATA_DIR / "calendars" / "day.txt"
     dst_cal.parent.mkdir(parents=True, exist_ok=True)
 
-    if src_cal.exists() and not dst_cal.exists():
-        import shutil
-        shutil.copy2(src_cal, dst_cal)
-        print(f"  日历已从 {src_cal} 复制到 {dst_cal}")
-    elif dst_cal.exists():
-        print(f"  日历已存在: {dst_cal}")
+    if dst_cal.exists():
+        print(f"  日历已存在: {dst_cal}（跳过重建）")
     else:
-        print(f"  WARN: 源日历不存在({src_cal})，将在拉取时扩展")
+        print("  从 baostock query_trade_dates 重建官方交易日历...")
+        days = _rebuild_calendar_from_baostock()
+        if days:
+            dst_cal.write_text("\n".join(days) + "\n", encoding="utf-8")
+            print(f"  日历重建完成: {days[0]} ~ {days[-1]} ({len(days)} 天)")
+        else:
+            print(f"  WARN: 日历重建失败，将在拉取时扩展")
 
     (DATA_DIR / "instruments").mkdir(parents=True, exist_ok=True)
     (DATA_DIR / "features").mkdir(parents=True, exist_ok=True)
