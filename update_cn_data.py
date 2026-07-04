@@ -552,6 +552,12 @@ def _check_overlap_consistency(
                 f"疑似口径不一致（新旧复权混拼），需全量重建"
             )
 
+    if overlap_checks == 0:
+        # 不拦截合法增量（最新日+1 起本就无重叠），但打印提示，避免校验形同虚设
+        print(
+            f"  WARN {qlib_code}: 抓取窗口与现有数据无重叠日，重叠校验未生效；"
+            "请确认增量起始日取的是'最新有效日本身'（有重叠）而非其后一天"
+        )
     return None
 
 
@@ -659,6 +665,59 @@ def append_to_bin(
     return appended
 
 
+def full_rebuild_stock(
+    qlib_code: str,
+    df: pd.DataFrame,
+    calendar: list[str],
+) -> int:
+    """从零构造完整 bin（--full-rebuild 模式专用）。
+
+    与 append_to_bin/repair 的本质区别：
+      - 不依赖旧 bin 的 start_idx（旧 bin 可能因日历错位而索引错误）；
+      - 从 df 最早交易日重新计算 start_idx；
+      - 按日历逐日填值，缺失日填 NaN，七个字段整文件覆盖写。
+
+    返回写入的字段数。
+    """
+    if df.empty or not calendar:
+        return 0
+
+    calendar_index = {date: idx for idx, date in enumerate(calendar)}
+    cal_set = set(calendar)
+    df = df[[d in cal_set for d in df.index]]
+    if df.empty:
+        return 0
+
+    stock_dir = DATA_DIR / "features" / qlib_code.lower()
+    stock_dir.mkdir(parents=True, exist_ok=True)
+
+    # 新 start_idx = df 最早交易日在日历中的索引
+    first_date = str(min(df.index))
+    start_idx = calendar_index[first_date]
+    # 末尾覆盖到日历最后一天（全量序列）
+    end_idx = len(calendar) - 1
+    length = end_idx - start_idx + 1
+
+    written = 0
+    for field in FIELDS + EXTRA_FIELDS:
+        if field not in df.columns:
+            continue
+        # 按日历逐日构造完整序列，缺失填 NaN
+        values: list[float] = [float("nan")] * length
+        for date_str, val in df[field].items():
+            cal_idx = _date_to_calendar_index(calendar_index, date_str)
+            if cal_idx is None or cal_idx < start_idx:
+                continue
+            offset = cal_idx - start_idx
+            values[offset] = float(val)
+
+        bin_path = stock_dir / f"{field}.day.bin"
+        _write_bin(bin_path, start_idx, values)
+        written += 1
+
+    return written
+
+
 # ── 主流程 ──
 
 def check():
@@ -687,32 +746,55 @@ def update(
     end: str = None,
     max_stocks: int = None,
     codes: list[str] | None = None,
+    full_rebuild: bool = False,
     rebuild_stale: bool = False,
     overwrite_existing: bool = False,
 ) -> int:
     if end is None:
         end = (pd.Timestamp.now() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
 
-    print(f"=== 增量更新 {start} ~ {end} ===")
+    if full_rebuild:
+        start = "1990-01-01"  # 重建模式从上市日起拉，覆盖完整历史
 
-    # 1. 用沪深300ETF 获取新交易日，扩展日历
-    print("\n[1] 获取新交易日...")
-    ref_df = fetch("510300.SS", start, end)
-    ref_df = _clip_to_requested_range(ref_df, start, end)
-    if ref_df.empty:
-        print("  ERROR: 无法获取参考数据，请检查网络")
+    mode = "全量重建" if full_rebuild else "增量更新"
+    print(f"=== {mode} {start} ~ {end} ===")
+    print(f"  数据目录: {DATA_DIR}")
+
+    if full_rebuild:
+        _init_rebuild_skeleton(codes)
+
+    # 1. 日历准备
+    print("\n[1] 准备交易日历...")
+    calendar = load_calendar() if full_rebuild else []
+    if full_rebuild and not calendar:
+        print("  ERROR: 重建模式需要已有日历（应已从源目录复制），但当前为空")
         return 2
-    new_dates = list(ref_df.index)
-    calendar = extend_calendar(new_dates)
-    print(f"  新增交易日: {new_dates[0]} ~ {new_dates[-1]}  ({len(new_dates)} 天)")
+    if not full_rebuild or not calendar:
+        # 增量模式，或重建模式日历缺失时，用沪深300ETF 拉新交易日扩展日历
+        ref_df = fetch("510300.SS", start, end)
+        ref_df = _clip_to_requested_range(ref_df, start, end)
+        if ref_df.empty and not calendar:
+            print("  ERROR: 无法获取参考数据，请检查网络")
+            return 2
+        if not ref_df.empty:
+            new_dates = list(ref_df.index)
+            calendar = extend_calendar(new_dates)
+            print(f"  新增交易日: {new_dates[0]} ~ {new_dates[-1]}  ({len(new_dates)} 天)")
 
-    # 2. 获取所有股票列表
-    stocks = sorted(DATA_DIR.glob("features/*/close.day.bin"))
-    if codes:
-        wanted = {code.lower() for code in codes}
-        stocks = [path for path in stocks if path.parent.name.lower() in wanted]
-    if max_stocks:
-        stocks = stocks[:max_stocks]
+    # 2. 获取股票列表
+    if full_rebuild:
+        # 重建模式：按 codes 列表，不依赖现有 features 目录
+        if not codes:
+            print("  ERROR: --full-rebuild 必须配合 --code 或 --codes-file 指定股票")
+            return 3
+        stocks = [pathlib.Path(c.lower()) for c in codes]
+    else:
+        stocks = sorted(DATA_DIR.glob("features/*/close.day.bin"))
+        if codes:
+            wanted = {code.lower() for code in codes}
+            stocks = [path for path in stocks if path.parent.name.lower() in wanted]
+        if max_stocks:
+            stocks = stocks[:max_stocks]
     total = len(stocks)
     if total == 0:
         print("  ERROR: 未找到可更新的股票特征文件，请检查 Qlib 数据目录")
@@ -723,8 +805,8 @@ def update(
     start_time = time.time()
 
     for i, bin_path in enumerate(stocks):
-        qlib_code = bin_path.parent.name   # sh600519
-        yf_code   = qlib_to_yf(qlib_code)  # 600519.SS
+        qlib_code = bin_path.name if full_rebuild else bin_path.parent.name
+        yf_code = qlib_to_yf(qlib_code)
 
         # 拉取新数据
         df = fetch(yf_code, start, end)
@@ -733,13 +815,16 @@ def update(
         if df.empty:
             fail += 1
         else:
-            appended = append_to_bin(
-                qlib_code,
-                df,
-                calendar,
-                rebuild_stale=rebuild_stale,
-                overwrite_existing=overwrite_existing,
-            )
+            if full_rebuild:
+                appended = full_rebuild_stock(qlib_code, df, calendar)
+            else:
+                appended = append_to_bin(
+                    qlib_code,
+                    df,
+                    calendar,
+                    rebuild_stale=rebuild_stale,
+                    overwrite_existing=overwrite_existing,
+                )
             if appended > 0:
                 success += 1
             else:
@@ -759,9 +844,11 @@ def update(
         print("  ERROR: 所有股票数据拉取失败，请检查行情源或网络")
         return 4
 
-    # 3. 更新 instruments 日期范围。小样本验证时不改全量股票池结束日期，
-    # 避免只更新几只股票却让页面误以为全市场都已更新。
-    if max_stocks is None and not codes:
+    # 3. instruments 日期范围
+    if full_rebuild:
+        print("\n[3] 重建模式：只写小样本 instruments")
+        _write_sample_instruments(codes, calendar[-1])
+    elif max_stocks is None and not codes:
         print("\n[3] 更新股票池日期范围...")
         _update_instruments_end(calendar[-1])
     else:
@@ -792,6 +879,37 @@ def _update_instruments_end(new_end: str):
         print(f"  {inst_path.name}: 结束日期 → {new_end}")
 
 
+def _init_rebuild_skeleton(codes: list[str] | None) -> None:
+    """初始化重建目录骨架：calendars/day.txt 从源日历复制（日历本身日期序列是对的，
+    坏的是旧 bin 的索引），instruments 目录创建空。"""
+    src_data_dir = pathlib.Path.home() / ".qlib" / "qlib_data" / "cn_data"
+    src_cal = src_data_dir / "calendars" / "day.txt"
+    dst_cal = DATA_DIR / "calendars" / "day.txt"
+    dst_cal.parent.mkdir(parents=True, exist_ok=True)
+
+    if src_cal.exists() and not dst_cal.exists():
+        import shutil
+        shutil.copy2(src_cal, dst_cal)
+        print(f"  日历已从 {src_cal} 复制到 {dst_cal}")
+    elif dst_cal.exists():
+        print(f"  日历已存在: {dst_cal}")
+    else:
+        print(f"  WARN: 源日历不存在({src_cal})，将在拉取时扩展")
+
+    (DATA_DIR / "instruments").mkdir(parents=True, exist_ok=True)
+    (DATA_DIR / "features").mkdir(parents=True, exist_ok=True)
+
+
+def _write_sample_instruments(codes: list[str] | None, new_end: str) -> None:
+    """重建模式下只写小样本 instruments/all.txt，验收通过后再扩全量。"""
+    if not codes:
+        return
+    inst_path = DATA_DIR / "instruments" / "all.txt"
+    lines = [f"{code.lower()}\t2014-01-01\t{new_end}" for code in codes]
+    inst_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"  {inst_path.name}: {len(lines)} 只小样本")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--check",  action="store_true", help="只检查状态")
@@ -800,9 +918,15 @@ if __name__ == "__main__":
     parser.add_argument("--max",    type=int, default=None, help="最多更新几只（测试用）")
     parser.add_argument("--code", action="append", default=None, help="只更新指定 Qlib 代码，可重复传入，如 --code sz300750")
     parser.add_argument("--codes-file", default=None, help="只更新文件中列出的 Qlib 代码，每行一个")
+    parser.add_argument("--data-dir", default=None, help="数据目录（默认 ~/.qlib/qlib_data/cn_data）；重建时指定 cn_data_new")
+    parser.add_argument("--full-rebuild", action="store_true", help="全量重建模式：从 df 从零构造完整 bin，不走 repair+append；须配合 --data-dir 指向新目录")
     parser.add_argument("--rebuild-stale", action="store_true", help="重建明显异常的短历史文件，用于修复少量核心股票缺口")
     parser.add_argument("--overwrite-existing", action="store_true", help="覆盖指定日期窗口内已有的非 0 价格/成交/factor 字段（新方案 factor 为真实累积因子，重建单票时需一并重写）")
     args = parser.parse_args()
+
+    if args.data_dir:
+        DATA_DIR = pathlib.Path(args.data_dir)
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     if args.check:
         check()
@@ -820,6 +944,7 @@ if __name__ == "__main__":
                 end=args.end,
                 max_stocks=args.max,
                 codes=codes or None,
+                full_rebuild=args.full_rebuild,
                 rebuild_stale=args.rebuild_stale,
                 overwrite_existing=args.overwrite_existing,
             )

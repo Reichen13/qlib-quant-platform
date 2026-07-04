@@ -647,6 +647,112 @@ class UpdateCnDataTests(unittest.TestCase):
 
         self.assertEqual(appended, 0)
 
+    def test_full_rebuild_writes_complete_bin_from_scratch(self):
+        """--full-rebuild 从零构造完整 bin：start_idx=上市首日日历索引，按日历逐日填，缺失填 NaN。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "cn_data_new"
+            (data_dir / "calendars").mkdir(parents=True)
+            (data_dir / "instruments").mkdir(parents=True)
+            (data_dir / "features" / "sh600000").mkdir(parents=True)
+            calendar = ["2014-06-20", "2014-06-23", "2014-06-24", "2014-06-25", "2014-06-26"]
+            (data_dir / "calendars" / "day.txt").write_text("\n".join(calendar) + "\n", encoding="utf-8")
+
+            # 仅 3 个交易日有数据，中间和首尾缺失
+            df = pd.DataFrame(
+                {
+                    "open": [120.0, 121.0, 123.0],
+                    "close": [121.0, 122.0, 124.0],
+                    "high": [122.0, 123.0, 125.0],
+                    "low": [119.0, 120.0, 122.0],
+                    "volume": [1000.0, 1100.0, 1200.0],
+                    "amount": [121000.0, 134200.0, 148800.0],
+                    "factor": [1.0, 6.015655, 6.015655],
+                },
+                index=["2014-06-23", "2014-06-24", "2014-06-25"],
+            )
+
+            with patch.object(update_cn_data, "DATA_DIR", data_dir):
+                written = update_cn_data.full_rebuild_stock("sh600000", df, calendar)
+
+            import numpy as np
+            close_raw = np.fromfile(data_dir / "features" / "sh600000" / "close.day.bin", dtype="<f")
+            factor_raw = np.fromfile(data_dir / "features" / "sh600000" / "factor.day.bin", dtype="<f")
+
+        self.assertEqual(written, 7)  # 七个字段整文件覆盖
+        # start_idx = df 首日 2014-06-23 在日历中的索引 = 1
+        self.assertEqual(int(close_raw[0]), 1)
+        # 长度 = 1(start_idx) + (日历尾idx4 - df首日idx1 + 1) = 1 + 4 = 5
+        self.assertEqual(len(close_raw), 5)
+        # close: [start_idx=1, 06-23=121, 06-24=122, 06-25=124, 06-26=NaN]
+        self.assertAlmostEqual(float(close_raw[1]), 121.0)  # 2014-06-23
+        self.assertAlmostEqual(float(close_raw[2]), 122.0)  # 2014-06-24
+        self.assertAlmostEqual(float(close_raw[3]), 124.0)  # 2014-06-25
+        self.assertFalse(np.isfinite(close_raw[4]))         # 2014-06-26 缺失
+        # factor 阶梯：2014-06-23=1.0，2014-06-24 起=6.015655
+        self.assertAlmostEqual(float(factor_raw[1]), 1.0, places=4)
+        self.assertAlmostEqual(float(factor_raw[2]), 6.015655, places=4)
+
+    def test_full_rebuild_overwrites_existing_bin_completely(self):
+        """--full-rebuild 整文件覆盖，不走 repair+append；旧 bin 的错误 start_idx 被丢弃。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "cn_data_new"
+            stock_dir = data_dir / "features" / "sh600519"
+            (data_dir / "calendars").mkdir(parents=True)
+            stock_dir.mkdir(parents=True)
+            calendar = ["2026-03-20", "2026-03-23", "2026-03-24"]
+            (data_dir / "calendars" / "day.txt").write_text("\n".join(calendar) + "\n", encoding="utf-8")
+
+            # 旧 bin：错误的 start_idx=9999 + 1999 幽灵段
+            import numpy as np
+            np.array([9999.0, 1459.0, 1500.0], dtype="<f").tofile(stock_dir / "close.day.bin")
+
+            df = pd.DataFrame(
+                {"open": [10.0], "close": [11.0], "high": [12.0], "low": [9.0],
+                 "volume": [100.0], "amount": [1100.0], "factor": [12.76]},
+                index=["2026-03-20"],
+            )
+
+            with patch.object(update_cn_data, "DATA_DIR", data_dir):
+                written = update_cn_data.full_rebuild_stock("sh600519", df, calendar)
+
+            close_raw = np.fromfile(stock_dir / "close.day.bin", dtype="<f")
+
+        self.assertEqual(int(close_raw[0]), 0)  # 新 start_idx，不再是 9999
+        self.assertEqual(len(close_raw), 4)  # 1 + 3 日历天
+        self.assertAlmostEqual(float(close_raw[1]), 11.0)  # 2026-03-20
+
+    def test_overlap_check_warns_when_no_overlap_in_incremental_mode(self):
+        """非重建模式下，抓取窗口与现有数据无重叠日时应 warning（防护不形同虚设）。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "cn_data"
+            stock_dir = data_dir / "features" / "sh600519"
+            (data_dir / "calendars").mkdir(parents=True)
+            stock_dir.mkdir(parents=True)
+            calendar = ["2026-03-20", "2026-03-23", "2026-03-24", "2026-03-25"]
+            (data_dir / "calendars" / "day.txt").write_text("\n".join(calendar) + "\n", encoding="utf-8")
+
+            # 现有 bin 覆盖到 2026-03-23（end_idx=1）
+            import numpy as np
+            for field in update_cn_data.FIELDS + ["amount", "factor"]:
+                np.array([0.0, 10.0, 11.0], dtype="<f").tofile(stock_dir / f"{field}.day.bin")
+
+            # 新数据全部 > end_idx（2026-03-24 起，无重叠）→ overlap_checks=0 → warning
+            df = pd.DataFrame(
+                {"open": [12.0], "close": [12.5], "high": [13.0], "low": [12.0],
+                 "volume": [200.0], "amount": [2500.0], "factor": [1.0]},
+                index=["2026-03-24"],
+            )
+
+            import io, contextlib
+            buf = io.StringIO()
+            with patch.object(update_cn_data, "DATA_DIR", data_dir), contextlib.redirect_stdout(buf):
+                result = update_cn_data._check_overlap_consistency("sh600519", df, calendar)
+            output = buf.getvalue()
+
+        # 无重叠不拦截合法增量（result 仍 None），但打印 warning
+        self.assertIsNone(result)
+        self.assertIn("无重叠日", output)
+
 
 if __name__ == "__main__":
     unittest.main()
