@@ -38,8 +38,8 @@ class FakeBaostockResult:
     error_code = "0"
     error_msg = "success"
 
-    def __init__(self):
-        self.rows = [
+    def __init__(self, rows=None):
+        self.rows = rows if rows is not None else [
             [
                 "2026-05-07",
                 "sh.600519",
@@ -49,7 +49,29 @@ class FakeBaostockResult:
                 "1371.05",
                 "4046147",
                 "5573286314.86",
-            ]
+            ],
+        ]
+        self.index = -1
+
+    def next(self):
+        self.index += 1
+        return self.index < len(self.rows)
+
+    def get_row_data(self):
+        return self.rows[self.index]
+
+
+class FakeAdjustFactorResult:
+    error_code = "0"
+    error_msg = "success"
+    fields = ["code", "dividOperateDate", "foreAdjustFactor", "backAdjustFactor", "adjustFactor"]
+
+    def __init__(self):
+        # baostock backAdjustFactor 本身就是从上市日起的累积值（实测单调递增）
+        self.rows = [
+            ["sh.600519", "2014-06-24", "0.166", "6.015655", "6.015655"],
+            ["sh.600519", "2015-06-23", "0.1588", "6.295967", "6.295967"],
+            ["sh.600519", "2025-07-16", "0.0784", "12.763991", "12.763991"],
         ]
         self.index = -1
 
@@ -62,6 +84,11 @@ class FakeBaostockResult:
 
 
 class FakeBaostockModule:
+    def __init__(self):
+        self.adjustflags = []
+        self.adjust_factor_called = False
+        self.adjust_factor_windows = []
+
     def login(self):
         return types.SimpleNamespace(error_code="0", error_msg="success")
 
@@ -69,7 +96,23 @@ class FakeBaostockModule:
         return None
 
     def query_history_k_data_plus(self, code, fields, start_date, end_date, frequency, adjustflag):
-        return FakeBaostockResult()
+        self.adjustflags.append(adjustflag)
+        return FakeBaostockResult(self._history_rows(start_date, end_date))
+
+    @staticmethod
+    def _history_rows(start_date: str, end_date: str):
+        # 原始价（不复权）合成行：覆盖 2014 事件前后与 2026 增量两个窗口
+        rows_by_date = {
+            "2014-06-23": ["2014-06-23", "sh.600519", "120.0", "121.0", "119.0", "120.0", "100000", "12000000.0"],
+            "2014-06-24": ["2014-06-24", "sh.600519", "121.0", "122.0", "120.0", "121.0", "110000", "13310000.0"],
+            "2026-05-07": ["2026-05-07", "sh.600519", "1375.00", "1388.00", "1370.01", "1371.05", "4046147", "5573286314.86"],
+        }
+        return [rows_by_date[d] for d in sorted(rows_by_date) if start_date <= d <= end_date]
+
+    def query_adjust_factor(self, code, start_date, end_date):
+        self.adjust_factor_called = True
+        self.adjust_factor_windows.append((start_date, end_date))
+        return FakeAdjustFactorResult()
 
 
 class FakeEastmoneyResponse:
@@ -103,7 +146,11 @@ class FakeTencentResponse:
 
 
 class UpdateCnDataTests(unittest.TestCase):
-    def test_extend_calendar_rewrites_unsorted_duplicate_calendar(self):
+    def setUp(self):
+        update_cn_data._BAOSTOCK = None
+        update_cn_data._BAOSTOCK_LOGGED_IN = False
+
+    def test_extend_calendar_rejects_calendar_reorder(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "cn_data"
             (data_dir / "calendars").mkdir(parents=True)
@@ -114,11 +161,26 @@ class UpdateCnDataTests(unittest.TestCase):
             )
 
             with patch.object(update_cn_data, "DATA_DIR", data_dir):
-                calendar = update_cn_data.extend_calendar(["2026-06-24", "2026-06-25"])
+                with self.assertRaisesRegex(ValueError, "日历只能尾部追加"):
+                    update_cn_data.extend_calendar(["2026-06-24", "2026-06-25"])
 
             calendar_text = cal_path.read_text(encoding="utf-8").splitlines()
 
-        self.assertEqual(calendar, ["2025-10-24", "2026-06-22", "2026-06-23", "2026-06-24", "2026-06-25"])
+        self.assertEqual(calendar_text, ["2026-06-22", "2026-06-23", "2026-06-24", "2025-10-24"])
+
+    def test_extend_calendar_allows_tail_append_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "cn_data"
+            (data_dir / "calendars").mkdir(parents=True)
+            cal_path = data_dir / "calendars" / "day.txt"
+            cal_path.write_text("2026-06-22\n2026-06-23\n", encoding="utf-8")
+
+            with patch.object(update_cn_data, "DATA_DIR", data_dir):
+                calendar = update_cn_data.extend_calendar(["2026-06-23", "2026-06-24"])
+
+            calendar_text = cal_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(calendar, ["2026-06-22", "2026-06-23", "2026-06-24"])
         self.assertEqual(calendar_text, calendar)
 
     def test_beijing_exchange_code_conversions(self):
@@ -126,15 +188,60 @@ class UpdateCnDataTests(unittest.TestCase):
         self.assertEqual(update_cn_data.yf_to_baostock("430047.BJ"), "bj.430047")
 
     def test_fetch_falls_back_to_baostock_when_yfinance_is_empty(self):
-        with patch.object(update_cn_data.yf, "Ticker", FakeYfinanceTicker, create=True), \
-             patch.object(update_cn_data, "fetch_tencent", return_value=pd.DataFrame()), \
-             patch.dict(sys.modules, {"baostock": FakeBaostockModule()}):
+        """写入链路只能用 baostock；backAdjustFactor 是累积值（不连乘），factor=阶梯生效值。"""
+        fake_baostock = FakeBaostockModule()
+        with patch.object(update_cn_data, "fetch_tencent", return_value=pd.DataFrame()), \
+             patch.object(update_cn_data, "fetch_yfinance", return_value=pd.DataFrame()), \
+             patch.object(update_cn_data, "fetch_eastmoney", return_value=pd.DataFrame()), \
+             patch.dict(sys.modules, {"baostock": fake_baostock}):
             df = update_cn_data.fetch("600519.SS", "2026-05-06", "2026-06-18")
 
         self.assertFalse(df.empty)
         self.assertEqual(list(df.index), ["2026-05-07"])
-        self.assertEqual(float(df.loc["2026-05-07", "close"]), 1371.05)
+        # 2026-05-07 落在最后一个事件 2025-07-16 之后，生效累积因子 = 12.763991
+        # close = 原始价 1371.05 × 12.763991 ≈ 17502.5
+        self.assertAlmostEqual(float(df.loc["2026-05-07", "close"]), 1371.05 * 12.763991, places=2)
         self.assertEqual(float(df.loc["2026-05-07", "amount"]), 5573286314.86)
+        # factor = 阶梯生效的累积后复权因子（baostock 返回值，不再连乘）
+        self.assertAlmostEqual(float(df.loc["2026-05-07", "factor"]), 12.763991, places=4)
+        self.assertTrue(fake_baostock.adjust_factor_called)
+        # 写入链路只允许原始价口径拉取
+        self.assertEqual(fake_baostock.adjustflags, ["3"])
+        # 复权因子查询窗口必须从上市日起，不能跟随抓取窗口（否则增量更新断层）
+        factor_start = fake_baostock.adjust_factor_windows[0][0]
+        self.assertLess(factor_start, "2020-01-01", msg=f"因子查询起点应远早于抓取窗口，实际={factor_start}")
+
+    def test_fetch_uses_step_function_not_cumulative_product_for_factor(self):
+        """baostock backAdjustFactor 已是累积值，必须用阶梯函数而非连乘。"""
+        fake_baostock = FakeBaostockModule()
+        with patch.object(update_cn_data, "fetch_tencent", return_value=pd.DataFrame()), \
+             patch.object(update_cn_data, "fetch_yfinance", return_value=pd.DataFrame()), \
+             patch.object(update_cn_data, "fetch_eastmoney", return_value=pd.DataFrame()), \
+             patch.dict(sys.modules, {"baostock": fake_baostock}):
+            df = update_cn_data.fetch("600519.SS", "2014-06-20", "2014-06-25")
+
+        # 2014-06-24 之前生效因子 = 1.0；2014-06-24 起生效 = 6.015655
+        self.assertAlmostEqual(float(df.loc["2014-06-23", "factor"]), 1.0, places=6)
+        self.assertAlmostEqual(float(df.loc["2014-06-24", "factor"]), 6.015655, places=4)
+        # 连乘 bug 下 2014-06-24 会是 6.015655，但后续事件会指数爆炸；
+        # 这里只测首事件，但阶梯语义已成立（= baostock 原值，非连乘前序）
+
+    def test_fetch_does_not_write_from_non_baostock_sources(self):
+        """腾讯/东财/yfinance 即便能取到数据，也不能进入写入链路。"""
+        update_cn_data._BAOSTOCK = None
+        update_cn_data._BAOSTOCK_LOGGED_IN = False
+        tainted = pd.DataFrame(
+            {"open": [1.0], "close": [1.0], "high": [1.0], "low": [1.0],
+             "volume": [1.0], "amount": [1.0], "factor": [1.0]},
+            index=["2026-05-07"],
+        )
+        with patch.object(update_cn_data, "fetch_tencent", return_value=tainted), \
+             patch.object(update_cn_data, "fetch_yfinance", return_value=tainted), \
+             patch.object(update_cn_data, "fetch_eastmoney", return_value=tainted), \
+             patch.dict(sys.modules, {"baostock": types.SimpleNamespace(login=lambda: None, logout=lambda: None)}):
+            df = update_cn_data.fetch("600519.SS", "2026-05-06", "2026-06-18")
+
+        self.assertTrue(df.empty)
 
     def test_fetch_eastmoney_parses_daily_kline_rows(self):
         with patch.object(update_cn_data.urllib.request, "urlopen", return_value=FakeEastmoneyResponse()):
@@ -157,7 +264,8 @@ class UpdateCnDataTests(unittest.TestCase):
         self.assertEqual(float(df.loc["2026-06-22", "volume"]), 5825100.0)
         self.assertEqual(round(float(df.loc["2026-06-22", "amount"]), 2), 7231337391.0)
 
-    def test_fetch_falls_back_to_tencent_before_eastmoney(self):
+    def test_fetch_ignores_tencent_and_eastmoney_for_writes(self):
+        """fetch() 写入链路只允许 baostock；即使 tencent/eastmoney 有数据也不采用。"""
         tencent_frame = pd.DataFrame(
             {
                 "open": [1214.31],
@@ -171,16 +279,15 @@ class UpdateCnDataTests(unittest.TestCase):
             index=["2026-06-22"],
         )
 
-        with patch.object(update_cn_data.yf, "Ticker", FakeYfinanceTicker, create=True), \
-             patch.object(update_cn_data, "fetch_baostock", return_value=pd.DataFrame()), \
+        with patch.object(update_cn_data, "fetch_baostock", return_value=pd.DataFrame()), \
              patch.object(update_cn_data, "fetch_tencent", return_value=tencent_frame), \
              patch.object(update_cn_data, "fetch_eastmoney", side_effect=AssertionError("Eastmoney should not be called")):
             df = update_cn_data.fetch("600519.SS", "2026-06-18", "2026-06-22")
 
-        self.assertEqual(list(df.index), ["2026-06-22"])
-        self.assertEqual(float(df.loc["2026-06-22", "close"]), 1241.41)
+        self.assertTrue(df.empty)
 
-    def test_fetch_falls_back_to_eastmoney_when_yfinance_and_baostock_are_empty(self):
+    def test_fetch_eastmoney_remains_available_as_validation_helper(self):
+        """fetch_eastmoney 解析能力保留，用于重建后对照校验，但不进入 fetch() 写入链路。"""
         eastmoney_frame = pd.DataFrame(
             {
                 "open": [1370.0],
@@ -194,14 +301,19 @@ class UpdateCnDataTests(unittest.TestCase):
             index=["2026-06-22"],
         )
 
-        with patch.object(update_cn_data.yf, "Ticker", FakeYfinanceTicker, create=True), \
-             patch.object(update_cn_data, "fetch_baostock", return_value=pd.DataFrame()), \
+        with patch.object(update_cn_data, "fetch_baostock", return_value=pd.DataFrame()), \
              patch.object(update_cn_data, "fetch_tencent", return_value=pd.DataFrame(), create=True), \
              patch.object(update_cn_data, "fetch_eastmoney", return_value=eastmoney_frame):
             df = update_cn_data.fetch("600519.SS", "2026-06-18", "2026-06-22")
 
-        self.assertEqual(list(df.index), ["2026-06-22"])
-        self.assertEqual(float(df.loc["2026-06-22", "close"]), 1388.5)
+        # 写入链路不应采用东财
+        self.assertTrue(df.empty)
+
+        # 但解析函数本身仍可用
+        with patch.object(update_cn_data.urllib.request, "urlopen", return_value=FakeEastmoneyResponse()):
+            parsed = update_cn_data.fetch_eastmoney("600519.SS", "2026-06-18", "2026-06-22")
+        self.assertFalse(parsed.empty)
+        self.assertEqual(float(parsed.loc["2026-06-22", "close"]), 1388.5)
 
     def test_update_returns_failure_when_reference_data_unavailable(self):
         with patch.object(update_cn_data, "fetch", return_value=EmptyFrame()):
@@ -457,7 +569,7 @@ class UpdateCnDataTests(unittest.TestCase):
         self.assertEqual(list(open_raw), [0.0, 1400.0, 1401.0, 1300.0])
         self.assertEqual(list(close_raw), [0.0, 1395.0, 1396.0, 1300.0])
 
-    def test_overwrite_existing_repairs_nonzero_prices_but_preserves_factor(self):
+    def test_overwrite_existing_repairs_nonzero_prices_and_factor(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             data_dir = Path(tmpdir) / "cn_data"
             stock_dir = data_dir / "features" / "sh600519"
@@ -478,7 +590,7 @@ class UpdateCnDataTests(unittest.TestCase):
                     "low": [1380.0, 1381.0],
                     "volume": [100.0, 200.0],
                     "amount": [139500.0, 279200.0],
-                    "factor": [1.0, 1.0],
+                    "factor": [12.76, 12.76],
                 },
                 index=["2026-03-20", "2026-03-23"],
             )
@@ -496,8 +608,44 @@ class UpdateCnDataTests(unittest.TestCase):
             factor_raw = np.fromfile(stock_dir / "factor.day.bin", dtype="<f")
 
         self.assertEqual(changed, 2)
+        # close 因 overwrite 被重写为 df 新值
         self.assertEqual(list(close_raw), [0.0, 1395.0, 1396.0, 101.0])
-        self.assertEqual(list(factor_raw), [0.0, 0.5, 0.5, 0.5])
+        # factor 在新方案下也是真数据，overwrite 时一并重写（不再被保护为占位符）
+        self.assertEqual(list(factor_raw), [0.0, 12.76, 12.76, 0.5])
+
+    def test_append_rejects_mixed_adjustment_regime_overlap(self):
+        """对旧前复权目录误跑后复权增量，重叠日相对偏差 >0.5% 必须拒绝追加。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data_dir = Path(tmpdir) / "cn_data"
+            stock_dir = data_dir / "features" / "sh600519"
+            (data_dir / "calendars").mkdir(parents=True)
+            stock_dir.mkdir(parents=True)
+            calendar = ["2026-03-20", "2026-03-23", "2026-03-24", "2026-03-25"]
+            (data_dir / "calendars" / "day.txt").write_text("\n".join(calendar) + "\n", encoding="utf-8")
+
+            # 现有 bin：旧前复权口径，2026-03-23 close=10.0
+            for field in update_cn_data.FIELDS + ["amount"]:
+                np.array([0.0, 9.0, 10.0, 10.5], dtype="<f").tofile(stock_dir / f"{field}.day.bin")
+            np.array([0.0, 1.0, 1.0, 1.0], dtype="<f").tofile(stock_dir / "factor.day.bin")
+
+            # 新数据：后复权口径，重叠日 2026-03-23 close=127.6（与旧值 10.0 偏差远超 0.5%）
+            df = pd.DataFrame(
+                {
+                    "open": [120.0, 128.0],
+                    "close": [127.6, 129.0],
+                    "high": [130.0, 131.0],
+                    "low": [119.0, 127.0],
+                    "volume": [100.0, 200.0],
+                    "amount": [12760.0, 25800.0],
+                    "factor": [12.76, 12.76],
+                },
+                index=["2026-03-23", "2026-03-25"],
+            )
+
+            with patch.object(update_cn_data, "DATA_DIR", data_dir):
+                appended = update_cn_data.append_to_bin("sh600519", df, calendar)
+
+        self.assertEqual(appended, 0)
 
 
 if __name__ == "__main__":

@@ -500,11 +500,34 @@ async def _collect_data_health(warnings: list[str]) -> dict:
     try:
         from .data import data_health_check
 
-        return _json_safe(await data_health_check(include_external=False))
+        health = _json_safe(await data_health_check(include_external=False))
+        _append_data_integrity_warnings(health, warnings)
+        return health
     except Exception as exc:
         logger.warning(f"Screening data health failed: {exc}")
         warnings.append(f"数据健康检查失败：{exc}")
         return {"overall_status": "unknown", "error": str(exc)}
+
+
+def _append_data_integrity_warnings(health: dict, warnings: list[str]) -> None:
+    """把数据完整性问题转成用户可见 warning，修复完成后自动消失。"""
+    if not isinstance(health, dict):
+        return
+    sources = health.get("sources") or {}
+    adjustment = sources.get("price_adjustment") or {}
+    factor_status = adjustment.get("factor_field_status")
+    if factor_status in {"placeholder_1.0", "mixed_real_and_placeholder", "missing"}:
+        warnings.append(
+            "数据未完成复权重建（factor 为占位或缺失），回测/信号暂不可作为下单依据"
+        )
+    stocks = sources.get("stocks") or {}
+    if isinstance(stocks, dict) and (
+        stocks.get("effective_value_density", 1.0) < 0.8
+        or stocks.get("hollow_count", 0) > 0
+    ):
+        warnings.append(
+            "检测到空心股票或日线断层，数据修复完成前请勿按信号实盘下单"
+        )
 
 
 async def _collect_hot_sectors(warnings: list[str]) -> list[dict]:

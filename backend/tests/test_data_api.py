@@ -102,6 +102,31 @@ class DataApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response["last_date"], "2026-05-06")
 
+    async def test_stocks_health_flags_sparse_close_bins(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            qlib_dir = Path(tmpdir) / ".qlib" / "qlib_data" / "cn_data"
+            stock_dir = qlib_dir / "features" / "sh600519"
+            (qlib_dir / "calendars").mkdir(parents=True)
+            (qlib_dir / "instruments").mkdir(parents=True)
+            stock_dir.mkdir(parents=True)
+            (qlib_dir / "calendars" / "day.txt").write_text(
+                "2026-05-06\n2026-05-07\n2026-05-08\n2026-05-11\n",
+                encoding="utf-8",
+            )
+            (qlib_dir / "instruments" / "csi300.txt").write_text(
+                "sh600519\t2020-01-01\t2026-05-11\n",
+                encoding="utf-8",
+            )
+            np.array([0.0, 10.0, np.nan, np.nan, np.nan], dtype="<f").tofile(stock_dir / "close.day.bin")
+
+            with patch.object(Path, "home", return_value=Path(tmpdir)):
+                response = data._check_stocks_data()
+
+        self.assertEqual(response["status"], "error")
+        self.assertLess(response["effective_value_density"], 0.8)
+        self.assertEqual(response["max_consecutive_nan"], 3)
+        self.assertIn("有效值密度", response["message"])
+
     async def test_qlib_health_uses_feature_bin_date_not_calendar_tail(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             qlib_dir = Path(tmpdir) / ".qlib" / "qlib_data" / "cn_data"
@@ -400,6 +425,50 @@ class DataApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("sz300750", command)
         self.assertIn("sh688981", command)
 
+
+    async def test_fast_update_core_pool_passes_priority_codes(self):
+        data._update_tasks.clear()
+
+        with patch.object(data, "_resolve_update_script", return_value=Path(__file__)), \
+             patch.object(data, "_get_stock_latest_trade_date", return_value="2026-07-01"), \
+             patch.object(data, "_get_core_update_codes", return_value=["sh600519", "sz000001", "sh510050"]), \
+             patch.object(data, "_start_update_thread") as start_thread:
+            response = await data.start_data_update(data.DataUpdateRequest(type="core", rebuild_stale=True))
+
+        self.assertEqual(response["status"], "running")
+        self.assertEqual(response["mode"], "core")
+        command = start_thread.call_args.args[1]
+        self.assertIn("--start", command)
+        self.assertEqual(command[command.index("--start") + 1], "2026-07-01")
+        self.assertIn("--rebuild-stale", command)
+        self.assertEqual(command.count("--code"), 3)
+        self.assertIn("sh600519", command)
+        self.assertIn("sz000001", command)
+        self.assertIn("sh510050", command)
+
+    async def test_data_freshness_matrix_explains_sources_and_adjustment_policy(self):
+        with patch.object(data, "_check_stocks_data", return_value={
+            "last_date": "2026-07-01",
+            "sample_latest_date": "2026-07-02",
+            "sample_latest_coverage": 0.34,
+            "status": "normal",
+            "lag_days": 1,
+        }), patch.object(data, "_check_price_adjustment_policy", return_value={
+            "status": "warning",
+            "adjustment_mode": "qfq_price_with_mixed_factor",
+            "message": "mixed factor",
+        }):
+            result = await data.data_freshness_matrix()
+
+        self.assertEqual(result["canonical_price_adjustment"], "front_adjusted")
+        self.assertGreaterEqual(len(result["modules"]), 6)
+        by_key = {item["key"]: item for item in result["modules"]}
+        self.assertEqual(by_key["quote"]["primary_source"], "qlib")
+        self.assertEqual(by_key["backtest"]["price_adjustment"], "front_adjusted")
+        self.assertEqual(by_key["macro"]["primary_source"], "external")
+        self.assertFalse(by_key["macro"]["uses_qlib_daily_bar"])
+        self.assertIn("coverage", result)
+
     async def test_update_progress_returns_existing_task(self):
         data._update_tasks.clear()
         data._update_tasks["task-1"] = {
@@ -496,6 +565,19 @@ class DataApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "completed")
         self.assertTrue(result["runtime_refresh"]["qlib_reloaded"])
         self.assertTrue(result["runtime_refresh"]["cache_cleared"])
+
+    async def test_runtime_refresh_removes_alpha158_disk_cache(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cache_dir = Path(tmpdir) / ".qlib" / "alpha158_cache"
+            cache_dir.mkdir(parents=True)
+            (cache_dir / "stale.parquet").write_text("old", encoding="utf-8")
+
+            with patch.object(Path, "home", return_value=Path(tmpdir)), \
+                 patch.object(data, "_reload_qlib_runtime", return_value={"qlib_reloaded": True}):
+                result = data._refresh_runtime_after_update()
+
+        self.assertFalse(cache_dir.exists())
+        self.assertIn("alpha158_cache", result["cleared"])
 
 
 if __name__ == "__main__":

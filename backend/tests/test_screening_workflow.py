@@ -2,6 +2,36 @@ import unittest
 
 
 class ScreeningWorkflowTests(unittest.TestCase):
+
+    def test_appends_warning_when_factor_is_placeholder(self):
+        from backend.api.screening import _append_data_integrity_warnings
+
+        warnings: list[str] = []
+        health = {
+            "sources": {
+                "price_adjustment": {"factor_field_status": "placeholder_1.0"},
+                "stocks": {"effective_value_density": 0.4, "hollow_count": 2},
+            }
+        }
+        _append_data_integrity_warnings(health, warnings)
+
+        self.assertTrue(any("复权重建" in w for w in warnings))
+        self.assertTrue(any("空心股票" in w for w in warnings))
+
+    def test_does_not_warn_when_data_is_clean(self):
+        from backend.api.screening import _append_data_integrity_warnings
+
+        warnings: list[str] = []
+        health = {
+            "sources": {
+                "price_adjustment": {"factor_field_status": "real_factor_present"},
+                "stocks": {"effective_value_density": 0.99, "hollow_count": 0},
+            }
+        }
+        _append_data_integrity_warnings(health, warnings)
+
+        self.assertEqual(warnings, [])
+
     def test_classifies_agent_buy_as_keep_but_waits_when_overbought(self):
         from backend.api.screening import classify_candidate
 

@@ -56,15 +56,27 @@ def _write_calendar(dates: list[str]) -> None:
 def extend_calendar(new_dates: list[str]) -> list[str]:
     """把新交易日追加到日历"""
     old_cal = load_calendar()
-    old_set = set(old_cal)
-    calendar = _normalize_calendar_dates(old_cal + list(new_dates))
-    added = [d for d in calendar if d not in old_set]
-    if added or calendar != old_cal:
+    normalized_old = _normalize_calendar_dates(old_cal)
+    if normalized_old != old_cal:
+        raise ValueError("日历只能尾部追加；当前 day.txt 存在乱序或重复，请先全量重建后再更新")
+
+    calendar = list(old_cal)
+    added = []
+    seen = set(calendar)
+    last_date = calendar[-1] if calendar else None
+    for date in _normalize_calendar_dates(new_dates):
+        if date in seen:
+            continue
+        if last_date and date <= last_date:
+            raise ValueError("日历只能尾部追加；检测到中段插入或重排，请先全量重建后再更新")
+        calendar.append(date)
+        seen.add(date)
+        added.append(date)
+        last_date = date
+
+    if added:
         _write_calendar(calendar)
-        if added:
-            print(f"  日历新增 {len(added)} 天，最新: {calendar[-1]}")
-        else:
-            print(f"  日历已去重并按日期重排，最新: {calendar[-1]}")
+        print(f"  日历新增 {len(added)} 天，最新: {calendar[-1]}")
     return calendar
 
 
@@ -152,39 +164,130 @@ def fetch_yfinance(yf_code: str, start: str, end: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _query_baostock_history(bs, yf_code: str, start: str, end: str, adjustflag: str) -> pd.DataFrame:
+    rs = bs.query_history_k_data_plus(
+        yf_to_baostock(yf_code),
+        "date,code,open,high,low,close,volume,amount",
+        start_date=start,
+        end_date=end,
+        frequency="d",
+        adjustflag=adjustflag,
+    )
+    if rs.error_code != "0":
+        print(f"  WARN: Baostock 获取 {yf_code} 失败: {rs.error_code} {rs.error_msg}")
+        return pd.DataFrame()
+
+    rows = []
+    while rs.next():
+        rows.append(rs.get_row_data())
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(
+        rows,
+        columns=["date", "code", "open", "high", "low", "close", "volume", "amount"],
+    )
+    df.index = df["date"].astype(str)
+    for field in FIELDS + ["amount"]:
+        df[field] = pd.to_numeric(df[field], errors="coerce")
+    df = df.dropna(subset=["open", "high", "low", "close"])
+    return df[[f for f in FIELDS + ["amount"] if f in df.columns]]
+
+
+def _query_baostock_adjust_factor(bs, yf_code: str, start: str, end: str) -> pd.DataFrame:
+    """拉取 baostock 累积复权因子表。
+
+    baostock query_adjust_factor 返回字段：
+    code / dividOperateDate / foreAdjustFactor / backAdjustFactor / adjustFactor。
+    backAdjustFactor 即后复权累积因子（历史不可变）。
+    """
+    rs = bs.query_adjust_factor(
+        code=yf_to_baostock(yf_code),
+        start_date=start,
+        end_date=end,
+    )
+    if getattr(rs, "error_code", "0") != "0":
+        print(f"  WARN: Baostock 复权因子获取 {yf_code} 失败: {getattr(rs, 'error_code', '')} {getattr(rs, 'error_msg', '')}")
+        return pd.DataFrame()
+
+    rows = []
+    while rs.next():
+        rows.append(rs.get_row_data())
+    if not rows:
+        return pd.DataFrame()
+
+    columns = getattr(rs, "fields", None) or [
+        "code", "dividOperateDate", "foreAdjustFactor", "backAdjustFactor", "adjustFactor",
+    ]
+    df = pd.DataFrame(rows, columns=list(columns))
+    return df
+
+
+def _build_cumulative_back_factor(factor_rows: pd.DataFrame, raw_index: pd.Index) -> pd.Series:
+    """根据除权事件表构造按交易日的后复权累积因子序列（阶梯函数）。
+
+    baostock backAdjustFactor 本身就是"从上市日起的累积后复权因子"（实测单调
+    递增），因此每个事件日的值可直接使用，**不能再连乘**。构造方式为阶梯函数：
+    - 每个交易日取"日期 ≤ 该日的最近一次事件的 backAdjustFactor 值"；
+    - 首个事件之前为 1.0（尚未发生除权）。
+    """
+    base = pd.Series(1.0, index=raw_index)
+    if factor_rows is None or factor_rows.empty:
+        return base
+
+    col = "backAdjustFactor" if "backAdjustFactor" in factor_rows.columns else "adjustFactor"
+    events = factor_rows[["dividOperateDate", col]].copy()
+    events["dividOperateDate"] = events["dividOperateDate"].astype(str)
+    events[col] = pd.to_numeric(events[col], errors="coerce")
+    events = events.dropna().sort_values("dividOperateDate")
+
+    # 阶梯函数：每个日期取"≤ 该日的最近一次事件的累积因子值"
+    # baostock 返回值已是累积值，直接查找，不做乘法
+    event_dates = events["dividOperateDate"].tolist()
+    event_values = events[col].tolist()
+    for i in range(len(base)):
+        current_date = str(base.index[i])
+        # 找到 <= current_date 的最后一个事件
+        applicable = None
+        for event_date, event_value in zip(event_dates, event_values):
+            if event_date <= current_date:
+                applicable = event_value
+            else:
+                break
+        if applicable is not None:
+            base.iloc[i] = float(applicable)
+    return base
+
+
 def fetch_baostock(yf_code: str, start: str, end: str) -> pd.DataFrame:
+    """写入链路唯一数据源：baostock 原始价 + 累积后复权因子。
+
+    存储口径（与 Qlib bin 约定一致）：
+      - close/open/high/low 存复权价 = 原始价 × 累积后复权因子
+      - factor 存累积后复权因子（历史不可变，新除权只影响新增行）
+    这样下游读 $close 直接拿到后复权序列，读 $close/$factor 还原原始价。
+    """
     try:
         bs = _get_baostock()
         if bs is None:
             return pd.DataFrame()
 
-        rs = bs.query_history_k_data_plus(
-            yf_to_baostock(yf_code),
-            "date,code,open,high,low,close,volume,amount",
-            start_date=start,
-            end_date=end,
-            frequency="d",
-            adjustflag="2",
-        )
-        if rs.error_code != "0":
-            print(f"  WARN: Baostock 获取 {yf_code} 失败: {rs.error_code} {rs.error_msg}")
+        # 1. 原始价（不复权）
+        raw_df = _query_baostock_history(bs, yf_code, start, end, adjustflag="3")
+        if raw_df.empty:
             return pd.DataFrame()
 
-        rows = []
-        while rs.next():
-            rows.append(rs.get_row_data())
-        if not rows:
-            return pd.DataFrame()
+        # 2. 累积后复权因子表（查询窗口固定从上市日起，与抓取窗口无关）
+        #    否则增量更新窗口内无除权事件 → factor=1.0 → 追加段断层
+        factor_rows = _query_baostock_adjust_factor(bs, yf_code, "1990-01-01", end)
+        cumulative_factor = _build_cumulative_back_factor(factor_rows, raw_df.index)
 
-        df = pd.DataFrame(
-            rows,
-            columns=["date", "code", "open", "high", "low", "close", "volume", "amount"],
-        )
-        df.index = df["date"].astype(str)
-        for field in FIELDS + ["amount"]:
-            df[field] = pd.to_numeric(df[field], errors="coerce")
-        df["factor"] = 1.0
-        df = df.dropna(subset=["open", "high", "low", "close"])
+        # 3. 组装：OHLC 复权价 = 原始价 × 累积因子；volume/amount 保持原始口径
+        df = raw_df.copy()
+        for field in ("open", "close", "high", "low"):
+            if field in df.columns:
+                df[field] = df[field] * cumulative_factor.values
+        df["factor"] = cumulative_factor.values
         return df[[f for f in FIELDS + EXTRA_FIELDS if f in df.columns]]
     except Exception as e:
         print(f"  WARN: Baostock 获取 {yf_code} 失败: {e}")
@@ -313,17 +416,13 @@ def fetch_tencent(yf_code: str, start: str, end: str) -> pd.DataFrame:
 
 
 def fetch(yf_code: str, start: str, end: str) -> pd.DataFrame:
-    """优先 yfinance，失败时使用服务器可访问的 Baostock 备用源。"""
-    df = fetch_tencent(yf_code, start, end)
-    if not df.empty:
-        return df
-    df = fetch_yfinance(yf_code, start, end)
-    if not df.empty:
-        return df
-    df = fetch_baostock(yf_code, start, end)
-    if not df.empty:
-        return df
-    return fetch_eastmoney(yf_code, start, end)
+    """写入链路只能使用 baostock（同时具备原始价与累积复权因子）。
+
+    腾讯/东财只提供前复权、yfinance auto_adjust 含分红全收益回调，三者
+    在"原始价 + 因子"口径下均无法给出正确输入，故不再进入写入链路；
+    它们保留为 fetch_tencent/fetch_eastmoney/fetch_yfinance，仅用于校验对照。
+    """
+    return fetch_baostock(yf_code, start, end)
 
 
 def _clip_to_requested_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
@@ -388,7 +487,9 @@ def _repair_existing_stale_values(
         pos = cal_idx - start_idx
         old_val = values[pos]
         should_repair_stale = not np.isfinite(old_val) or old_val == 0
-        should_overwrite = overwrite_existing and field != "factor" and abs(float(old_val) - new_val) > 1e-8
+        # 新方案下 factor 是真实累积因子，--overwrite-existing 重建单票时必须允许重写 factor，
+        # 否则修完的票 $close/$factor 还原出错价、健康检查的占位检测也消不掉。
+        should_overwrite = overwrite_existing and abs(float(old_val) - new_val) > 1e-8
         if should_repair_stale or should_overwrite:
             values[pos] = new_val
             repaired += 1
@@ -397,6 +498,61 @@ def _repair_existing_stale_values(
         _write_bin(bin_path, start_idx, values.tolist())
 
     return repaired
+
+
+def _check_overlap_consistency(
+    qlib_code: str,
+    df: pd.DataFrame,
+    calendar: list[str],
+    threshold: float = 0.005,
+    rebuild_stale: bool = False,
+    overwrite_existing: bool = False,
+) -> str | None:
+    """比对追加段与现有 close.bin 的重叠日，相对偏差 >threshold 返回告警文案（重建模式跳过）。
+
+    用途：拦截新旧口径混拼（例如对旧前复权目录误跑后复权增量更新），或未来
+    任何来源/口径漂移。重建模式（rebuild_stale/overwrite_existing）下不拦截，
+    因为重写本就是预期行为。返回 None 表示一致；返回字符串表示应拒绝追加。
+    """
+    if rebuild_stale or overwrite_existing:
+        return None
+    if "close" not in df.columns:
+        return None
+
+    stock_dir = DATA_DIR / "features" / qlib_code.lower()
+    close_path = stock_dir / "close.day.bin"
+    if not close_path.exists():
+        return None
+
+    raw = np.fromfile(close_path, dtype="<f")
+    if len(raw) < 2:
+        return None
+
+    start_idx = int(raw[0])
+    existing_len = len(raw) - 1
+    end_idx = start_idx + existing_len - 1
+    calendar_index = {date: idx for idx, date in enumerate(calendar)}
+
+    overlap_checks = 0
+    for date_str in df.index:
+        cal_idx = _date_to_calendar_index(calendar_index, date_str)
+        if cal_idx is None or cal_idx > end_idx or cal_idx < start_idx:
+            continue
+        existing_val = float(raw[1 + (cal_idx - start_idx)])
+        new_val = float(df.loc[date_str, "close"])
+        if not np.isfinite(existing_val) or existing_val == 0:
+            continue
+        if not np.isfinite(new_val) or new_val == 0:
+            continue
+        overlap_checks += 1
+        rel_diff = abs(new_val - existing_val) / abs(existing_val)
+        if rel_diff > threshold:
+            return (
+                f"重叠日 {date_str} close 相对偏差 {rel_diff:.2%} 超过 {threshold:.2%}，"
+                f"疑似口径不一致（新旧复权混拼），需全量重建"
+            )
+
+    return None
 
 
 def append_to_bin(
@@ -408,6 +564,18 @@ def append_to_bin(
 ) -> int:
     """把 df 追加到已有 bin 文件，返回追加的行数"""
     if df.empty:
+        return 0
+
+    # 新旧口径混拼拦截：比对重叠日 close，相对偏差 >0.5% 拒绝追加
+    consistency = _check_overlap_consistency(
+        qlib_code,
+        df,
+        calendar,
+        rebuild_stale=rebuild_stale,
+        overwrite_existing=overwrite_existing,
+    )
+    if consistency is not None:
+        print(f"  SKIP {qlib_code}: {consistency}")
         return 0
 
     # 只保留日历里有的日期
@@ -633,7 +801,7 @@ if __name__ == "__main__":
     parser.add_argument("--code", action="append", default=None, help="只更新指定 Qlib 代码，可重复传入，如 --code sz300750")
     parser.add_argument("--codes-file", default=None, help="只更新文件中列出的 Qlib 代码，每行一个")
     parser.add_argument("--rebuild-stale", action="store_true", help="重建明显异常的短历史文件，用于修复少量核心股票缺口")
-    parser.add_argument("--overwrite-existing", action="store_true", help="覆盖指定日期窗口内已有的非 0 价格/成交字段；不会覆盖已有 factor")
+    parser.add_argument("--overwrite-existing", action="store_true", help="覆盖指定日期窗口内已有的非 0 价格/成交/factor 字段（新方案 factor 为真实累积因子，重建单票时需一并重写）")
     args = parser.parse_args()
 
     if args.check:
