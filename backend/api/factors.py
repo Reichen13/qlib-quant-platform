@@ -23,6 +23,20 @@ from core.factor_utils import (
     cluster_factors_by_ic,
 )
 from core.alpha158_cache import load_cached_features, save_features_cache
+
+def _save_icir_cache(factors_ics: list):
+    try:
+        import pandas as pd
+        cache_dir = Path.home() / ".qlib" / "cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / "factor_icir.parquet"
+        df_data = [{"factor": f.factor, "icir": f.icir, "ic": f.ic} for f in factors_ics]
+        df = pd.DataFrame(df_data)
+        df.to_parquet(cache_path, index=False)
+        logger.info(f"ICIR cache saved: {len(df)} factors -> {cache_path}")
+    except Exception as e:
+        logger.warning(f"ICIR cache save failed: {e}")
+
 from db.task_store import TaskStore
 
 router = APIRouter()
@@ -181,7 +195,8 @@ def _run_factor_analysis(params: FactorAnalysisRequest):
         feature_names = [str(c) for c in df_features.columns]
         all_daily_ics = {}  # 收集所有因子的 daily IC 用于聚类
 
-        for feat_name in feature_names[:params.top_k]:
+        # 计算全部158个因子IC/ICIR,仅前端返回时截断top_k
+        for feat_name in feature_names:
             try:
                 feat_col = df_features[feat_name] if feat_name in df_features.columns else df_features.iloc[:, feature_names.index(feat_name)]
 
@@ -259,17 +274,20 @@ def _run_factor_analysis(params: FactorAnalysisRequest):
         # 按 |IC| 排序
         factors_ics.sort(key=lambda x: abs(x.ic), reverse=True)
 
+        _save_icir_cache(factors_ics)
+
         # ── 因子层次聚类降维 ──
         icir_map = {f.factor: f.icir for f in factors_ics}
         cluster_result = cluster_factors_by_ic(all_daily_ics, icir_map, threshold=0.7)
 
         logger.info(f"Alpha158 因子分析完成: {len(factors_ics)}/{len(feature_names)} 个因子有有效 IC")
 
+        display_factors = factors_ics[:params.top_k]
         return FactorAnalysisResponse(
             start_date=params.start_date,
             end_date=params.end_date,
             predict_period=params.predict_period,
-            factors=factors_ics,
+            factors=display_factors,
             summary={
                 "total_factors": len(factors_ics),
                 "total_alpha158": len(feature_names),
@@ -745,7 +763,7 @@ def factor_decay(request: FactorAnalysisRequest):
         raw_df = D.features(stock_codes, ["$close"], start_time=start_str, end_time=end_str)
 
         # 获取特征列名（只用前 top_k 个）
-        feature_names = [str(c) for c in df_features.columns[:top_k]]
+        feature_names = [str(c) for c in df_features.columns]
 
         # 计算每个周期下每个因子的 IC
         decay_data = []
