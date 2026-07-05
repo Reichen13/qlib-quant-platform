@@ -65,28 +65,39 @@ def effective_density(bin_path: Path) -> tuple[int, int, float]:
 
 # ── A. 日历完整性 ──
 
-def fetch_official_trading_days(start: str = "1990-01-01", end: str | None = None) -> list[str]:
-    """从 baostock query_trade_dates 拉官方交易日历。"""
+def fetch_official_trading_days(start: str = "1990-01-01", end: str | None = None) -> list[str] | None:
+    """从 baostock query_trade_dates 拉官方交易日历（重试3次，失败返回None=需fail-loud）。"""
+    import time
     if end is None:
         end = datetime.now().strftime("%Y-%m-%d")
-    try:
-        import baostock as bs
-        lg = bs.login()
-        if lg.error_code != "0":
-            return []
-        rs = bs.query_trade_dates(start_date=start, end_date=end)
-        if rs.error_code != "0":
+    last_err = None
+    for attempt in range(3):
+        try:
+            import baostock as bs
+            lg = bs.login()
+            if lg.error_code != "0":
+                last_err = f"login:{lg.error_code}"
+                time.sleep(2 * (attempt + 1))
+                continue
+            rs = bs.query_trade_dates(start_date=start, end_date=end)
+            if rs.error_code != "0":
+                last_err = f"query:{rs.error_code}"
+                bs.logout()
+                time.sleep(2 * (attempt + 1))
+                continue
+            days = []
+            while rs.next():
+                row = rs.get_row_data()
+                if len(row) >= 2 and row[1] == "1":
+                    days.append(row[0])
             bs.logout()
-            return []
-        days = []
-        while rs.next():
-            row = rs.get_row_data()
-            if len(row) >= 2 and row[1] == "1":
-                days.append(row[0])
-        bs.logout()
-        return days
-    except Exception:
-        return []
+            return days
+        except Exception as e:
+            last_err = str(e)
+            time.sleep(2 * (attempt + 1))
+            continue
+    print(f"  WARN: official calendar fetch failed after 3 retries: {last_err}")
+    return None
 
 
 def check_calendar_completeness(data_dir: Path) -> dict:
@@ -96,8 +107,8 @@ def check_calendar_completeness(data_dir: Path) -> dict:
         return {"status": "fail", "reason": "本地日历为空或不存在", "local_count": 0}
 
     official = fetch_official_trading_days(start=local[0], end=local[-1])
-    if not official:
-        return {"status": "skipped", "reason": "无法连接 baostock 拉取官方日历（联网失败）",
+    if official is None:
+        return {"status": "fail", "reason": "baostock calendar fetch failed (rate-limited); retry later",
                 "local_count": len(local), "official_count": 0, "missing": []}
 
     local_set = set(local)
@@ -188,33 +199,41 @@ def jump_threshold_for_code(code: str) -> float:
     return 0.11  # 主板 10%
 
 
-def fetch_factor_event_days(codes: list[str]) -> dict[str, set[str]]:
-    """从 baostock query_adjust_factor 拉每只票的除权事件日（含 ±1 日窗口）。"""
-    try:
-        import baostock as bs
-        from datetime import timedelta
-        import pandas as pd
-        lg = bs.login()
-        if lg.error_code != "0":
-            return {}
-        events: dict[str, set[str]] = {}
-        for code in codes:
-            bs_code = ("sh." + code[2:]) if code.startswith("sh") else ("sz." + code[2:])
-            rs = bs.query_adjust_factor(code=bs_code, start_date="1990-01-01", end_date="2026-12-31")
-            days: set[str] = set()
-            while rs.next():
-                row = rs.get_row_data()
-                d = row[1]  # dividOperateDate
-                # ±1 日窗口
-                dt = pd.Timestamp(d)
-                days.add(d)
-                days.add((dt - timedelta(days=1)).strftime("%Y-%m-%d"))
-                days.add((dt + timedelta(days=1)).strftime("%Y-%m-%d"))
-            events[code] = days
-        bs.logout()
-        return events
-    except Exception:
-        return {}
+def fetch_factor_event_days(codes: list[str]) -> dict[str, set[str]] | None:
+    """从 baostock query_adjust_factor 拉除权事件日（重试3次，失败返回None=需fail-loud）。"""
+    import time
+    last_err = None
+    for attempt in range(3):
+        try:
+            import baostock as bs
+            from datetime import timedelta
+            import pandas as pd
+            lg = bs.login()
+            if lg.error_code != "0":
+                last_err = f"login:{lg.error_code}"
+                time.sleep(2 * (attempt + 1))
+                continue
+            events: dict[str, set[str]] = {}
+            for code in codes:
+                bs_code = ("sh." + code[2:]) if code.startswith("sh") else ("sz." + code[2:])
+                rs = bs.query_adjust_factor(code=bs_code, start_date="1990-01-01", end_date="2026-12-31")
+                days: set[str] = set()
+                while rs.next():
+                    row = rs.get_row_data()
+                    d = row[1]
+                    dt = pd.Timestamp(d)
+                    days.add(d)
+                    days.add((dt - timedelta(days=1)).strftime("%Y-%m-%d"))
+                    days.add((dt + timedelta(days=1)).strftime("%Y-%m-%d"))
+                events[code] = days
+            bs.logout()
+            return events
+        except Exception as e:
+            last_err = str(e)
+            time.sleep(2 * (attempt + 1))
+            continue
+    print(f"  WARN: factor events fetch failed after 3 retries: {last_err}")
+    return None
 
 
 def build_nan_gap_whitelist(points: list[tuple[str, float]]) -> set[str]:
@@ -236,26 +255,60 @@ def _is_finite(v) -> bool:
     return isinstance(v, (int, float)) and math.isfinite(v)
 
 
-def fetch_ipo_dates(codes: list[str]) -> dict[str, str]:
-    """从 baostock query_stock_basic 拉 ipoDate。"""
+def _raw_price_before(code: str, date_str: str, data_dir: "Path") -> "float | None":
+    """读指定日期的原始收盘价=close/factor，供低价tick豁免判断。"""
+    import numpy as np
+    cpath = data_dir / "features" / code / "close.day.bin"
+    fpath = data_dir / "features" / code / "factor.day.bin"
     try:
-        import baostock as bs
-        lg = bs.login()
-        if lg.error_code != "0":
-            return {}
-        ipo: dict[str, str] = {}
-        for code in codes:
-            bs_code = ("sh." + code[2:]) if code.startswith("sh") else ("sz." + code[2:])
-            rs = bs.query_stock_basic(code=bs_code)
-            while rs.next():
-                row = rs.get_row_data()
-                if len(row) >= 3 and row[2]:
-                    ipo[code] = row[2]
-                    break
-        bs.logout()
-        return ipo
+        cal = read_calendar(data_dir)
+        idx = cal.index(date_str) if date_str in cal else None
+        if idx is None:
+            return None
+        cr = np.fromfile(str(cpath), dtype="<f")
+        fr = np.fromfile(str(fpath), dtype="<f") if fpath.exists() else None
+        cs = int(cr[0]) if len(cr) > 0 else 0
+        off = idx - cs
+        if off < 0 or off >= len(cr) - 1:
+            return None
+        cv = float(cr[1 + off])
+        fv = float(fr[1 + off]) if fr is not None and 1 + off < len(fr) else 1.0
+        if not _is_finite(cv) or not _is_finite(fv) or fv <= 0:
+            return None
+        return cv / fv
     except Exception:
-        return {}
+        return None
+
+
+def fetch_ipo_dates(codes: list[str]) -> dict[str, str] | None:
+    """从 baostock query_stock_basic 拉 ipoDate（重试3次）。"""
+    import time
+    last_err = None
+    for attempt in range(3):
+        try:
+            import baostock as bs
+            lg = bs.login()
+            if lg.error_code != "0":
+                last_err = f"login:{lg.error_code}"
+                time.sleep(2 * (attempt + 1))
+                continue
+            ipo: dict[str, str] = {}
+            for code in codes:
+                bs_code = ("sh." + code[2:]) if code.startswith("sh") else ("sz." + code[2:])
+                rs = bs.query_stock_basic(code=bs_code)
+                while rs.next():
+                    row = rs.get_row_data()
+                    if len(row) >= 3 and row[2]:
+                        ipo[code] = row[2]
+                        break
+            bs.logout()
+            return ipo
+        except Exception as e:
+            last_err = str(e)
+            time.sleep(2 * (attempt + 1))
+            continue
+    print(f"  WARN: IPO dates fetch failed after 3 retries: {last_err}")
+    return None
 
 
 def build_ipo_whitelist(code: str, ipo_date: str, calendar: list[str]) -> set[str]:
@@ -280,8 +333,12 @@ def scan_full_jumps_mechanized(data_dir: Path) -> dict:
     # 拉白名单数据（联网）
     print("  拉取 factor 事件日白名单...")
     factor_events = fetch_factor_event_days(codes)
+    if factor_events is None:
+        return {"status": "fail", "reason": "baostock factor events fetch failed (rate-limited?); retry later", "hits": 0}
     print("  拉取 IPO 日期白名单...")
     ipo_dates = fetch_ipo_dates(codes)
+    if ipo_dates is None:
+        ipo_dates = {}
 
     hits: list[dict] = []
     whitelisted_count = 0
@@ -306,14 +363,27 @@ def scan_full_jumps_mechanized(data_dir: Path) -> dict:
                         whitelisted_count += 1
                         prev = (date, value)
                         continue
+                    # 低价tick豁免：前日原始价(close/factor)<2元时，涨跌停价四舍五入到0.01元
+                    # 导致有效涨跌幅超名义限制（如0.45元跌停=-11.1%），属真实行情
+                    rp = _raw_price_before(code, prev[0], data_dir) if prev and prev[0] else None
+                    if rp is not None and rp < 2.0:
+                        tl = threshold + 0.01 / rp
+                        if abs(jump) <= tl:
+                            whitelisted_count += 1
+                            prev = (date, value)
+                            continue
                     hits.append({"code": code, "date": date, "jump": round(jump, 4),
                                  "threshold": threshold})
             prev = (date, value)
 
+    import json as _json
+    all_hits_path = Path(data_dir) / "jump_hits_full.json"
+    _json.dump(hits, all_hits_path.open("w", encoding="utf-8"), ensure_ascii=False, indent=2)
     return {
         "status": "pass" if not hits else "fail",
         "hits": len(hits),
         "whitelisted_count": whitelisted_count,
+        "all_hits_file": str(all_hits_path),
         "examples": hits[:50],
     }
 
