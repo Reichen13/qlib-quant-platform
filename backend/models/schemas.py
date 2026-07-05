@@ -1,4 +1,4 @@
-﻿"""
+"""
 Pydantic 数据模型
 定义 API 请求和响应的数据结构
 """
@@ -344,6 +344,7 @@ class PositionSizingResult(BaseModel):
     quarter_kelly: float
     risk_level: str
     suggestion: str
+    adaptive_position: float = Field(default=1.0, ge=0, le=1, description="自适应仓位: min(1, tolerance / abs(max_dd))")
 
 
 class RiskAnalysisResponse(BaseModel):

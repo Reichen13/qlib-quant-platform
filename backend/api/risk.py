@@ -410,6 +410,10 @@ async def analyze_risk(request: RiskAnalysisRequest):
             risk_level = "高风险"
             risk_suggestion = "策略风险较高，建议观望或极小仓位试探"
 
+        # Stage 5: Adaptive position sizing - user drawdown tolerance (default 0.20)
+        max_dd_tolerance = float(getattr(request, "max_drawdown_tolerance", 0.20) or 0.20)
+        adaptive_pos = min(1.0, max_dd_tolerance / abs(max_dd)) if max_dd != 0 else 1.0
+
         return RiskAnalysisResponse(
             codes=codes,
             start_date=start_date,
@@ -423,6 +427,7 @@ async def analyze_risk(request: RiskAnalysisRequest):
                 quarter_kelly=kelly["quarter_kelly"],
                 risk_level=risk_level,
                 suggestion=risk_suggestion,
+                adaptive_position=round(adaptive_pos, 4),
             ),
             equity=equity_data,
             drawdown=drawdown_data,
