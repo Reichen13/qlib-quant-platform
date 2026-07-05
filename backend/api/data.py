@@ -1,4 +1,4 @@
-"""
+﻿"""
 数据健康检查 API - 数据源状态监控与异常告警
 """
 
@@ -26,6 +26,7 @@ router = APIRouter()
 _MAX_FEATURE_DATE_SAMPLE = 300
 _MAX_ADJUSTMENT_SAMPLE = 80
 _ONE_FACTOR_TOLERANCE = 1e-6
+_PRE_PRICE_LIMIT_DATE = "1996-12-16"  # 1996-12-16前中国股市无涨跌幅限制
 
 
 class DataUpdateRequest(BaseModel):
@@ -206,6 +207,10 @@ def _find_large_price_jump(points: list[dict], threshold: float = 0.35, calendar
                 if pi >= 0 and ci >= 0 and (ci - pi) > 1:
                     previous = point
                     continue
+            # 1996-12-16前无涨跌幅限制，豁免所有跳变告警
+            if date < _PRE_PRICE_LIMIT_DATE:
+                previous = point
+                continue
             jump_pct = value / previous["value"] - 1.0
             if abs(jump_pct) >= threshold:
                 return {
@@ -461,8 +466,10 @@ def _summarize_close_value_quality(data_dir: Path) -> dict:
 
     density = finite_values / total_values if total_values else 0.0
     # 最近 90 个交易日密度检查（股改钉子户/退市重上市的长停不应误报为数据缺陷）
+    # 只统计近90日内连续>30天无有效数据的股票数，少量停牌属正常状态
     import math as _math, numpy as _np
-    recent_gap = False
+    recent_gap_count = 0
+    recent_gap_ratio = 0.0
     cal = []
     try:
         cal_path = data_dir / "calendars" / "day.txt"
@@ -483,16 +490,18 @@ def _summarize_close_value_quality(data_dir: Path) -> dict:
                             else:
                                 recent_nan = 0
                     if recent_nan > 30:
-                        recent_gap = True
-                        break
+                        recent_gap_count += 1
     except Exception:
         pass
+    if len(sample_files) > 0:
+        recent_gap_ratio = recent_gap_count / len(sample_files)
     return {
         "sample_size": len(sample_files),
         "effective_value_density": round(density, 4),
         "max_consecutive_nan": max_consecutive_nan,
         "hollow_count": hollow_count,
-        "recent_gap_warning": recent_gap,
+        "recent_gap_count": recent_gap_count,
+        "recent_gap_ratio": round(recent_gap_ratio, 4),
         "quality_examples": examples,
     }
 
@@ -592,13 +601,13 @@ def _check_stocks_data() -> dict:
 
         if close_quality["sample_size"] and (
             close_quality["effective_value_density"] < 0.8
-            or close_quality["recent_gap_warning"]
+            or close_quality.get("recent_gap_ratio", 0) > 0.10
             or close_quality["hollow_count"] > 0
         ):
             status = "error"
             msg = (
                 f"日线有效值密度异常({close_quality['effective_value_density']:.1%})，"
-                f"近90交易日存在有效值缺口，疑似数据断层"
+                f"抽样{close_quality['sample_size']}只中{close_quality.get('recent_gap_count', 0)}只近90日无有效数据，疑似数据断层"
             )
 
         return {
@@ -1022,7 +1031,13 @@ async def data_health_check(include_external: bool = False):
             "price_adjustment": adjustment_check,
             "stocks": {
                 **stocks_check,
-                "etf": stocks_check,
+                "etf": {
+                    "total": 0,
+                    "last_date": "",
+                    "lag_days": -1,
+                    "status": "warning",
+                    "message": "ETF历史数据通道重建中（方案B：显式降级），轮动信号暂不可用",
+                },
                 "index": {
                     "total": 12,
                     "last_date": stocks_check.get("last_date", ""),
@@ -1289,3 +1304,4 @@ async def get_data_update_progress(task_id: str):
         return persisted_task
 
     raise HTTPException(status_code=404, detail="数据更新任务不存在")
+
