@@ -590,7 +590,8 @@ export const useAppStore = create<AppState>()(
           },
           dataManagementParams: {
             ...current.dataManagementParams,
-            ...persistedState?.dataManagementParams,
+            repairStale: persistedState?.dataManagementParams?.repairStale ?? current.dataManagementParams.repairStale,
+            targetCodes: persistedState?.dataManagementParams?.targetCodes ?? current.dataManagementParams.targetCodes,
           },
           agentDebateParams: {
             ...current.agentDebateParams,
@@ -632,7 +633,10 @@ export const useAppStore = create<AppState>()(
         newsAnalysisParams: state.newsAnalysisParams,
         stockPoolParams: state.stockPoolParams,
         dashboardStrategyValues: state.dashboardStrategyValues,
-        dataManagementParams: state.dataManagementParams,
+        dataManagementParams: {
+          repairStale: state.dataManagementParams.repairStale,
+          targetCodes: state.dataManagementParams.targetCodes,
+        },
         agentDebateParams: state.agentDebateParams,
         aiStrategyParams: state.aiStrategyParams,
         portfolioParams: state.portfolioParams,

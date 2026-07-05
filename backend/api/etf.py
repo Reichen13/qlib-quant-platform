@@ -213,6 +213,26 @@ def _fetch_all_etf_history_from_qlib(period: str = "6mo") -> Dict[str, pd.DataFr
     return result
 
 
+def _local_etf_history_available(period: str = "6mo") -> bool:
+    """判断本地 Qlib ETF 历史是否可用。
+
+    全量数据重建后，baostock 对 ETF 历史覆盖不可用
+    （仅半年左右）。此函数集中判断，避免隙放状态
+    散落到多个端点。只读当前 cn_data 目录，绝不回读旧备份目录。
+    """
+    history = _fetch_all_etf_history_from_qlib(period)
+    if not history:
+        return False
+    # 至少有 3 只 ETF 有 ≥10 条记录才算可用，避免单只偶然有数据
+    return len(history) >= 3
+
+
+# ETF 历史降级状态（本地无可靠历史时使用）
+ETF_DATA_UNAVAILABLE_WARNING = (
+    "ETF 历史数据通道重建中（baostock 对 ETF 覆盖不全），轮动信号暂不可用。"
+)
+
+
 def _fetch_all_etf_history_from_yfinance(period: str = "6mo") -> Dict[str, pd.DataFrame]:
     """批量获取所有 ETF 行情（单次网络调用，备用）
 
@@ -412,12 +432,15 @@ async def get_etf_signals(days: int = 20):
                 top_sell.append(code)
 
         if not etfs:
+            local_ok = _local_etf_history_available()
             return ETFSignalResponse(
                 date=date.today(),
                 etfs=[],
                 top_buy=[],
                 top_sell=[],
-                warning="暂无可靠 ETF 行情数据，未生成模拟轮动信号。",
+                data_status="unavailable" if not local_ok else "ok",
+                warning=(ETF_DATA_UNAVAILABLE_WARNING if not local_ok
+                         else "暂无可靠 ETF 行情数据，未生成模拟轮动信号。"),
             )
 
         etfs.sort(key=lambda x: x.change_pct, reverse=True)

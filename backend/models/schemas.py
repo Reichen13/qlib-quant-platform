@@ -278,6 +278,7 @@ class ETFSignalResponse(BaseModel):
     etfs: List[ETFInfo]
     top_buy: List[str]
     top_sell: List[str]
+    data_status: str = "ok"
     warning: Optional[str] = None
 
 

@@ -756,8 +756,10 @@ export const api = {
     },
     logs: () =>
       fetch(`${API_BASE}/api/data/logs`, { timeoutMs: 30_000 }).then(r => handleResponse<DataLogsResponse>(r)),
+    freshness: () =>
+      fetch(`${API_BASE}/api/data/freshness`, { timeoutMs: 30_000 }).then(r => handleResponse<any>(r)),
     update: async (
-      type: "stocks" | "etf" | "index" | "all",
+      type: "stocks" | "core" | "etf" | "index" | "all",
       options?: { rebuildStale?: boolean; overwriteExisting?: boolean; codes?: string[]; startDate?: string; endDate?: string },
     ) =>
       fetch(`${API_BASE}/api/data/update`, {

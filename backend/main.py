@@ -53,6 +53,13 @@ def init_qlib():
         data_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data"
         if not data_dir.exists():
             raise FileNotFoundError(f"Qlib 数据目录不存在: {data_dir}")
+        # 防护：绝不加载旧备份目录（全量重建后旧 cn_data 改名为备份，
+        # 其中的旧口径 bin 是被污染的，“有历史但错的”比“没历史”更危险）
+        if "cn_data_backup" in data_dir.name:
+            raise RuntimeError(
+                f"拒绝加载旧备份目录: {data_dir}；"
+                f"请确认 provider_uri 指向当前 cn_data 而非备份"
+            )
 
         qlib.init(provider_uri=str(data_dir), region=REG_CN)
         qlib_initialized = True

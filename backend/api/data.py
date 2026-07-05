@@ -1,9 +1,10 @@
-"""
+﻿"""
 数据健康检查 API - 数据源状态监控与异常告警
 """
 
 import os
 import json
+import shutil
 import subprocess
 import sys
 import threading
@@ -25,12 +26,13 @@ router = APIRouter()
 _MAX_FEATURE_DATE_SAMPLE = 300
 _MAX_ADJUSTMENT_SAMPLE = 80
 _ONE_FACTOR_TOLERANCE = 1e-6
+_PRE_PRICE_LIMIT_DATE = "1996-12-16"  # 1996-12-16前中国股市无涨跌幅限制
 
 
 class DataUpdateRequest(BaseModel):
     """数据更新请求"""
 
-    type: Literal["stocks", "all", "etf", "index"] = Field(default="stocks")
+    type: Literal["stocks", "all", "core", "etf", "index"] = Field(default="stocks")
     start_date: str | None = Field(default=None, description="起始日期 YYYY-MM-DD，默认从 Qlib 最新日期开始")
     end_date: str | None = Field(default=None, description="结束日期 YYYY-MM-DD，默认到今天")
     max_stocks: int | None = Field(default=None, ge=1, le=5000, description="最多更新多少只股票，测试时可填较小值")
@@ -143,6 +145,20 @@ def _read_feature_values(bin_path: Path) -> list[float]:
         return []
 
 
+def _read_feature_raw_values(bin_path: Path) -> list[float]:
+    """Read Qlib float feature values including NaN gaps, ignoring the start-index slot."""
+    try:
+        import numpy as np
+
+        raw = np.fromfile(bin_path, dtype="<f")
+        if len(raw) < 2:
+            return []
+        return [float(value) for value in raw[1:]]
+    except Exception:
+        logger.debug(f"无法读取 Qlib 原始特征文件: {bin_path}")
+        return []
+
+
 def _read_calendar_dates(data_dir: Path) -> list[str]:
     cal_path = data_dir / "calendars" / "day.txt"
     if not cal_path.exists():
@@ -173,19 +189,33 @@ def _read_feature_points(bin_path: Path, calendar: list[str]) -> list[dict]:
         return []
 
 
-def _find_large_price_jump(points: list[dict], threshold: float = 0.35) -> dict | None:
+def _find_large_price_jump(points: list[dict], threshold: float = 0.35, calendar: list[str] | None = None) -> dict | None:
+    """检测超过阈值的单日跳变。跨NaN区间的累计涨跌（停牌复牌）不当单日跳变。"""
+    cal_idx = {d: i for i, d in enumerate(calendar)} if calendar else {}
     previous = None
     for point in points:
         value = point.get("value")
+        date = point.get("date", "")
         if value <= 0:
             previous = None
             continue
         if previous and previous.get("value", 0) > 0:
+            prev_date = previous.get("date", "")
+            if cal_idx and prev_date and date:
+                pi = cal_idx.get(prev_date, -1)
+                ci = cal_idx.get(date, -1)
+                if pi >= 0 and ci >= 0 and (ci - pi) > 1:
+                    previous = point
+                    continue
+            # 1996-12-16前无涨跌幅限制，豁免所有跳变告警
+            if date < _PRE_PRICE_LIMIT_DATE:
+                previous = point
+                continue
             jump_pct = value / previous["value"] - 1.0
             if abs(jump_pct) >= threshold:
                 return {
-                    "date": point.get("date", ""),
-                    "previous_date": previous.get("date", ""),
+                    "date": date,
+                    "previous_date": prev_date,
                     "close": round(value, 4),
                     "previous_close": round(previous["value"], 4),
                     "jump_pct": round(jump_pct, 4),
@@ -233,7 +263,7 @@ def _check_price_adjustment_policy() -> dict:
         factor_path = close_path.parent / "factor.day.bin"
 
         close_points = _read_feature_points(close_path, calendar)
-        jump = _find_large_price_jump(close_points)
+        jump = _find_large_price_jump(close_points, calendar=calendar)
         if jump:
             possible_unadjusted_jumps += 1
             if len(suspect_examples) < 10:
@@ -283,24 +313,24 @@ def _check_price_adjustment_policy() -> dict:
         status = "warning"
         adjustment_mode = "qfq_price_with_placeholder_factor"
         factor_field_status = "placeholder_1.0"
-        message = "价格源策略偏前复权，但 factor 字段全为 1.0，占位痕迹明显，不能审计真实除权因子"
+        message = "factor 字段全为 1.0（占位符），数据可能为旧口径（前复权+占位因子），建议重建"
     elif latest_one_ratio >= 0.8:
         status = "warning"
         adjustment_mode = "qfq_price_with_mixed_factor"
         factor_field_status = "mixed_real_and_placeholder"
-        message = "历史 factor 存在非 1 值，但多数最新样本 factor 为 1.0，疑似老数据有真实因子、增量数据为占位因子"
+        message = "多数最新样本 factor 为 1.0，疑似增量数据为旧口径占位因子，建议全量重建"
     else:
         status = "normal"
-        adjustment_mode = "adjusted_price_with_factor"
-        factor_field_status = "real_factor_present"
-        message = "样本中存在可用 factor 字段，价格复权口径相对可审计"
+        adjustment_mode = "back_adjusted_with_cumulative_factor"
+        factor_field_status = "real_cumulative_factor"
+        message = "$close 为后复权价（原始价 x 累积后复权因子），$factor 为累积后复权因子，面向用户价格已自动换算前复权（=真实市价）"
 
     warnings: list[str] = []
     if possible_unadjusted_jumps:
         status = "warning"
         message = f"{message}；另发现疑似大幅跳变，需要抽查是否为未复权或数据断点"
         warnings.append(f"样本中 {possible_unadjusted_jumps} 只出现超过 35% 的单日跳变，建议抽查是否为未复权或数据修复断点")
-    warnings.append("更新脚本优先使用前复权/自动复权价格；若外部源缺少前复权数据，仍需人工复核")
+    warnings.append("当前口径：baostock 单源写入，后复权（backAdjustFactor），增量只追加不重写历史")
 
     return {
         "source": "Qlib cn_data 复权口径",
@@ -317,8 +347,10 @@ def _check_price_adjustment_policy() -> dict:
         "possible_unadjusted_jump_count": possible_unadjusted_jumps,
         "source_policy": {
             "primary_use": "research_backtest_factor",
-            "expected_price_adjustment": "front_adjusted_or_auto_adjusted",
-            "update_sources": ["Tencent qfqday", "Eastmoney fqt=1", "Baostock adjustflag=2", "yfinance auto_adjust=True"],
+            "expected_price_adjustment": "back_adjusted_with_cumulative_factor",
+            "write_source": "Baostock adjustflag=3 (raw price) + query_adjust_factor (backAdjustFactor)",
+            "user_facing_price": "前复权（自动换算：后复权价 / 最新factor），与券商真实市价一致",
+            "factor_semantics": "累积后复权因子，历史不可变（增量只追加不重写历史）",
             "execution_price_note": "实盘成交价应以实时未复权行情或券商行情为准",
         },
         "warnings": warnings,
@@ -381,6 +413,98 @@ def _is_a_share_feature_code(code: str) -> bool:
     )
 
 
+def _summarize_close_value_quality(data_dir: Path) -> dict:
+    """Sample close.day.bin density so hollow securities do not look healthy."""
+    import math
+
+    feature_dir = data_dir / "features"
+    if not feature_dir.exists():
+        return {
+            "sample_size": 0,
+            "effective_value_density": 0.0,
+            "max_consecutive_nan": 0,
+            "hollow_count": 0,
+            "quality_examples": [],
+        }
+
+    close_files = sorted(
+        path for path in feature_dir.glob("*/close.day.bin")
+        if _is_a_share_feature_code(path.parent.name)
+    )
+    sample_files = _sample_feature_files(close_files)
+    finite_values = total_values = max_consecutive_nan = hollow_count = 0
+    examples: list[dict] = []
+
+    for close_path in sample_files:
+        values = _read_feature_raw_values(close_path)
+        if not values:
+            continue
+        total_values += len(values)
+        finite_count = 0
+        current_nan = 0
+        file_max_nan = 0
+        for value in values:
+            if isinstance(value, (int, float)) and math.isfinite(value) and value > 0:
+                finite_values += 1
+                finite_count += 1
+                current_nan = 0
+            else:
+                current_nan += 1
+                file_max_nan = max(file_max_nan, current_nan)
+        max_consecutive_nan = max(max_consecutive_nan, file_max_nan)
+        density = finite_count / len(values)
+        if len(values) >= 200 and density < 0.2:
+            hollow_count += 1
+            if len(examples) < 5:
+                examples.append({
+                    "code": close_path.parent.name,
+                    "length": len(values),
+                    "finite_count": finite_count,
+                    "density": round(density, 4),
+                    "max_consecutive_nan": file_max_nan,
+                })
+
+    density = finite_values / total_values if total_values else 0.0
+    # 最近 90 个交易日密度检查（股改钉子户/退市重上市的长停不应误报为数据缺陷）
+    # 只统计近90日内连续>30天无有效数据的股票数，少量停牌属正常状态
+    import math as _math, numpy as _np
+    recent_gap_count = 0
+    recent_gap_ratio = 0.0
+    cal = []
+    try:
+        cal_path = data_dir / "calendars" / "day.txt"
+        if cal_path.exists():
+            cal = cal_path.read_text(encoding="utf-8").strip().splitlines()
+            if len(cal) >= 90:
+                recent = cal[-90:]
+                for close_path in sample_files:
+                    raw = _np.fromfile(str(close_path), dtype="<f")
+                    start_idx = int(raw[0]) if len(raw) >= 1 else 0
+                    recent_nan = 0
+                    for j in range(len(recent)):
+                        off = (len(cal) - 90 + j) - start_idx
+                        if 0 <= off < len(raw) - 1:
+                            v = float(raw[1 + off])
+                            if not (_math.isfinite(v) and v > 0):
+                                recent_nan += 1
+                            else:
+                                recent_nan = 0
+                    if recent_nan > 30:
+                        recent_gap_count += 1
+    except Exception:
+        pass
+    if len(sample_files) > 0:
+        recent_gap_ratio = recent_gap_count / len(sample_files)
+    return {
+        "sample_size": len(sample_files),
+        "effective_value_density": round(density, 4),
+        "max_consecutive_nan": max_consecutive_nan,
+        "hollow_count": hollow_count,
+        "recent_gap_count": recent_gap_count,
+        "recent_gap_ratio": round(recent_gap_ratio, 4),
+        "quality_examples": examples,
+    }
+
 def _check_qlib_data() -> dict:
     """检查 Qlib cn_data 数据状态"""
     data_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data"
@@ -401,6 +525,7 @@ def _check_qlib_data() -> dict:
     if cal_path.exists():
         dates = cal_path.read_text().strip().split("\n")
         feature_summary = _get_stock_feature_date_summary(data_dir, dates)
+        close_quality = _summarize_close_value_quality(data_dir)
         last_date = feature_summary["representative_date"] or (dates[-1] if dates else "")
         if last_date:
             try:
@@ -459,6 +584,7 @@ def _check_stocks_data() -> dict:
         dates = cal_path.read_text().strip().split("\n")
         feature_summary = _get_stock_feature_date_summary(data_dir, dates)
         last_date = feature_summary["representative_date"] or (dates[-1] if dates else "")
+        close_quality = _summarize_close_value_quality(data_dir)
         today = datetime.now()
         try:
             last_dt = datetime.strptime(last_date, "%Y-%m-%d")
@@ -473,6 +599,17 @@ def _check_stocks_data() -> dict:
         else:
             status, msg = "error", f"严重滞后约 {lag_days} 个交易日"
 
+        if close_quality["sample_size"] and (
+            close_quality["effective_value_density"] < 0.8
+            or close_quality.get("recent_gap_ratio", 0) > 0.10
+            or close_quality["hollow_count"] > 0
+        ):
+            status = "error"
+            msg = (
+                f"日线有效值密度异常({close_quality['effective_value_density']:.1%})，"
+                f"抽样{close_quality['sample_size']}只中{close_quality.get('recent_gap_count', 0)}只近90日无有效数据，疑似数据断层"
+            )
+
         return {
             "total": feature_stock_counts["total"],
             "raw_total": feature_stock_counts["total"],
@@ -486,6 +623,7 @@ def _check_stocks_data() -> dict:
             "message": msg,
             "sample_latest_date": feature_summary.get("max_date", ""),
             "sample_latest_coverage": feature_summary.get("max_date_coverage", 0.0),
+            **close_quality,
         }
 
     return {"total": 0, "last_date": "", "lag_days": -1, "status": "error", "message": "日历文件不存在"}
@@ -584,6 +722,57 @@ def _normalize_update_codes(codes: list[str] | None) -> list[str]:
     return normalized
 
 
+def _read_instrument_codes(names: list[str], limit: int | None = None) -> list[str]:
+    data_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data"
+    codes: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        path = data_dir / "instruments" / f"{name}.txt"
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            parts = line.strip().split("	")
+            if not parts or not parts[0]:
+                continue
+            code = parts[0].lower()
+            if code not in seen:
+                seen.add(code)
+                codes.append(code)
+                if limit and len(codes) >= limit:
+                    return codes
+    return codes
+
+
+def _get_core_update_codes(limit: int | None = 800) -> list[str]:
+    """Return a priority update universe for fast daily use.
+
+    Includes major index constituents where available plus important ETFs,
+    user-facing demo symbols, pair-trading examples, and recent strategy themes.
+    """
+    priority = [
+        "sh510050",  # 上证50ETF，用于修复/跟踪上证50相关链路
+        "sh510300",
+        "sh000016",  # 上证50指数；若本地无 feature 文件会被更新脚本自然跳过
+        "sh600519",
+        "sz000001",
+        "sz300308",
+        "sz300502",
+        "sz300394",
+        "sh600036",
+        "sh601318",
+    ]
+    codes: list[str] = []
+    seen: set[str] = set()
+    for code in priority + _read_instrument_codes(["csi300", "csi500", "all"], limit=limit):
+        normalized = code.lower()
+        if normalized not in seen:
+            seen.add(normalized)
+            codes.append(normalized)
+        if limit and len(codes) >= limit:
+            break
+    return codes
+
+
 def _clear_module_caches() -> dict:
     """Clear in-process caches that can hide freshly written Qlib data."""
     cleared: list[str] = []
@@ -618,6 +807,16 @@ def _clear_module_caches() -> dict:
         cleared.append("core.factor_utils._industry_cache")
     except Exception as exc:
         failures["core.factor_utils._industry_cache"] = str(exc)
+
+    alpha158_cache = Path.home() / ".qlib" / "alpha158_cache"
+    if alpha158_cache.exists():
+        try:
+            import shutil
+
+            shutil.rmtree(alpha158_cache)
+            cleared.append("alpha158_cache")
+        except Exception as exc:
+            failures["alpha158_cache"] = str(exc)
 
     return {
         "cache_cleared": bool(cleared),
@@ -832,7 +1031,13 @@ async def data_health_check(include_external: bool = False):
             "price_adjustment": adjustment_check,
             "stocks": {
                 **stocks_check,
-                "etf": stocks_check,
+                "etf": {
+                    "total": 0,
+                    "last_date": "",
+                    "lag_days": -1,
+                    "status": "warning",
+                    "message": "ETF历史数据通道重建中（方案B：显式降级），轮动信号暂不可用",
+                },
                 "index": {
                     "total": 12,
                     "last_date": stocks_check.get("last_date", ""),
@@ -843,6 +1048,108 @@ async def data_health_check(include_external: bool = False):
             "baostock_industry": baostock_check,
             "tdx_mcp": tdx_check,
         },
+    }
+
+
+def _freshness_module_matrix(stocks_check: dict, adjustment_check: dict) -> list[dict]:
+    qlib_date = stocks_check.get("last_date") or ""
+    sample_date = stocks_check.get("sample_latest_date") or qlib_date
+    coverage = stocks_check.get("sample_latest_coverage", 0)
+    canonical_adjustment = "front_adjusted"
+    return [
+        {
+            "key": "quote",
+            "name": "行情分析",
+            "primary_source": "qlib",
+            "uses_qlib_daily_bar": True,
+            "latest_date": qlib_date,
+            "sample_latest_date": sample_date,
+            "coverage": coverage,
+            "price_adjustment": canonical_adjustment,
+            "freshness_policy": "以本地 Qlib 日线为准",
+        },
+        {
+            "key": "backtest",
+            "name": "模型回测 / 因子 / 深度学习",
+            "primary_source": "qlib",
+            "uses_qlib_daily_bar": True,
+            "latest_date": qlib_date,
+            "sample_latest_date": sample_date,
+            "coverage": coverage,
+            "price_adjustment": canonical_adjustment,
+            "freshness_policy": "训练、测试、回测统一读取 Qlib D.features",
+        },
+        {
+            "key": "screening",
+            "name": "盘后选股 / 均值回归 / 交易计划",
+            "primary_source": "qlib",
+            "uses_qlib_daily_bar": True,
+            "latest_date": qlib_date,
+            "sample_latest_date": sample_date,
+            "coverage": coverage,
+            "price_adjustment": canonical_adjustment,
+            "freshness_policy": "候选筛选与 ATR/止损计划统一使用 Qlib 日线",
+        },
+        {
+            "key": "pair",
+            "name": "配对交易",
+            "primary_source": "qlib",
+            "uses_qlib_daily_bar": True,
+            "latest_date": qlib_date,
+            "sample_latest_date": sample_date,
+            "coverage": coverage,
+            "price_adjustment": canonical_adjustment,
+            "freshness_policy": "价差和相关性统一使用 Qlib 收盘价",
+        },
+        {
+            "key": "risk_portfolio",
+            "name": "风险管理 / 组合优化",
+            "primary_source": "qlib_with_external_fallback",
+            "uses_qlib_daily_bar": True,
+            "latest_date": qlib_date,
+            "sample_latest_date": sample_date,
+            "coverage": coverage,
+            "price_adjustment": canonical_adjustment,
+            "freshness_policy": "优先 Qlib；Qlib 不可用时个别接口会回退 yfinance",
+        },
+        {
+            "key": "macro",
+            "name": "宏观策略 / 新闻 / 部分行业板块",
+            "primary_source": "external",
+            "uses_qlib_daily_bar": False,
+            "latest_date": "external_provider_dependent",
+            "sample_latest_date": "external_provider_dependent",
+            "coverage": None,
+            "price_adjustment": "not_applicable_or_provider_default",
+            "freshness_policy": "来自 akshare/yfinance/新闻源，不受 Qlib 更新按钮完全控制",
+        },
+    ]
+
+
+@router.get("/freshness")
+async def data_freshness_matrix():
+    """Return module-level data-source freshness and price-adjustment policy."""
+    stocks_check = _check_stocks_data()
+    adjustment_check = _check_price_adjustment_policy()
+    coverage = stocks_check.get("sample_latest_coverage", 0)
+    modules = _freshness_module_matrix(stocks_check, adjustment_check)
+    return {
+        "checked_at": datetime.now().isoformat(),
+        "canonical_price_adjustment": "front_adjusted",
+        "canonical_price_adjustment_label": "前复权/可比复权价",
+        "policy_summary": "全链路研究、筛选、回测、风险和交易计划尽量统一使用 Qlib 前复权可比日线；实盘成交价需另看未复权实时行情。",
+        "coverage": {
+            "representative_latest_date": stocks_check.get("last_date", ""),
+            "sample_latest_date": stocks_check.get("sample_latest_date", ""),
+            "sample_latest_coverage": coverage,
+            "status": "complete" if coverage == 1 else "partial",
+        },
+        "adjustment_check": adjustment_check,
+        "modules": modules,
+        "warnings": [
+            "当前更新按钮主要更新 Qlib 股票日线；ETF/指数/宏观/新闻等外部源不一定同步刷新。",
+            "若 sample_latest_coverage 小于 1，说明只有部分股票到了最新交易日，回测和筛选应优先使用快速核心池或指定标的更新。",
+        ],
     }
 
 
@@ -943,12 +1250,16 @@ async def start_data_update(request: DataUpdateRequest):
         )
 
     start_date = request.start_date or _get_stock_latest_trade_date() or "2020-09-26"
+    effective_codes = _normalize_update_codes(request.codes)
+    if request.type == "core" and not effective_codes:
+        effective_codes = _get_core_update_codes()
+
     command = [sys.executable, str(script_path), "--start", start_date]
     if request.end_date:
         command.extend(["--end", request.end_date])
     if request.max_stocks:
         command.extend(["--max", str(request.max_stocks)])
-    for code in _normalize_update_codes(request.codes):
+    for code in effective_codes:
         command.extend(["--code", code])
     if request.rebuild_stale:
         command.append("--rebuild-stale")
@@ -972,6 +1283,8 @@ async def start_data_update(request: DataUpdateRequest):
         "task_id": task_id,
         "status": "running",
         "progress": 5,
+        "mode": request.type,
+        "target_codes": len(effective_codes),
         "message": "数据更新任务已启动",
     }
     _start_update_thread(task_id, command)
@@ -991,3 +1304,4 @@ async def get_data_update_progress(task_id: str):
         return persisted_task
 
     raise HTTPException(status_code=404, detail="数据更新任务不存在")
+

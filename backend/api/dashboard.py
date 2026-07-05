@@ -34,6 +34,7 @@ async def get_dashboard_summary():
         "date": date.today().isoformat(),
         "hot_sectors": [],
         "etf_signals": [],
+        "etf_status": "ok",
         "index_comparison": [],
         "strategy_signals": [],
         "updated_at": datetime.now().isoformat(),
@@ -60,19 +61,29 @@ async def get_dashboard_summary():
 
     # ── ETF 信号 ──
     try:
-        from api.etf import _get_cached_history, _get_etf_universe, compute_signal
-        all_history = _get_cached_history()
-        for code, name in list(_get_etf_universe().items())[:6]:
-            hist = all_history.get(code)
-            if hist is not None and len(hist) >= 10 and "Close" in hist:
-                prices = hist["Close"].dropna()
-                signal, chg, _ = compute_signal(prices)
-                result["etf_signals"].append({
-                    "name": name,
-                    "code": code,
-                    "change_pct": chg,
-                    "signal": signal,
-                })
+        from api.etf import (
+            _get_cached_history,
+            _get_etf_universe,
+            compute_signal,
+            _local_etf_history_available,
+            ETF_DATA_UNAVAILABLE_WARNING,
+        )
+        if not _local_etf_history_available():
+            result["etf_status"] = "unavailable"
+            result["etf_warning"] = ETF_DATA_UNAVAILABLE_WARNING
+        else:
+            all_history = _get_cached_history()
+            for code, name in list(_get_etf_universe().items())[:6]:
+                hist = all_history.get(code)
+                if hist is not None and len(hist) >= 10 and "Close" in hist:
+                    prices = hist["Close"].dropna()
+                    signal, chg, _ = compute_signal(prices)
+                    result["etf_signals"].append({
+                        "name": name,
+                        "code": code,
+                        "change_pct": chg,
+                        "signal": signal,
+                    })
     except Exception as e:
         logger.warning(f"Dashboard ETF 数据获取失败: {e}")
 
