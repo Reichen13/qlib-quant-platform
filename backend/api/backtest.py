@@ -22,6 +22,10 @@ os.environ['JOBLIB_START_METHOD'] = 'spawn' if os.name == 'nt' else 'forkserver'
 os.environ['OMP_NUM_THREADS'] = '1'
 os.environ.setdefault('MLFLOW_ALLOW_FILE_STORE', 'true')
 
+import mlflow
+from pathlib import Path
+mlflow.set_tracking_uri(f"file:///{Path.home()}/.qlib/mlruns")
+
 from models.schemas import (
     BacktestParams, BacktestResponse,
     StockRecommendation, EquityPoint, DrawdownPoint,
@@ -706,6 +710,47 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 warnings=result_warnings or None,
             )
         task_store.set_completed(task_id, result.model_dump_json())
+
+        # MLflow 实验跟踪：自动记录参数+指标+市场环境标签
+        try:
+            strategy_name = params.strategy_name or "qlib_alpha"
+            mlflow.set_experiment(strategy_name)
+            with mlflow.start_run(run_name=f"{strategy_name}_{str(start_date)}_{str(end_date)}"):
+                # 参数
+                mlflow.log_params({
+                    "start_date": str(start_date), "end_date": str(end_date),
+                    "benchmark": params.benchmark, "topk": params.top_k,
+                    "strategy": strategy_name,
+                })
+                # 指标
+                mlflow.log_metrics({
+                    "annual_return": float(ann_r), "net_annual_return": float(ann_r_net),
+                    "sharpe_ratio": float(sharpe), "max_drawdown": float(max_dd),
+                    "win_rate": float(win_rate), "calmar": float(calmar),
+                    "cumulative_cost": float(cumulative_cost),
+                    "information_ratio": float(information_ratio),
+                    "monthly_win_rate": float(monthly_win_rate),
+                })
+                # 市场环境标签：基于 benchmark 近 60 日走势分类
+                if bench is not None and len(bench) >= 60:
+                    bench_ret_60 = bench.iloc[-60:].mean() * 252
+                    bench_ma = bench.iloc[-60:].mean()
+                    latest_bench = bench.iloc[-1]
+                    if latest_bench < bench_ma and bench_ret_60 < -0.05:
+                        regime = "bear"
+                    elif latest_bench < bench_ma:
+                        regime = "correction"
+                    elif bench_ret_60 > 0.15:
+                        regime = "bull"
+                    else:
+                        regime = "neutral"
+                    mlflow.set_tag("market_regime", regime)
+                    mlflow.set_tag("benchmark_60d_return", f"{bench_ret_60:.4f}")
+                mlflow.set_tag("task_id", task_id)
+                mlflow.set_tag("strategy", strategy_name)
+                logger.info(f"MLflow 实验已记录: {strategy_name} (regime={regime})")
+        except Exception as e:
+            logger.warning(f"MLflow 记录失败（不影响回测结果）: {e}")
 
         logger.info(f"回测任务 {task_id} 完成: 年化={ann_r:.2%}, 夏普={sharpe:.2f}, 回撤={max_dd:.2%}")
 

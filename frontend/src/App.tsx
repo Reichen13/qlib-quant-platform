@@ -24,6 +24,7 @@ import { TradePlanPage } from "./pages/trade-plan"
 import { SettingsPage } from "./pages/settings"
 import { SystemStatusPage } from "./pages/system-status"
 import { DragonTigerPage } from "./pages/dragon-tiger"
+import { ExperimentsPage } from "./pages/experiments"
 
 // 创建路由
 const router = createBrowserRouter([
@@ -114,6 +115,10 @@ const router = createBrowserRouter([
       {
         path: "dragon-tiger",
         element: <DragonTigerPage />,
+      },
+      {
+        path: "experiments",
+        element: <ExperimentsPage />,
       },
       {
         path: "system-status",
