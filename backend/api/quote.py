@@ -46,16 +46,21 @@ def _default_start_date(end_dt: pd.Timestamp, frequency: str) -> pd.Timestamp:
     return end_dt - timedelta(days=default_days)
 
 
-def _build_price_frame(df: pd.DataFrame) -> pd.DataFrame:
+def _build_price_frame(df: pd.DataFrame, code: str = "") -> pd.DataFrame:
+    """从 Qlib DataFrame 构建价格帧，自动换算后复权→前复权（≈真实市价）。"""
+    from core.price_adjust import get_latest_factor
+    factor = get_latest_factor(code) if code else 1.0
+    if factor < 1.0001:
+        factor = 1.0  # 无需换算
     records = []
     for idx, row in df.iterrows():
         date_val = idx[1] if isinstance(idx, tuple) else idx
         records.append({
             "date": pd.to_datetime(date_val),
-            "open": float(row["$open"]) if pd.notna(row["$open"]) else 0.0,
-            "high": float(row["$high"]) if pd.notna(row["$high"]) else 0.0,
-            "low": float(row["$low"]) if pd.notna(row["$low"]) else 0.0,
-            "close": float(row["$close"]) if pd.notna(row["$close"]) else 0.0,
+            "open": round(float(row["$open"]) / factor, 2) if pd.notna(row["$open"]) else 0.0,
+            "high": round(float(row["$high"]) / factor, 2) if pd.notna(row["$high"]) else 0.0,
+            "low": round(float(row["$low"]) / factor, 2) if pd.notna(row["$low"]) else 0.0,
+            "close": round(float(row["$close"]) / factor, 2) if pd.notna(row["$close"]) else 0.0,
             "volume": float(row["$volume"]) if pd.notna(row["$volume"]) else 0.0,
             "amount": float(row["$money"]) if pd.notna(row["$money"]) else None,
         })
@@ -184,7 +189,7 @@ async def get_quote(
         if df.empty:
             raise HTTPException(status_code=404, detail=f"No quote data for {code_upper}")
 
-        price_df = _build_price_frame(df)
+        price_df = _build_price_frame(df, code_upper)
         if price_df.empty:
             raise HTTPException(status_code=404, detail=f"No valid K-line data for {code_upper}")
 
