@@ -4,6 +4,7 @@
 """
 
 from typing import List, Optional
+from backend.services.external_data import fetch_industry_ranking
 from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 
@@ -120,59 +121,38 @@ async def get_industry_stocks(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"获取行业股票失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.warning(f"获取行业股票失败，使用本地行业定义降级: {e}")
+        from core.sector_definitions import SECTOR_DEFINITIONS
+        codes = SECTOR_DEFINITIONS.get(industry, [])
+        return {
+            "industry": industry,
+            "count": len(codes),
+            "stocks": [{"code": c, "name": ""} for c in codes],
+            "data_status": "fallback",
+            "source": "local_sector_definitions",
+            "warning": "实时行业成分数据源暂不可用（akshare 被代理阻断），已显示本地行业定义。",
+        }
 
 
 @router.get("/performance")
 async def get_industry_performance(
     days: int = Query(10, description="统计周期（天）")
 ):
-    """
-    获取各行业板块涨跌幅排行
+    """获取各行业板块涨跌幅排行（使用东财 HTTP 直连）"""
+    from datetime import datetime
 
-    计算每个行业股票的平均涨跌幅
-    """
+    end_date = datetime.now().strftime("%Y-%m-%d")
+
     try:
-        from datetime import datetime
-        import akshare as ak
-
-        end_date = datetime.now().strftime("%Y-%m-%d")
-
-        df = ak.stock_board_industry_name_em()
-        industry_performance = []
-        for _, row in df.iterrows():
-            name = str(row.get("板块名称") or "").strip()
-            if not name:
-                continue
-            change_pct = row.get("涨跌幅")
-            try:
-                change_pct = round(float(change_pct), 2)
-            except (TypeError, ValueError):
-                change_pct = 0.0
-            up = int(row.get("上涨家数") or 0)
-            down = int(row.get("下跌家数") or 0)
-            industry_performance.append({
-                "industry": name,
-                "change_pct": change_pct,
-                "stock_count": up + down,
-            })
-
-        industry_performance.sort(key=lambda x: x["change_pct"], reverse=True)
-
+        sectors = fetch_industry_ranking()
         return {
             "date": end_date,
             "period_days": days,
-            "sectors": industry_performance,
+            "sectors": sectors,
         }
-
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"获取行业表现失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.get("/rotation")
 async def get_industry_rotation(
     top_n: int = Query(5, description="返回前N个行业")

@@ -1,6 +1,6 @@
-// API 客户端封装
+﻿// API 客户端封装
 // 开发环境用 localhost，生产环境用相对路径（由 Nginx 代理）
-const API_BASE = import.meta.env.DEV ? "http://localhost:8001" : ""
+const API_BASE = import.meta.env.DEV ? "http://localhost:8000" : ""
 const DEFAULT_API_TIMEOUT_MS = 8000
 
 class ApiError extends Error {
@@ -798,7 +798,7 @@ export const api = {
     scan: (params?: { rsiThreshold?: number; bollingerPeriod?: number }) => {
       const rsiThreshold = params?.rsiThreshold ?? 70
       const bollingerPeriod = params?.bollingerPeriod ?? 20
-      return fetch(`${API_BASE}/api/mean-reversion/scan?rsi_threshold=${rsiThreshold}&bollinger_period=${bollingerPeriod}`).then(r => handleResponse<any>(r))
+      return fetch(`${API_BASE}/api/mean-reversion/scan?rsi_threshold=${rsiThreshold}&bollinger_period=${bollingerPeriod}`, { timeoutMs: 60_000 }).then(r => handleResponse<any>(r))
     },
     summary: () =>
       fetch(`${API_BASE}/api/mean-reversion/summary`).then(r => handleResponse<any>(r)),
@@ -838,7 +838,7 @@ export const api = {
     stocks: (industry: string) =>
       fetch(`${API_BASE}/api/industry/stocks?industry=${encodeURIComponent(industry)}`).then(r => handleResponse<any>(r)),
     performance: (days: number = 10) =>
-      fetch(`${API_BASE}/api/industry/performance?days=${days}`).then(r => handleResponse<any>(r)),
+      fetch(`${API_BASE}/api/industry/performance?days=${days}`, { timeoutMs: 30_000 }).then(r => handleResponse<any>(r)),
     rotation: (topN: number = 5) =>
       fetch(`${API_BASE}/api/industry/rotation?top_n=${topN}`).then(r => handleResponse<any>(r)),
   },
@@ -924,6 +924,14 @@ export const api = {
       }).then(r => handleResponse<any>(r)),
     history: (months: number = 12) =>
       fetch(`${API_BASE}/api/macro/history?months=${months}`, { timeoutMs: 60_000 }).then(r => handleResponse<any>(r)),
+    manualGet: () =>
+      fetch(`${API_BASE}/api/macro/manual`).then(r => handleResponse<any>(r)),
+    manualSave: (data: Record<string, number>) =>
+      fetch(`${API_BASE}/api/macro/manual`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      }).then(r => handleResponse<any>(r)),
   },
 
   // 新闻分析

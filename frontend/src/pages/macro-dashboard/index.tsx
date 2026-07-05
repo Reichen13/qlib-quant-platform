@@ -7,6 +7,7 @@ import { Globe, Activity, Loader2, AlertTriangle } from "lucide-react"
 import { api } from "@/lib/api"
 import { LineChartComponent } from "@/components/charts/line-chart"
 import { InstructionsPanel } from "@/components/features/instructions-panel"
+import { ManualMacroEntry } from "@/components/features/manual-macro-entry";
 
 // 四象限图参数
 const QUADRANT_CONFIG = {
@@ -161,6 +162,8 @@ export function MacroDashboardPage() {
 
   return (
     <div className="p-4 md:p-6 space-y-4 md:space-y-6 max-w-[1400px] mx-auto">
+      <ManualMacroEntry />
+
       {/* 页面标题 */}
       <div className="space-y-0.5">
         <h1 className="text-xl md:text-2xl font-bold tracking-tight flex items-center gap-2">
@@ -192,7 +195,7 @@ export function MacroDashboardPage() {
             </span>
           </CardContent>
         </Card>
-      )}
+       )}
 
       {/* 中国宏观指标 */}
       {cnIndicators.length > 0 && (

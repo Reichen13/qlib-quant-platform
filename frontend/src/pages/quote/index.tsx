@@ -3,6 +3,8 @@ import { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import { useSearchParams } from "react-router-dom"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { FundFlowCard } from "@/components/features/fund-flow-card"
+import { StockConceptsCard } from "@/components/features/stock-concepts-card"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -765,6 +767,12 @@ export function QuoteAnalysisPage() {
                 </div>
               </CardContent>
             </Card>
+          </div>
+
+          {/* 资金流向 + 概念板块 */}
+          <div className="grid gap-4 md:grid-cols-2">
+            <FundFlowCard code={selectedStock} />
+            <StockConceptsCard code={selectedStock} />
           </div>
 
           {/* 原始数据表 */}

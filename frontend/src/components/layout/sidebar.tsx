@@ -23,6 +23,7 @@ import {
   Settings,
   MonitorCog,
   Calculator,
+  Swords,
   ChevronLeft,
   ChevronRight,
   X,
@@ -51,6 +52,7 @@ const NAVIGATION_ITEMS = [
   { icon: Layers, label: "智能股票池", path: "/stock-pool" },
   { icon: ListChecks, label: "盘后选股", path: "/screening-workflow" },
   { icon: Calculator, label: "交易计划", path: "/trade-plan" },
+  { icon: Swords, label: "龙虎榜", path: "/dragon-tiger" },
   { icon: MonitorCog, label: "系统状态", path: "/system-status" },
   { icon: Settings, label: "LLM 设置", path: "/settings" },
 ]

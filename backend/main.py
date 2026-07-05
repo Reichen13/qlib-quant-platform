@@ -107,7 +107,7 @@ async def lifespan(app: FastAPI):
     from api import (
         stocks, hot, quote, factors, backtest, etf,
         pair, mean_reversion, financials, industry, index, sectors, risk, portfolio,
-        macro, data, dashboard, news_analysis, ai_strategy, agent_debate,
+        macro, data, dashboard, news_analysis, ai_strategy, agent_debate, market_insight,
         dl_models, stock_pool, llm_config, screening, trade_plan, system, positions,
     )
 
@@ -138,6 +138,7 @@ async def lifespan(app: FastAPI):
     app.include_router(trade_plan.router, prefix="/api/trade-plan", tags=["trade-plan"])
     app.include_router(llm_config.router, tags=["llm"])
     app.include_router(system.router, prefix="/api/system", tags=["system"])
+    app.include_router(market_insight.router, prefix="/api/market", tags=["market-insight"])
 
     logger.info("✅ 所有路由已注册")
 

@@ -23,6 +23,7 @@ import { ScreeningWorkflowPage } from "./pages/screening-workflow"
 import { TradePlanPage } from "./pages/trade-plan"
 import { SettingsPage } from "./pages/settings"
 import { SystemStatusPage } from "./pages/system-status"
+import { DragonTigerPage } from "./pages/dragon-tiger"
 
 // 创建路由
 const router = createBrowserRouter([
@@ -109,6 +110,10 @@ const router = createBrowserRouter([
       {
         path: "trade-plan",
         element: <TradePlanPage />,
+      },
+      {
+        path: "dragon-tiger",
+        element: <DragonTigerPage />,
       },
       {
         path: "system-status",

@@ -11,6 +11,13 @@ import numpy as np
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 
+from backend.services.external_data import (
+    fetch_china_pmi, fetch_china_m2, fetch_northbound_flow,
+    fetch_china_shibor,
+    fetch_manual_macro, save_manual_macro,
+    _qt_fetch, _em_fetch,
+)
+
 from models.schemas import (
     MacroIndicator, MacroRegimeRequest, MacroRegimeResponse,
     AllocationAsset, AllocationResponse,
@@ -18,7 +25,7 @@ from models.schemas import (
 
 router = APIRouter()
 
-MACRO_FETCH_TIMEOUT_SECONDS = 8
+MACRO_FETCH_TIMEOUT_SECONDS = 25
 
 
 async def _fetch_macro_with_timeout(fetcher, label: str) -> tuple[dict, str | None]:
@@ -149,11 +156,10 @@ def _indicator_from_series(
 
 
 def _fetch_sp500() -> pd.DataFrame:
-    """获取标普500历史数据 (akshare)"""
-    import akshare as ak
-    df = ak.index_us_stock_sina(symbol=".INX")
-    df = _to_datetime_index(df, "date")
-    return df
+    """获取标普500历史数据 (yfinance)"""
+    import yfinance as yf
+    sp500 = yf.Ticker("^GSPC")
+    return sp500.history(period="5y")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -161,221 +167,159 @@ def _fetch_sp500() -> pd.DataFrame:
 # ═══════════════════════════════════════════════════════════
 
 def _fetch_china_macro_data() -> dict:
-    """使用 akshare 获取 A 股核心宏观指标"""
-    import akshare as ak
-
+    """使用东财 HTTP 直连获取 A 股核心宏观指标（不再依赖 akshare）"""
     indicators = {}
 
-    # 1. 制造业 PMI
-    try:
-        pmi_df = ak.macro_china_pmi()
-        if not pmi_df.empty:
-            if {"指标", "今值"}.issubset(pmi_df.columns):
-                pmi_mfg = pmi_df[pmi_df["指标"] == "制造业PMI"].copy()
-                series = pd.to_numeric(pmi_mfg["今值"], errors="coerce").dropna().tail(24)
-            else:
-                series = _series_by_date(pmi_df, "制造业-指数", "月份").tail(24)
-            indicator = _indicator_from_series(series, name="制造业PMI", symbol="PMI", threshold=50)
-            if indicator:
-                indicators["CN_PMI_Mfg"] = indicator
-                logger.info(f"中国制造业PMI: {indicator.value}")
-    except Exception as e:
-        logger.warning(f"获取中国PMI失败: {e}")
+    # 1 & 2. PMI (制造业 + 非制造业)
+    pmi = fetch_china_pmi()
+    if pmi:
+        indicators["CN_PMI_Mfg"] = MacroIndicator(
+            name="制造业PMI", symbol="PMI",
+            value=pmi["manufacturing_pmi"],
+            change_pct=0, trend="up" if pmi["manufacturing_pmi"] > 50 else "down",
+            z_score=0,
+        )
+        indicators["CN_PMI_NonMfg"] = MacroIndicator(
+            name="非制造业PMI", symbol="NMI",
+            value=pmi["non_manufacturing_pmi"],
+            change_pct=0, trend="up" if pmi["non_manufacturing_pmi"] > 50 else "down",
+            z_score=0,
+        )
+        logger.info(f"PMI: Mfg={pmi['manufacturing_pmi']}, NonMfg={pmi['non_manufacturing_pmi']}")
 
-    # 2. 非制造业 PMI
-    try:
-        pmi_df = ak.macro_china_pmi()
-        if not pmi_df.empty:
-            if {"指标", "今值"}.issubset(pmi_df.columns):
-                pmi_nonmfg = pmi_df[pmi_df["指标"] == "非制造业PMI"].copy()
-                series = pd.to_numeric(pmi_nonmfg["今值"], errors="coerce").dropna().tail(24)
-            else:
-                series = _series_by_date(pmi_df, "非制造业-指数", "月份").tail(24)
-            indicator = _indicator_from_series(series, name="非制造业PMI", symbol="NMI", threshold=50)
-            if indicator:
-                indicators["CN_PMI_NonMfg"] = indicator
-                logger.info(f"中国非制造业PMI: {indicator.value}")
-    except Exception as e:
-        logger.warning(f"获取非制造业PMI失败: {e}")
+    # 3. M2
+    m2 = fetch_china_m2()
+    if not m2:
+        manual = fetch_manual_macro()
+        if manual.get("M2_YOY"):
+            m2 = {"date": manual.get("updated", ""), "m2_yoy": manual["M2_YOY"], "trend": "up"}
+            logger.info(f"M2(手动): {manual['M2_YOY']}%")
+    if m2:
+        indicators["CN_M2"] = MacroIndicator(
+            name="M2同比增速", symbol="M2",
+            value=m2["m2_yoy"],
+            change_pct=0, trend=m2.get("trend", "up"),
+            z_score=m2.get("z_score", 0),
+        )
+        logger.info(f"M2同比: {m2['m2_yoy']:.1f}%")
 
-    # 3. M2 货币供应
+    # 4 & 5. SHIBOR (目前东财 datacenter 无 SHIBOR 报告名，降级为空)
+    shibor = fetch_china_shibor()
+    if not shibor:
+        manual = fetch_manual_macro()
+        if manual.get("SHIBOR_ON"):
+            shibor = {"date": manual.get("updated", ""), "overnight": manual["SHIBOR_ON"], "1m": manual.get("SHIBOR_1M", 0)}
+            logger.info(f"SHIBOR(手动): O/N={manual['SHIBOR_ON']}%, 1M={manual.get('SHIBOR_1M', 'N/A')}%")
+    if shibor:
+        indicators["CN_SHIBOR_ON"] = MacroIndicator(
+            name="SHIBOR隔夜", symbol="SHIBOR_ON",
+            value=shibor["overnight"],
+            change_pct=0, trend="up" if shibor["overnight"] < 2.0 else "down",
+            z_score=0,
+        )
+        indicators["CN_SHIBOR_1M"] = MacroIndicator(
+            name="SHIBOR 1月", symbol="SHIBOR_1M",
+            value=shibor["1m"],
+            change_pct=0, trend="up" if shibor["1m"] < 2.5 else "down",
+            z_score=0,
+        )
+        logger.info(f"SHIBOR: O/N={shibor['overnight']}%, 1M={shibor['1m']}%")
+    else:
+        logger.info("SHIBOR 暂不可用")
+
+    # 6. 北向资金
+    north = fetch_northbound_flow(days=20)
+    if north:
+        latest = north[-1]
+        net_20d = sum(r["net_flow"] for r in north) if north else 0
+        indicators["CN_North_Flow"] = MacroIndicator(
+            name="北向资金净流入", symbol="NORTH",
+            value=round(latest["net_flow"], 2),
+            change_pct=round(net_20d, 2),
+            trend="up" if net_20d > 0 else "down",
+            z_score=0,
+        )
+        logger.info(f"北向资金: {latest['net_flow']:.2f}亿")
+
+    # 7. 黄金 (人民币计价)
     try:
-        m2_df = ak.macro_china_money_supply()
-        if not m2_df.empty:
-            if "货币和准货币(M2)-同比增长" in m2_df.columns:
-                series = _series_by_date(m2_df, "货币和准货币(M2)-同比增长", "月份")
-            elif "M2" in m2_df.columns:
-                raw = pd.to_numeric(m2_df["M2"], errors="coerce").dropna()
-                series = raw.pct_change() * 100
-            else:
-                series = pd.Series(dtype="float64")
-            indicator = _indicator_from_series(
-                series,
-                name="M2同比增速",
-                symbol="M2",
-                threshold=8,
-                change_as_diff=True,
+        import yfinance as yf
+        gold = yf.Ticker("GC=F")
+        gold_hist = gold.history(period="1mo")
+        if not gold_hist.empty:
+            gold_price = float(gold_hist["Close"].iloc[-1])
+            usd_cny = 7.25  # 默认汇率
+            indicators["CN_Gold"] = MacroIndicator(
+                name="黄金(人民币)", symbol="GC=F",
+                value=round(gold_price * usd_cny / 31.1035, 2),
+                change_pct=0, trend="up",
+                z_score=0,
             )
-            if indicator:
-                indicators["CN_M2"] = indicator
-                logger.info(f"M2同比增速: {indicator.value:.1f}%")
+            logger.info(f"黄金: {gold_price:.2f} USD/oz")
     except Exception as e:
-        logger.warning(f"获取M2失败: {e}")
+        logger.warning(f"黄金数据获取失败: {e}")
 
-    # 4. SHIBOR 利率
+    # 8. 10年中国国债收益率（手动数据回退）
     try:
-        shibor_func = getattr(ak, "macro_china_shibor", None) or getattr(ak, "macro_china_shibor_all", None)
-        if shibor_func:
-            shibor_df = shibor_func()
-            if not shibor_df.empty:
-                on_col = "O/N" if "O/N" in shibor_df.columns else "O/N-定价"
-                one_month_col = "1M" if "1M" in shibor_df.columns else "1M-定价"
-                date_col = "日期" if "日期" in shibor_df.columns else shibor_df.columns[0]
-                if on_col in shibor_df.columns:
-                    indicator = _indicator_from_series(
-                        _series_by_date(shibor_df, on_col, date_col),
-                        name="SHIBOR隔夜",
-                        symbol="SHIBOR",
-                        precision=4,
-                    )
-                    if indicator:
-                        indicators["CN_SHIBOR_ON"] = indicator
-                        logger.info(f"SHIBOR隔夜: {indicator.value:.2f}%")
-                if one_month_col in shibor_df.columns:
-                    indicator = _indicator_from_series(
-                        _series_by_date(shibor_df, one_month_col, date_col),
-                        name="SHIBOR 1月",
-                        symbol="SHIBOR1M",
-                        precision=4,
-                    )
-                    if indicator:
-                        indicators["CN_SHIBOR_1M"] = indicator
-    except Exception as e:
-        logger.warning(f"获取SHIBOR失败: {e}")
-
-    # 5. 10年中债收益率
-    try:
-        try:
-            bond_df = ak.bond_china_close_return()
-        except Exception:
-            bond_df = ak.bond_china_yield()
-        if not bond_df.empty:
-            if "曲线名称" in bond_df.columns:
-                bond_df = bond_df[bond_df["曲线名称"].astype(str).str.contains("国债", na=False)]
-            date_col = "日期" if "日期" in bond_df.columns else None
-            ten_year_col = None
-            for col in bond_df.columns:
-                if "10" in str(col) and "年" in str(col):
-                    ten_year_col = col
-                    break
-
-            if ten_year_col:
-                series = _series_by_date(bond_df, ten_year_col, date_col) if date_col else pd.to_numeric(bond_df[ten_year_col], errors="coerce")
-                if not series.empty and isinstance(series.index, pd.DatetimeIndex):
-                    latest_date = series.index[-1]
-                    if latest_date < pd.Timestamp(datetime.now() - timedelta(days=180)):
-                        logger.warning(f"中债收益率数据过旧: {latest_date.date()}")
-                        series = pd.Series(dtype="float64")
-                indicator = _indicator_from_series(
-                    series,
-                    name="10年中债收益率",
-                    symbol="CN10Y",
-                    precision=4,
-                )
-                if indicator:
-                    indicators["CN_Bond_10Y"] = indicator
-                    logger.info(f"10年中债收益率: {indicator.value:.2f}%")
-    except Exception as e:
-        logger.warning(f"获取中债收益率失败: {e}")
-
-    # 6. 北向资金净流入
-    try:
-        if hasattr(ak, "stock_hsgt_north_net_flow_in_em"):
-            north_df = ak.stock_hsgt_north_net_flow_in_em()
-            date_col = north_df.columns[0]
-            flow_col = north_df.columns[1] if len(north_df.columns) > 1 else north_df.columns[0]
-            if date_col == flow_col:
-                flow_col = north_df.columns[-1]
-            north_df[date_col] = pd.to_datetime(north_df[date_col])
-            north_flow = north_df.set_index(date_col)[flow_col].dropna().astype(float)
-            if len(north_flow) >= 20:
-                latest = float(north_flow.iloc[-1])
-                recent_20d = north_flow.iloc[-20:]
-                total_20d = recent_20d.sum()
-                trend_20d = recent_20d.sum()
-                z = ((latest - north_flow.mean()) / (north_flow.std() or 1))
-                indicators["CN_North_Flow"] = MacroIndicator(
-                    name="北向资金净流入", symbol="NORTH",
-                    value=round(latest / 1e8, 2),
-                    change_pct=round(total_20d / 1e8, 2),
-                    trend="up" if trend_20d > 0 else "down",
-                    z_score=round(float(z), 2),
-                )
-                logger.info(f"北向资金净流入: {latest:.0f}元 (20日: {total_20d:.0f}元)")
-        elif hasattr(ak, "stock_hsgt_fund_flow_summary_em"):
-            north_df = ak.stock_hsgt_fund_flow_summary_em()
-            if not north_df.empty and {"资金方向", "成交净买额"}.issubset(north_df.columns):
-                north_rows = north_df[north_df["资金方向"].astype(str).str.contains("北向", na=False)]
-                flows = pd.to_numeric(north_rows["成交净买额"], errors="coerce").dropna()
-                if not flows.empty:
-                    latest = float(flows.sum())
-                    indicators["CN_North_Flow"] = MacroIndicator(
-                        name="北向资金净流入",
-                        symbol="NORTH",
-                        value=round(latest, 2),
-                        change_pct=0,
-                        trend="up" if latest > 0 else "down",
-                        z_score=0,
-                    )
-                    logger.info(f"北向资金净流入汇总: {latest:.2f}亿")
-    except Exception as e:
-        logger.warning(f"获取北向资金失败: {e}")
-
-    # 7. 黄金(人民币计价) - 使用全球黄金价格，美元/人民币折算
-    try:
-        gold_df = ak.futures_foreign_hist(symbol="GC")
-        if not gold_df.empty:
-            gold_df = _to_datetime_index(gold_df, "date")
-            gold_close = gold_df["close"]
-            indicators["CN_Gold"] = _compute_indicator(gold_close, "黄金(人民币)", "GC=F")
-            logger.info("黄金(人民币): {:.2f}".format(gold_close.iloc[-1]))
-    except Exception as e:
-        logger.warning(f"获取黄金数据失败: {e}")
+        manual = fetch_manual_macro()
+        if manual.get("BOND_10Y"):
+            indicators["CN_Bond_10Y"] = MacroIndicator(
+                name="10年中债收益率", symbol="CN10Y",
+                value=manual["BOND_10Y"],
+                change_pct=0, trend="down",
+                z_score=0,
+            )
+    except Exception:
+        pass
 
     return indicators
-
-
 def _fetch_macro_data() -> dict:
-    """使用 akshare 获取宏观指标数据"""
-    import akshare as ak
+    """使用 yfinance 直连获取美国宏观指标数据"""
 
     indicators = {}
 
-    # 1. 标普500 (最先获取，后续波动率计算依赖)
+    # 1. 标普500
     sp500_df = None
     try:
-        sp500_df = _fetch_sp500()
-        indicators["SP500"] = _compute_indicator(sp500_df["close"], "标普500", "^GSPC")
-        logger.info("标普500: {:.2f}".format(sp500_df["close"].iloc[-1]))
+        import yfinance as yf
+        sp500 = yf.Ticker("^GSPC")
+        sp500_hist = sp500.history(period="6mo")
+        if not sp500_hist.empty:
+            close = sp500_hist["Close"]
+            indicators["SP500"] = _compute_indicator(close, "标普500", "^GSPC")
+            sp500_df = sp500_hist
+            logger.info("标普500: {:.2f}".format(float(close.iloc[-1])))
     except Exception as e:
         logger.warning(f"获取标普500失败: {e}")
 
     # 2. 纳斯达克
     try:
-        nasdaq_df = ak.index_us_stock_sina(symbol=".IXIC")
-        nasdaq_df = _to_datetime_index(nasdaq_df, "date")
-        indicators["Nasdaq"] = _compute_indicator(nasdaq_df["close"], "纳斯达克", "^IXIC")
-        logger.info("纳斯达克: {:.2f}".format(nasdaq_df["close"].iloc[-1]))
+        nasdaq = yf.Ticker("^IXIC")
+        nasdaq_hist = nasdaq.history(period="6mo")
+        if not nasdaq_hist.empty:
+            indicators["Nasdaq"] = _compute_indicator(nasdaq_hist["Close"], "纳斯达克", "^IXIC")
+            logger.info("纳斯达克: {:.2f}".format(float(nasdaq_hist["Close"].iloc[-1])))
     except Exception as e:
         logger.warning(f"获取纳斯达克失败: {e}")
 
-    # 3. SP500波动率 (替代VIX)
+    # 3. 道琼斯
+    try:
+        dji = yf.Ticker("^DJI")
+        dji_hist = dji.history(period="6mo")
+        if not dji_hist.empty:
+            indicators["DJI"] = _compute_indicator(dji_hist["Close"], "道琼斯", "^DJI")
+            logger.info("道琼斯: {:.2f}".format(float(dji_hist["Close"].iloc[-1])))
+    except Exception as e:
+        logger.warning(f"获取道琼斯失败: {e}")
+
+    # 4. SP500波动率 (替代VIX)
     try:
         if sp500_df is not None and not sp500_df.empty:
             vol_df = sp500_df
         else:
             vol_df = _fetch_sp500()
-        returns = vol_df["close"].pct_change().dropna()
+        close_col = "Close" if "Close" in vol_df.columns else "close"
+        returns = vol_df[close_col].pct_change().dropna()
         vol_20d = returns.rolling(20).std() * (252 ** 0.5) * 100
         if len(vol_20d) >= 20:
             current_vol = vol_20d.iloc[-1]
@@ -395,55 +339,45 @@ def _fetch_macro_data() -> dict:
     except Exception as e:
         logger.warning(f"计算波动率失败: {e}")
 
-    # 4. 10年美债收益率
+    # 5. 10年美债收益率
     try:
-        bond_df = ak.bond_zh_us_rate()
-        bond_df = _to_datetime_index(bond_df, "日期")
-        yield_col = "美国国债收益率10年"
-        if yield_col in bond_df.columns:
-            bond_close = bond_df[yield_col].dropna()
-            if len(bond_close) > 0:
-                indicators["10Y_Yield"] = _compute_indicator(bond_close, "10年美债收益率", "^TNX")
-                logger.info("10年美债: {:.2f}%".format(bond_close.iloc[-1]))
+        tnx = yf.Ticker("^TNX")
+        tnx_hist = tnx.history(period="6mo")
+        if not tnx_hist.empty:
+            indicators["10Y_Yield"] = _compute_indicator(tnx_hist["Close"], "10年美债收益率", "^TNX")
+            logger.info("10年美债: {:.2f}%".format(float(tnx_hist["Close"].iloc[-1])))
     except Exception as e:
         logger.warning(f"获取美债收益率失败: {e}")
 
-    # 5. 美元指数
+    # 6. 美元指数
     try:
-        usd_df = ak.index_global_hist_em(symbol="美元指数")
-        usd_df = _to_datetime_index(usd_df, "日期")
-        indicators["USD_Index"] = _compute_indicator(usd_df["最新价"], "美元指数", "DX-Y.NYB")
-        logger.info("美元指数: {:.2f}".format(usd_df["最新价"].iloc[-1]))
+        usd = yf.Ticker("DX-Y.NYB")
+        usd_hist = usd.history(period="6mo")
+        if not usd_hist.empty:
+            indicators["USD_Index"] = _compute_indicator(usd_hist["Close"], "美元指数", "DX-Y.NYB")
+            logger.info("美元指数: {:.2f}".format(float(usd_hist["Close"].iloc[-1])))
     except Exception as e:
         logger.warning(f"获取美元指数失败: {e}")
 
-    # 6. 黄金期货
+    # 7. 黄金期货
     try:
-        gold_df = ak.futures_foreign_hist(symbol="GC")
-        gold_df = _to_datetime_index(gold_df, "date")
-        indicators["Gold"] = _compute_indicator(gold_df["close"], "黄金期货", "GC=F")
-        logger.info("黄金期货: {:.2f}".format(gold_df["close"].iloc[-1]))
+        gold = yf.Ticker("GC=F")
+        gold_hist = gold.history(period="6mo")
+        if not gold_hist.empty:
+            indicators["Gold"] = _compute_indicator(gold_hist["Close"], "黄金期货", "GC=F")
+            logger.info("黄金期货: {:.2f}".format(float(gold_hist["Close"].iloc[-1])))
     except Exception as e:
         logger.warning(f"获取黄金期货失败: {e}")
 
-    # 7. 原油期货
+    # 8. 原油期货
     try:
-        oil_df = ak.futures_foreign_hist(symbol="CL")
-        oil_df = _to_datetime_index(oil_df, "date")
-        indicators["Oil"] = _compute_indicator(oil_df["close"], "原油期货", "CL=F")
-        logger.info("原油期货: {:.2f}".format(oil_df["close"].iloc[-1]))
+        oil = yf.Ticker("CL=F")
+        oil_hist = oil.history(period="6mo")
+        if not oil_hist.empty:
+            indicators["Oil"] = _compute_indicator(oil_hist["Close"], "原油期货", "CL=F")
+            logger.info("原油期货: {:.2f}".format(float(oil_hist["Close"].iloc[-1])))
     except Exception as e:
         logger.warning(f"获取原油期货失败: {e}")
-
-    # 8. 道琼斯 (替代罗素2000)
-    try:
-        dji_df = ak.index_us_stock_sina(symbol=".DJI")
-        dji_df = _to_datetime_index(dji_df, "date")
-        indicators["DJI"] = _compute_indicator(dji_df["close"], "道琼斯", "^DJI")
-        logger.info("道琼斯: {:.2f}".format(dji_df["close"].iloc[-1]))
-    except Exception as e:
-        logger.warning(f"获取道琼斯失败: {e}")
-
     return indicators
 
 
@@ -889,7 +823,7 @@ async def get_regime_history(months: int = 12, market: str = "china"):
     - "us": 美国宏观指标历史
     """
     try:
-        import akshare as ak
+        import yfinance as yf
 
         history = []
         today = date.today()
@@ -897,10 +831,9 @@ async def get_regime_history(months: int = 12, market: str = "china"):
         if market == "us":
             # 美国宏观历史（基于SP500）
             try:
-                sp500_df = ak.index_us_stock_sina(symbol=".INX")
-                sp500_df = _to_datetime_index(sp500_df, "date")
+                sp500_df = _fetch_sp500()
             except Exception as e:
-                logger.warning(f"akshare 获取 SP500 历史失败: {e}")
+                logger.warning(f"获取 SP500 历史失败: {e}")
                 return {"history": [], "message": "无法获取历史数据"}
 
             if sp500_df.empty:
@@ -915,10 +848,11 @@ async def get_regime_history(months: int = 12, market: str = "china"):
                 sp500_slice = sp500_df[sp500_df.index <= eval_ts].tail(60)
                 if len(sp500_slice) < 20:
                     continue
-                sp500_current = sp500_slice["close"].iloc[-1]
-                sp500_20d_ago = sp500_slice["close"].iloc[-min(21, len(sp500_slice))]
+                close_col = "Close" if "Close" in sp500_slice.columns else "close"
+                sp500_current = sp500_slice[close_col].iloc[-1]
+                sp500_20d_ago = sp500_slice[close_col].iloc[-min(21, len(sp500_slice))]
                 growth_20d = (sp500_current - sp500_20d_ago) / sp500_20d_ago * 100
-                returns = sp500_slice["close"].pct_change().dropna()
+                returns = sp500_slice[close_col].pct_change().dropna()
                 vol_20d = returns.rolling(20).std().iloc[-1] * (252 ** 0.5) * 100 if len(returns) >= 20 else 15
                 vix_score = (vol_20d - 22) / 12
                 growth_score = max(-2, min(2, growth_20d / 5))
@@ -941,24 +875,26 @@ async def get_regime_history(months: int = 12, market: str = "china"):
         else:
             # 中国宏观历史（基于PMI）
             try:
-                pmi_df = ak.macro_china_pmi()
-                if pmi_df.empty:
+                # 使用东财 PMI 历史接口替代 akshare
+                url = ("https://datacenter-web.eastmoney.com/api/data/v1/get"
+                       "?sortColumns=REPORT_DATE&sortTypes=-1&pageSize={}&pageNumber=1"
+                       "&reportName=RPT_ECONOMY_PMI"
+                       "&columns=REPORT_DATE,MAKE_INDEX,NMAKE_INDEX"
+                       "&source=WEB&client=WEB").format(min(months + 1, 36))
+                data = _em_fetch(url, timeout=10)
+                rows_data = (data.get("result") or {}).get("data") or []
+                rows = []
+                for row in reversed(rows_data):
+                    row_date = str(row.get("REPORT_DATE", ""))[:7]
+                    pmi_val = float(row.get("MAKE_INDEX", 0))
+                    if pmi_val:
+                        rows.append((row_date, pmi_val))
+                if not rows:
+                    pmi = fetch_china_pmi()
+                    if pmi:
+                        rows = [(pmi.get("date", "")[:7], pmi["manufacturing_pmi"])]
+                if not rows:
                     return {"history": [], "message": "无法获取中国PMI历史数据"}
-                if {"指标", "今值"}.issubset(pmi_df.columns):
-                    pmi_mfg = pmi_df[pmi_df["指标"] == "制造业PMI"].copy()
-                    if pmi_mfg.empty:
-                        return {"history": [], "message": "无制造业PMI数据"}
-                    pmi_mfg["今值"] = pd.to_numeric(pmi_mfg["今值"], errors="coerce")
-                    pmi_mfg = pmi_mfg.dropna(subset=["今值"]).tail(months + 1)
-                    rows = [
-                        (str(row.get("日期", "")), float(row["今值"]))
-                        for _, row in pmi_mfg.iterrows()
-                    ]
-                elif {"月份", "制造业-指数"}.issubset(pmi_df.columns):
-                    series = _series_by_date(pmi_df, "制造业-指数", "月份").tail(months + 1)
-                    rows = [(idx.strftime("%Y-%m"), float(value)) for idx, value in series.items()]
-                else:
-                    return {"history": [], "message": "无制造业PMI数据"}
                 for row_date, pmi_val in rows:
                     growth_score = max(-2, min(2, (pmi_val - 50) / 5))
                     inflation_score = 0  # 流动性维度简化处理
@@ -988,3 +924,29 @@ async def get_regime_history(months: int = 12, market: str = "china"):
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"历史状态获取失败: {str(e)}")
+
+@router.post("/manual")
+async def save_macro_manual(data: dict):
+    """手动录入宏观指标数据"""
+    from datetime import date
+    allowed_keys = {"M2_YOY", "SHIBOR_ON", "SHIBOR_1M", "BOND_10Y", "GDP_YOY", "CPI_YOY"}
+    cleaned = {}
+    for k, v in data.items():
+        if k in allowed_keys and v is not None and v != "":
+            try:
+                cleaned[k] = float(v)
+            except (TypeError, ValueError):
+                return {"success": False, "message": f"{k} 必须是数字"}
+    if not cleaned:
+        return {"success": False, "message": "未提供有效的宏观指标值"}
+    cleaned["updated"] = str(date.today())
+    save_manual_macro(cleaned)
+    logger.info(f"手动宏观数据已保存: {cleaned}")
+    return {"success": True, "saved": cleaned}
+
+
+@router.get("/manual")
+async def get_macro_manual():
+    """获取当前保存的手动宏观指标数据"""
+    return fetch_manual_macro()
+
