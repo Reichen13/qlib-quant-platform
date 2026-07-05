@@ -55,7 +55,7 @@ class FastFallbackEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.etfs, [])
         self.assertEqual(response.top_buy, [])
         self.assertEqual(response.top_sell, [])
-        self.assertIn("未生成模拟", response.warning)
+        self.assertIn("轮动信号暂不可用", response.warning)
 
     async def test_etf_pages_do_not_make_slow_external_or_per_code_fallbacks(self):
         etf._cache.clear()
@@ -81,13 +81,14 @@ class FastFallbackEndpointTests(unittest.IsolatedAsyncioTestCase):
             "status": "观察中",
             "data_status": "ok",
         }
-        with patch.object(pair, "_compute_pair_metrics", return_value=fake_metrics) as calc:
+        with patch.object(pair, "_cached_or_unavailable_pair_metrics", return_value=fake_metrics) as calc:
             response = await pair.list_pairs()
 
-        self.assertEqual(calc.call_count, len(pair.PAIR_DEFINITIONS))
+        self.assertEqual(calc.call_count, len(pair.get_all_pair_definitions()))
         self.assertGreater(len(response["pairs"]), 0)
         self.assertEqual(response["pairs"][0]["correlation"], 0.88)
-        self.assertEqual(response["total"], len(response["pairs"]))
+        self.assertEqual(response["shown"], len(response["pairs"]))
+        self.assertEqual(response["total"], len(pair.get_all_pair_definitions()))
 
     async def test_pair_metric_success_marks_data_status_ok(self):
         pair._pair_cache.clear()

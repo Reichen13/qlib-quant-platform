@@ -90,7 +90,7 @@ class NoMockMarketFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.etfs, [])
         self.assertEqual(response.top_buy, [])
         self.assertEqual(response.top_sell, [])
-        self.assertIn("未生成模拟", response.warning)
+        self.assertIn("轮动信号暂不可用", response.warning)
 
     def test_etf_history_prefers_local_qlib_before_yfinance(self):
         local_history = make_history()

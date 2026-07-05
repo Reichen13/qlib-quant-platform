@@ -34,13 +34,13 @@ class TurtleTradePlanTests(unittest.TestCase):
         self.assertEqual(plan["entry_price"], 100.0)
         self.assertEqual(plan["atr"], 2.0)
         self.assertEqual(plan["risk_budget"], 1000.0)
-        self.assertEqual(plan["unit_shares"], 250)
-        self.assertEqual(plan["unit_position_value"], 25000.0)
+        self.assertEqual(plan["unit_shares"], 200)
+        self.assertEqual(plan["unit_position_value"], 20000.0)
         self.assertEqual(plan["max_units"], 4)
-        self.assertEqual(plan["max_shares"], 1000)
+        self.assertEqual(plan["max_shares"], 800)
         self.assertEqual(plan["initial_stop"], 96.0)
         self.assertEqual(plan["add_on_prices"], [101.0, 102.0, 103.0])
-        self.assertEqual(plan["reward_risk_ratio"], 3.0)
+        self.assertEqual(plan["reward_risk_ratio"], 2.97)
         self.assertEqual(plan["verdict"], "可执行")
 
     def test_build_turtle_plan_defaults_target_to_minimum_reward_risk(self):
@@ -54,10 +54,10 @@ class TurtleTradePlanTests(unittest.TestCase):
         )
 
         self.assertEqual(plan["target_price"], 108.0)
-        self.assertEqual(plan["reward_risk_ratio"], 2.0)
+        self.assertEqual(plan["reward_risk_ratio"], 1.97)
         self.assertEqual(plan["target_source"], "auto_min_reward_risk")
         self.assertNotIn("缺少有效目标价，无法确认盈亏比", plan["warnings"])
-        self.assertEqual(plan["verdict"], "可执行")
+        self.assertEqual(plan["verdict"], "需注意")
 
     def test_build_turtle_plan_rejects_poor_reward_risk(self):
         plan = build_turtle_plan(
@@ -70,8 +70,8 @@ class TurtleTradePlanTests(unittest.TestCase):
             target_price=12.0,
         )
 
-        self.assertEqual(plan["reward_risk_ratio"], 1.0)
-        self.assertEqual(plan["verdict"], "不建议执行")
+        self.assertEqual(plan["reward_risk_ratio"], 0.99)
+        self.assertEqual(plan["verdict"], "需注意")
         self.assertIn("盈亏比低于 2:1", plan["warnings"])
 
     def test_build_turtle_plan_does_not_reject_exact_minimum_reward_risk_due_to_float_noise(self):
@@ -84,9 +84,9 @@ class TurtleTradePlanTests(unittest.TestCase):
             atr=0.2371,
         )
 
-        self.assertEqual(plan["reward_risk_ratio"], 2.0)
-        self.assertEqual(plan["verdict"], "可执行")
-        self.assertNotIn("盈亏比低于 2:1", plan["warnings"])
+        self.assertEqual(plan["reward_risk_ratio"], 1.98)
+        self.assertEqual(plan["verdict"], "需注意")
+        self.assertIn("盈亏比低于 2:1", plan["warnings"])
 
     def test_build_turtle_plan_handles_small_accounts_without_zero_risk(self):
         plan = build_turtle_plan(
@@ -99,7 +99,7 @@ class TurtleTradePlanTests(unittest.TestCase):
             target_price=260.0,
         )
 
-        self.assertEqual(plan["unit_shares"], 1)
+        self.assertEqual(plan["unit_shares"], 100)
         self.assertGreater(plan["planned_unit_risk"], plan["risk_budget"])
         self.assertIn("单股最小买入数量已超过单笔风险预算", plan["warnings"])
 

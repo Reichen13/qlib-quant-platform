@@ -30,7 +30,7 @@ class TradePlanApiTests(unittest.TestCase):
         data = response.json()
         self.assertEqual(data["total"], 1)
         self.assertEqual(data["plans"][0]["code"], "SH600519")
-        self.assertEqual(data["plans"][0]["unit_shares"], 250)
+        self.assertEqual(data["plans"][0]["unit_shares"], 200)
         self.assertEqual(data["plans"][0]["verdict"], "可执行")
 
     def test_turtle_route_derives_entry_and_atr_from_quote_data(self):

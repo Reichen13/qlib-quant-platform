@@ -269,7 +269,29 @@ def _compute_pair_metrics(pair_def: dict) -> dict:
         signal, status = "关注", "观察中"
 
     # ADF cointegration test on spread (replaces hardcoded dead-branch p-value)
-    adf_p = _adf_pvalue(p1 - beta * p2) if p1 is not None and p2 is not None else None
+    try:
+        from qlib.data import D
+        qlib_code1 = _normalize_pair_code(code1)
+        qlib_code2 = _normalize_pair_code(code2)
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
+        df = D.features([qlib_code1, qlib_code2], ["$close"], start_time=start_date, end_time=end_date)
+        if not df.empty:
+            p1 = _instrument_field_series(df, qlib_code1, "$close")
+            p2 = _instrument_field_series(df, qlib_code2, "$close")
+            common = p1.index.intersection(p2.index)
+            p1, p2 = p1.loc[common], p2.loc[common]
+            if len(p1) >= 20:
+                var2 = np.var(p2)
+                beta = np.cov(p1, p2)[0, 1] / var2 if var2 > 0 else 1.0
+                adf_p = _adf_pvalue(p1 - beta * p2)
+            else:
+                adf_p = None
+        else:
+            adf_p = None
+    except Exception:
+        adf_p = None
+
     p_value = adf_p if adf_p is not None else (0.05 if abs(correlation) > 0.8 else 0.1)
 
     result = {
@@ -373,6 +395,8 @@ async def list_pairs(limit: int = Query(default=10, ge=1, le=200, description="�
 
     列表页只读取已有缓存，避免每次打开页面都触发 Qlib 重计算。
     """
+    if not isinstance(limit, int):
+        limit = 10
     try:
         updated_pairs = []
         for pair_def in get_all_pair_definitions():
