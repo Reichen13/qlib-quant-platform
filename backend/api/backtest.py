@@ -593,6 +593,16 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 benchmark=round(float(cum_bench.iloc[i]), 4),
             ))
 
+        # ── 生成净收益(扣费后)净值曲线 ──
+        net_equity_data = []
+        for i in range(len(cum_net)):
+            dt = cum_net.index[i]
+            net_equity_data.append(EquityPoint(
+                date=dt.strftime("%Y-%m-%d") if hasattr(dt, 'strftime') else str(dt),
+                value=round(float(cum_net.iloc[i]), 4),
+                benchmark=round(float(cum_bench.iloc[i]), 4),
+            ))
+
         # ── 生成回撤曲线 ──
         drawdown_data = []
         for i in range(len(dd_series)):
