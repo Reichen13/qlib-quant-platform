@@ -536,6 +536,21 @@ export function BacktestPage() {
                     <p className="text-xs text-muted-foreground">
                       年化: {((result.annual_return ?? 0) * 100).toFixed(2)}%
                     </p>
+                    {result.net_total_return != null && (
+                      <div className="mt-1 pt-1 border-t border-muted">
+                        <p className="text-xs font-medium" style={{ color: result.net_total_return >= 0 ? "var(--color-up)" : "var(--color-down)" }}>
+                          净收益(扣费): {((result.net_total_return ?? 0) * 100).toFixed(2)}%
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          净年化: {((result.net_annual_return ?? 0) * 100).toFixed(2)}%
+                        </p>
+                        {result.cumulative_cost != null && (
+                          <p className="text-xs text-muted-foreground">
+                            累计摩擦成本: {Math.abs(result.cumulative_cost ?? 0).toFixed(2)}
+                          </p>
+                        )}
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
 
@@ -588,16 +603,40 @@ export function BacktestPage() {
                 </Card>
               </div>
 
-              {/* 收益曲线 */}
+              {/* 收益曲线 - 毛收益 vs 基准 */}
               <LineChartComponent
                 data={result.equity ?? []}
                 lines={[
-                  { dataKey: "value", name: "策略净值", color: "var(--color-up)" },
+                  { dataKey: "value", name: "策略净值(毛)", color: "var(--color-up)" },
                   { dataKey: "benchmark", name: "基准收益", color: "var(--color-muted-foreground)" },
                 ]}
                 xKey="date"
-                height={300}
+                height={260}
               />
+
+              {/* 净收益 vs 毛收益对比 */}
+              {result.net_equity && result.net_equity.length > 0 && (
+                <div className="mt-4">
+                  <h4 className="text-sm font-medium mb-2 text-muted-foreground">净收益(扣除交易成本后)</h4>
+                  <div className="h-[260px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={result.net_equity.map((n, i) => ({
+                        date: n.date,
+                        net: n.value,
+                        gross: result.equity?.[i]?.value ?? n.value,
+                      }))}>
+                        <CartesianGrid strokeDasharray="3 3" opacity={0.5} />
+                        <XAxis dataKey="date" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+                        <YAxis tick={{ fontSize: 20 }} domain={["auto", "auto"]} />
+                        <Tooltip />
+                        <Legend />
+                        <Area type="monotone" dataKey="gross" name="毛收益" stroke="var(--color-info)" fill="var(--color-info)" fillOpacity={0.1} strokeWidth={2} />
+                        <Area type="monotone" dataKey="net" name="净收益(扣费)" stroke="var(--color-up)" fill="var(--color-up)" fillOpacity={0.15} strokeWidth={2} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
 
               {/* 回撤分析 */}
               <div className="grid gap-6 lg:grid-cols-2">
@@ -703,6 +742,15 @@ export function BacktestPage() {
                 <Card className="border-yellow-600/30 bg-yellow-600/5">
                   <CardContent className="py-3">
                     <p className="text-sm text-muted-foreground">{result.cost_impact_estimate}</p>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* 价格口径说明 */}
+              {result.price_adjustment_note && (
+                <Card className="border-muted mt-4">
+                  <CardContent className="py-3">
+                    <p className="text-xs text-muted-foreground">{result.price_adjustment_note}</p>
                   </CardContent>
                 </Card>
               )}

@@ -388,7 +388,9 @@ export type BacktestResult = {
   status: "running" | "completed" | "failed"
   progress?: number
   total_return?: number
+  net_total_return?: number
   annual_return?: number
+  net_annual_return?: number
   sharpe_ratio?: number
   calmar_ratio?: number
   max_drawdown?: number
@@ -400,6 +402,7 @@ export type BacktestResult = {
   sortino_ratio?: number
   monthly_win_rate?: number
   equity?: Array<{ date: string; value: number; benchmark: number }>
+  net_equity?: Array<{ date: string; value: number; benchmark: number }>
   drawdown?: Array<{ date: string; value: number }>
   top_buys?: Array<{ code: string; name: string; score: number; reason: string }>
   top_sells?: Array<{ code: string; name: string; score: number; reason: string }>
@@ -433,6 +436,8 @@ export type BacktestResult = {
   }>
   attribution_interpretation?: string
   cost_impact_estimate?: string
+  cumulative_cost?: number
+  price_adjustment_note?: string
   warnings?: string[]
   error?: string
 }

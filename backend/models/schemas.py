@@ -152,6 +152,7 @@ class BacktestParams(BaseModel):
 
     # 策略参数
     hold_num: int = Field(default=30, ge=1, le=50, description="持仓股票数(TopK)")
+    account: int = Field(default=300_000, ge=10_000, le=100_000_000, description="账户初始资金")
     turnover: int = Field(default=5, ge=1, le=20, description="调仓周期(天)")
 
     # 风险控制
@@ -159,8 +160,8 @@ class BacktestParams(BaseModel):
     stop_loss: float = Field(default=-0.08, le=0, description="止损比例")
 
     # 交易成本
-    buy_cost: float = Field(default=0.0003, ge=0, le=0.01, description="买入佣金")
-    sell_cost: float = Field(default=0.0003, ge=0, le=0.01, description="卖出佣金")
+    buy_cost: float = Field(default=0.0003, ge=0, le=0.01, description="买入佣金(万2.5+过户费≈万3)")
+    sell_cost: float = Field(default=0.0008, ge=0, le=0.01, description="卖出佣金(佣金万2.5+印花税0.05%+过户费≈万8)")
 
     # 因子选择（从因子分析页面跳转时带入）
     selected_factors: Optional[List[str]] = Field(default=None, description="指定使用哪些因子（None=全部158个）")
@@ -213,7 +214,9 @@ class BacktestResponse(BaseModel):
     progress: Optional[int] = None
     # 收益指标
     total_return: Optional[float] = None
+    net_total_return: Optional[float] = None  # 扣除交易成本后的净收益
     annual_return: Optional[float] = None
+    net_annual_return: Optional[float] = None  # 扣除交易成本后的年化净收益
     sharpe_ratio: Optional[float] = None
     calmar_ratio: Optional[float] = None
     max_drawdown: Optional[float] = None
@@ -227,6 +230,7 @@ class BacktestResponse(BaseModel):
     monthly_win_rate: Optional[float] = None
     # 曲线数据
     equity: Optional[List[EquityPoint]] = None
+    net_equity: Optional[List[EquityPoint]] = None  # 扣除交易成本后的净值曲线
     drawdown: Optional[List[DrawdownPoint]] = None
     # 推荐
     top_buys: Optional[List[StockRecommendation]] = None
@@ -242,6 +246,8 @@ class BacktestResponse(BaseModel):
     attribution_interpretation: Optional[str] = None
     # 交易成本估计
     cost_impact_estimate: Optional[str] = None
+    cumulative_cost: Optional[float] = None  # 累计交易成本
+    price_adjustment_note: Optional[str] = None  # 价格口径说明
     warnings: Optional[List[str]] = None
     # 错误信息
     error: Optional[str] = None

@@ -430,14 +430,15 @@ def run_backtest_task(task_id: str, params: BacktestParams):
 
         task_store.update_progress(task_id, 65)
 
-        # 涨跌停阈值：全市场/含科创板创业板时用 0.195(±20%)，
-        # 纯沪深300等主板为主时用 0.095(±10%)。Qlib exchange 只支持单一阈值，
-        # 这里按 universe 取较宽松的值，避免把 ±20% 板的股票误判为涨跌停而排除。
+        # 涨跌停阈值：Qlib 0.9.7 exchange 支持 flat float 阈值
+        # 分板阈值通过 universe 过滤 + 单阈值近似实现：
+        # - 沪深300/中证500(主板为主): 0.099(±10%)
+        # - 全市场/含科创板创业板: 0.195(±20%宽松阈值，避免误判)
         has_chi_next = any(
             c.startswith(("SH688", "SZ300", "SZ301"))
             for c in all_csi300
         )
-        limit_threshold = 0.195 if (params.universe == "all" or has_chi_next) else 0.095
+        limit_threshold = 0.195 if (params.universe == "all" or has_chi_next) else 0.099
         logger.info(f"涨跌停阈值: {limit_threshold} (universe={params.universe}, 含科创创业={has_chi_next})")
 
         exchange_kwargs = {
@@ -448,6 +449,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
             "open_cost": params.buy_cost,
             "close_cost": params.sell_cost,
             "min_cost": 5,
+            # volume_threshold/impact_cost reserved for future Qlib upgrade
         }
 
         # TopkDropoutStrategy: topk=持仓数, n_drop=每次调仓换手数
@@ -469,41 +471,52 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                     "generate_portfolio_metrics": True,
                 },
             },
-            account=1_000_000,
+            account=params.account,
             benchmark="SH000300",
             exchange_kwargs=exchange_kwargs,
         )
 
         task_store.update_progress(task_id, 80)
 
-        # ── 计算回测指标 ──
-        r = report["return"]
+        # ── 计算回测指标（毛收益 vs 净收益） ──
+        r = report["return"]  # 毛收益（Qlib 返回的日收益，未扣 cost）
         bench = report["bench"]
+        cost = report["cost"] if "cost" in report.columns else pd.Series(0.0, index=r.index)
+        r_net = r - cost  # 净收益：扣除佣金+印花税+冲击成本的日收益
         ex = r - bench
 
-        # 年化收益
+        # 毛收益指标（旧口径，保留以展示摩擦成本）
         ann_r = r.mean() * 252
         ann_std = r.std() * np.sqrt(252)
         sharpe = ann_r / ann_std if ann_std > 0 else 0
 
-        # 累计净值与回撤
+        # 净收益指标（新口径，真实可执行收益）
+        ann_r_net = r_net.mean() * 252
+        sharpe_net = ann_r_net / ann_std if ann_std > 0 else 0
+
+        # 累计净值（毛 vs 净两条线）
         cum = (1 + r).cumprod()
+        cum_net = (1 + r_net).cumprod()
         cum_bench = (1 + bench).cumprod()
         dd_series = cum / cum.cummax() - 1
         max_dd = dd_series.min()
 
-        # 胜率
-        win_rate = (r > 0).mean()
+        # 累计交易成本
+        cumulative_cost = float(cost.sum())
 
-        # Calmar
-        calmar = ann_r / abs(max_dd) if max_dd != 0 else 0
+        # 胜率（按净收益）
+        win_rate = (r_net > 0).mean()
 
-        # 总收益率
+        # Calmar（按净收益）
+        calmar = ann_r_net / abs(max_dd) if max_dd != 0 else 0
+
+        # 总收益率（毛+净）
         total_return = cum.iloc[-1] - 1 if len(cum) > 0 else 0
+        net_total_return = cum_net.iloc[-1] - 1 if len(cum_net) > 0 else 0
 
-        # 盈亏比
-        gains = r[r > 0]
-        losses = r[r < 0]
+        # 盈亏比（按净收益）
+        gains = r_net[r_net > 0]
+        losses = r_net[r_net < 0]
         avg_gain = gains.mean() if len(gains) > 0 else 0
         avg_loss = abs(losses.mean()) if len(losses) > 0 else 1
         profit_loss_ratio = avg_gain / avg_loss if avg_loss > 0 else 0
@@ -511,24 +524,25 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         # ── 统计检验 ──
         # t 检验（策略收益是否显著 > 0）
         from scipy import stats as scipy_stats
-        t_stat, p_value = scipy_stats.ttest_1samp(r.dropna(), 0)
+        t_stat, p_value = scipy_stats.ttest_1samp(r_net.dropna(), 0)
         t_stat = float(t_stat)
         p_value = float(p_value)
 
         # 信息比率（超额收益 / 跟踪误差）
-        tracking_error = ex.std() * np.sqrt(252)
-        information_ratio = (ex.mean() * 252) / tracking_error if tracking_error > 0 else 0
+        tracking_error = (r_net - bench).std() * np.sqrt(252)
+        information_ratio = ((r_net - bench).mean() * 252) / tracking_error if tracking_error > 0 else 0
 
         # Sortino 比率（使用下行标准差）
-        downside = r[r < 0]
+        downside = r_net[r_net < 0]
         downside_std = downside.std() * np.sqrt(252) if len(downside) > 0 else ann_std
         sortino = ann_r / downside_std if downside_std > 0 else 0
 
         # 月度胜率
-        monthly_r = r.resample("ME").apply(lambda x: (1 + x).prod() - 1)
+        monthly_r = r_net.resample("ME").apply(lambda x: (1 + x).prod() - 1)
         monthly_win_rate = (monthly_r > 0).mean()
 
         # ── 交易成本影响估算 ──
+        # 注：turnover 调仓周期参数当前未接入 Qlib TopkDropoutStrategy（日频回测默认每日评估）
         try:
             avg_daily_turnover = report["turnover"].mean() if "turnover" in report.columns else 0
             daily_vol = r.std()
@@ -651,7 +665,9 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 status="completed",
                 progress=100,
                 total_return=round(float(total_return), 4),
+                net_total_return=round(float(net_total_return), 4),
                 annual_return=round(float(ann_r), 4),
+                net_annual_return=round(float(ann_r_net), 4),
                 sharpe_ratio=round(float(sharpe), 2),
                 calmar_ratio=round(float(calmar), 2),
                 max_drawdown=round(float(max_dd), 4),
@@ -663,6 +679,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 sortino_ratio=round(float(sortino), 2),
                 monthly_win_rate=round(float(monthly_win_rate), 4),
                 equity=equity_data,
+                net_equity=net_equity_data,
                 drawdown=drawdown_data,
                 top_buys=top_buys,
                 top_sells=top_sells,
@@ -673,6 +690,8 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 attribution_curve=_build_safe_attribution_curve(attribution_result) if attribution_result else None,
                 attribution_interpretation=attribution_result["interpretation"] if attribution_result else None,
                 cost_impact_estimate=cost_impact_estimate,
+                cumulative_cost=round(cumulative_cost, 4),
+                price_adjustment_note="后复权历史价 × 复权因子，面向用户价格已换算前复权（=真实市价）",
                 warnings=result_warnings or None,
             )
         task_store.set_completed(task_id, result.model_dump_json())
