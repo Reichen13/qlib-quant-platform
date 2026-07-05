@@ -44,6 +44,12 @@ export function DataManagementPage() {
     staleTime: 2 * 60 * 1000,
   })
 
+  const { data: freshness } = useQuery({
+    queryKey: ["data", "freshness"],
+    queryFn: () => api.data.freshness(),
+    staleTime: 2 * 60 * 1000,
+  })
+
   const buildUpdateSteps = (status: any) => {
     const progress = status?.progress ?? 5
     const message = status?.message || "正在更新 Qlib 数据"
@@ -74,6 +80,7 @@ export function DataManagementPage() {
       const progress = await api.data.updateProgress(updateTaskId!)
       const done = progress.status === "completed" || progress.status === "failed"
       setDataManagementParams({
+        updateTaskId: done ? null : updateTaskId,
         isUpdating: progress.status === "running",
         overallProgress: progress.progress ?? (done ? 100 : 5),
         updateSteps: buildUpdateSteps(progress),
@@ -113,7 +120,7 @@ export function DataManagementPage() {
     .filter(Boolean)
 
   const handleUpdate = async (
-    type: "stocks" | "etf" | "index" | "all",
+    type: "stocks" | "core" | "etf" | "index" | "all",
     options?: { rebuildStale?: boolean; overwriteExisting?: boolean; codes?: string[]; startDate?: string; endDate?: string },
   ) => {
     setDataManagementParams({
@@ -278,6 +285,9 @@ export function DataManagementPage() {
             </>
           )}
         </Button>
+        <Button variant="outline" onClick={() => handleUpdate("core", { rebuildStale: true })} disabled={isUpdating}>
+          快速更新核心池
+        </Button>
         <Button variant="outline" onClick={() => handleUpdate("stocks")} disabled={isUpdating}>
           更新股票数据
         </Button>
@@ -340,6 +350,71 @@ export function DataManagementPage() {
           onRetry={() => handleUpdate("all")}
         />
       )}
+
+      {/* 全链路新鲜度矩阵 */}
+      <Card>
+        <CardHeader>
+          <CardTitle>全链路新鲜度矩阵</CardTitle>
+          <CardDescription>
+            统一查看各功能使用的数据源、最新日期和复权口径，避免不同模块行情口径不一致。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 md:grid-cols-3 text-sm">
+            <div className="rounded-md border p-3">
+              <div className="text-muted-foreground">统一行情口径</div>
+              <div className="font-medium">{freshness?.canonical_price_adjustment_label || "前复权/可比复权价"}</div>
+            </div>
+            <div className="rounded-md border p-3">
+              <div className="text-muted-foreground">样本最新覆盖率</div>
+              <div className="font-medium">
+                {freshness?.coverage?.sample_latest_coverage != null
+                  ? `${Math.round(freshness.coverage.sample_latest_coverage * 100)}%`
+                  : "--"}
+              </div>
+            </div>
+            <div className="rounded-md border p-3">
+              <div className="text-muted-foreground">样本最新日期</div>
+              <div className="font-medium">{freshness?.coverage?.sample_latest_date || "--"}</div>
+            </div>
+          </div>
+
+          <p className="text-sm text-muted-foreground">
+            {freshness?.policy_summary || "研究、筛选、回测、风控和交易计划尽量统一使用 Qlib 可比日线；真实成交价格仍应以未复权实时行情或券商行情为准。"}
+          </p>
+
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>功能链路</TableHead>
+                <TableHead>主数据源</TableHead>
+                <TableHead>最新日期</TableHead>
+                <TableHead>复权口径</TableHead>
+                <TableHead>说明</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(freshness?.modules || []).map((item: any) => (
+                <TableRow key={item.key}>
+                  <TableCell className="font-medium">{item.name}</TableCell>
+                  <TableCell>{item.primary_source || "--"}</TableCell>
+                  <TableCell>{item.latest_date || "--"}</TableCell>
+                  <TableCell>{item.price_adjustment || "--"}</TableCell>
+                  <TableCell className="text-muted-foreground">{item.freshness_policy || item.note || "--"}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+
+          {freshness?.warnings?.length ? (
+            <div className="rounded-md border border-yellow-200 bg-yellow-50 p-3 text-xs text-yellow-800 space-y-1">
+              {freshness.warnings.map((warning: string, index: number) => (
+                <p key={index}>• {warning}</p>
+              ))}
+            </div>
+          ) : null}
+        </CardContent>
+      </Card>
 
       {/* 数据状态卡片 */}
       <div className="grid gap-4 md:grid-cols-3">
