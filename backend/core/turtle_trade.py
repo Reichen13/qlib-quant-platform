@@ -78,8 +78,8 @@ def build_turtle_plan(
 
     risk_budget = account_equity * risk_percent
     stop_distance = 2 * atr
-    raw_unit_shares = math.floor(risk_budget / stop_distance)
-    unit_shares = max(1, raw_unit_shares)
+    raw_unit_shares = math.floor(risk_budget / stop_distance) // 100 * 100
+    unit_shares = max(100, raw_unit_shares)
     planned_unit_risk = unit_shares * stop_distance
     unit_position_value = unit_shares * entry_price
     max_shares = unit_shares * max_units
@@ -93,9 +93,17 @@ def build_turtle_plan(
 
     reward_risk_ratio: float | None = None
     if target_price is not None and target_price > entry_price:
-        reward_risk_ratio = (target_price - entry_price) / stop_distance
+        # 扣减往返交易成本：买入佣金(万2.5+最低5)+卖出佣金+印花税(0.05%)+过户费
+        buy_fee = max(entry_price * unit_shares * 0.00025, 5.0)
+        sell_fee = max(target_price * unit_shares * 0.00025, 5.0)
+        stamp_duty = target_price * unit_shares * 0.0005
+        net_gain = (target_price - entry_price) * unit_shares - buy_fee - sell_fee - stamp_duty
+        net_gain_per_share = net_gain / unit_shares if unit_shares > 0 else 0
+        reward_risk_ratio = net_gain_per_share / stop_distance if stop_distance > 0 else 0
 
     warnings: list[str] = []
+    if raw_unit_shares < 100:
+        warnings.append(f"资金不足以买入一手(100股): 计算股数={raw_unit_shares}股 < 100股")
     if planned_unit_risk > risk_budget:
         warnings.append("单股最小买入数量已超过单笔风险预算")
     if reward_risk_ratio is None:
@@ -103,9 +111,15 @@ def build_turtle_plan(
     elif reward_risk_ratio < (min_reward_risk - 1e-9):
         warnings.append(f"盈亏比低于 {min_reward_risk:g}:1")
     if max_position_value > account_equity:
-        warnings.append("满额加仓后的名义仓位超过账户总资金")
+        warnings.append("满额加仓后的名义仓位超过账户总资金，禁止加仓")
 
-    verdict = "可执行" if not warnings else "不建议执行"
+    # 超资金或不足一手的 hard block
+    if raw_unit_shares < 100 or max_position_value > account_equity:
+        verdict = "不建议执行"
+    elif warnings:
+        verdict = "需注意"
+    else:
+        verdict = "可执行"
 
     return {
         "code": code,

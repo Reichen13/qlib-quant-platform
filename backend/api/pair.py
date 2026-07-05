@@ -332,7 +332,7 @@ def calc_spread_data(code1: str, code2: str, days: int = 60) -> List[Dict]:
 
 
 @router.get("/list")
-async def list_pairs():
+async def list_pairs(limit: int = Query(default=10, ge=1, le=200, description="最多返回几组配对")):
     """
     获取配对交易列表
 
@@ -358,8 +358,9 @@ async def list_pairs():
                 })
 
         return {
-            "pairs": updated_pairs,
+            "pairs": updated_pairs[:limit],
             "total": len(updated_pairs),
+            "shown": min(len(updated_pairs), limit),
             "date": datetime.now().strftime("%Y-%m-%d"),
         }
 

@@ -4,6 +4,8 @@
 """
 
 from datetime import date, datetime
+from pathlib import Path
+import json
 from fastapi import APIRouter
 from loguru import logger
 
@@ -118,3 +120,121 @@ async def get_dashboard_summary():
         ]
 
     return _json_safe(result)
+
+
+@router.get("/focus")
+async def get_dashboard_focus():
+    """
+    持仓复核 + 今晚聚焦 3 只精选买入
+
+    - 对已持仓股票: 对照当日收盘价与止损价输出 持有/止损触发/接近加仓
+    - 从最新筛选 buyable 中取前 3 只附理由
+    """
+    holdings = []
+    buyable_top3 = []
+
+    # ── 持仓复核 ──
+    try:
+        from db.position_store import position_store
+        from qlib.data import D
+        import pandas as pd
+
+        positions = position_store.list_all()
+        if positions:
+            codes = [p["code"] for p in positions]
+            try:
+                close_df = D.features(codes, ["$close"], start_time=None, end_time=None, freq="day")
+            except Exception:
+                close_df = None
+
+            for pos in positions:
+                code = pos["code"]
+                name = pos["name"] or code
+                cost = pos["cost_price"]
+                stop_loss = pos.get("stop_loss_price")
+                shares = pos["shares"]
+                current_price = None
+                current_change_pct = None
+
+                if close_df is not None and code in close_df.columns.get_level_values("instrument"):
+                    try:
+                        series = close_df.xs(code, level="instrument")["$close"].dropna()
+                        if not series.empty:
+                            current_price = round(float(series.iloc[-1]), 2)
+                            if len(series) >= 2:
+                                prev = float(series.iloc[-2])
+                                if prev > 0:
+                                    current_change_pct = round((current_price - prev) / prev * 100, 2)
+                    except Exception:
+                        pass
+
+                # 判定
+                if current_price is None:
+                    verdict = "待更新"
+                    verdict_reason = "无法获取最新价"
+                elif stop_loss is not None and current_price <= stop_loss:
+                    verdict = "止损触发"
+                    verdict_reason = f"当前价 {current_price} <= 止损价 {stop_loss}"
+                elif current_price < cost * 0.92:
+                    verdict = "深度亏损"
+                    verdict_reason = f"当前价 {current_price} 低于成本 {cost} 8%以上"
+                elif current_price < cost * 0.97:
+                    verdict = "浮亏观察"
+                    verdict_reason = f"当前价 {current_price} 低于成本 {cost} 3%以上"
+                elif current_price < cost:
+                    verdict = "微亏持有"
+                    verdict_reason = f"当前价 {current_price} < 成本 {cost}"
+                elif current_price > cost * 1.10:
+                    verdict = "浮盈持有"
+                    verdict_reason = f"当前价 {current_price} > 成本 {cost} 10%以上"
+                else:
+                    verdict = "持有"
+                    verdict_reason = "价格在成本附近"
+
+                holdings.append({
+                    "code": code,
+                    "name": name,
+                    "shares": shares,
+                    "cost_price": cost,
+                    "stop_loss_price": stop_loss,
+                    "current_price": current_price,
+                    "change_pct": current_change_pct,
+                    "pnl_pct": round((current_price - cost) / cost * 100, 2) if current_price else None,
+                    "verdict": verdict,
+                    "verdict_reason": verdict_reason,
+                })
+    except Exception as e:
+        logger.warning(f"持仓复核失败: {e}")
+        holdings = []
+
+    # ── 精选前 3 只买入 ──
+    try:
+        from db.task_store import TaskStore
+        screening_store = TaskStore(
+            Path.home() / ".qlib" / "screening_tasks.db",
+            table_name="screening_tasks"
+        )
+        screening_store.init_db()
+        tasks = screening_store.list_tasks(limit=5)
+        for t in tasks:
+            if t.get("status") == "completed" and t.get("result_json"):
+                try:
+                    result = json.loads(t["result_json"])
+                    candidates = result.get("candidates", [])
+                    buyable = [c for c in candidates if c.get("bucket") == "buyable"]
+                    buyable.sort(key=lambda x: x.get("score", 0), reverse=True)
+                    buyable_top3 = buyable[:3]
+                    break
+                except Exception:
+                    continue
+    except Exception as e:
+        logger.warning(f"获取精选买入失败: {e}")
+        buyable_top3 = []
+
+    return {
+        "date": date.today().isoformat(),
+        "holdings": holdings,
+        "buyable_top3": buyable_top3,
+        "holdings_count": len(holdings),
+        "updated_at": datetime.now().isoformat(),
+    }
