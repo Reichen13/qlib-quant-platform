@@ -319,36 +319,82 @@ def build_ipo_whitelist(code: str, ipo_date: str, calendar: list[str]) -> set[st
     return set(calendar[idx:idx + 5])
 
 
-def scan_full_jumps_mechanized(data_dir: Path) -> dict:
-    """全库 jump 扫描，机械化白名单过滤后才计为异常。"""
+def build_local_factor_events(code: str, data_dir: Path, calendar: list[str]) -> set[str]:
+    """从本地 factor.day.bin 提取除权事件日（factor 值相对前一有效日发生变动的日期）。
+
+    本地 factor 就是重建时从 baostock query_adjust_factor 写入的同一份数据，
+    用它做白名单不需要联网重拉（免疫限流），且语义更准：如果本地 factor
+    漏了某个事件，对应 jump 就应该报出来——正好暴露因子表缺口。
+    """
+    import numpy as np
+    fpath = data_dir / "features" / code / "factor.day.bin"
+    if not fpath.exists():
+        return set()
+    raw = np.fromfile(str(fpath), dtype="<f")
+    if len(raw) < 3:
+        return set()
+    start_idx = int(raw[0])
+    vals = raw[1:]
+    events: set[str] = set()
+    prev_val = None
+    for off, v in enumerate(vals):
+        if not _is_finite(float(v)) or v <= 0:
+            continue
+        if prev_val is not None and abs(float(v) - prev_val) > 1e-6:
+            cal_idx = start_idx + off
+            if 0 <= cal_idx < len(calendar):
+                events.add(calendar[cal_idx])
+        prev_val = float(v)
+    return events
+
+
+def build_first5_whitelist(points: list[tuple[str, float]]) -> set[str]:
+    """bin 首个有效日起 5 个交易日（新股上市初期无涨跌幅限制，本地判定，
+    不依赖 IPO 数据源；含 2023 注册制后主板新股）。"""
+    valid_dates = [d for d, v in points if v > 0 and _is_finite(v)]
+    return set(valid_dates[:5])
+
+
+def load_known_issues(path: Path) -> set[tuple[str, str]]:
+    """已人工归因的历史遗留个案：[{"code","date","attribution"}...]。
+    命中的 jump 计为 archived_known，不触发 fail（变更管理显式化）。"""
+    if not path.exists():
+        return set()
+    try:
+        items = json.loads(path.read_text(encoding="utf-8"))
+        return {(it["code"], it["date"]) for it in items if "code" in it and "date" in it}
+    except Exception:
+        return set()
+
+
+def scan_full_jumps_mechanized(data_dir: Path, known_issues_path: Path | None = None) -> dict:
+    """全库 jump 扫描，机械化白名单过滤后才计为异常。
+
+    白名单全部基于本地数据（factor 事件/NaN 缺口/bin 首 5 日/低价 tick/1996 前），
+    不依赖联网——前次运行 baostock 限流导致白名单静默缺失、产生误报，
+    此实现从根上移除该失败模式。
+    """
     import numpy as np
     calendar = read_calendar(data_dir)
     feature_dir = data_dir / "features"
     if not feature_dir.exists():
         return {"status": "skipped", "reason": "features 目录不存在", "hits": 0}
 
+    known_issues = load_known_issues(known_issues_path) if known_issues_path else set()
     close_files = sorted(feature_dir.glob("*/close.day.bin"))
-    codes = [p.parent.name for p in close_files]
-
-    # 拉白名单数据（联网）
-    print("  拉取 factor 事件日白名单...")
-    factor_events = fetch_factor_event_days(codes)
-    if factor_events is None:
-        return {"status": "fail", "reason": "baostock factor events fetch failed (rate-limited?); retry later", "hits": 0}
-    print("  拉取 IPO 日期白名单...")
-    ipo_dates = fetch_ipo_dates(codes)
-    if ipo_dates is None:
-        ipo_dates = {}
 
     hits: list[dict] = []
-    whitelisted_count = 0
+    archived: list[dict] = []
+    wl = {"factor_event": 0, "nan_gap": 0, "first5": 0, "penny_tick": 0, "pre_limit": 0}
+
     for close_path in close_files:
         code = close_path.parent.name
         points = read_close_series(close_path, calendar)
         threshold = jump_threshold_for_code(code)
         nan_gap_wl = build_nan_gap_whitelist(points)
-        ipo_wl = build_ipo_whitelist(code, ipo_dates.get(code, ""), calendar)
-        factor_wl = factor_events.get(code, set())
+        first5_wl = build_first5_whitelist(points)
+        factor_wl = build_local_factor_events(code, data_dir, calendar)
+        factors = read_field_map(data_dir, code, "factor", calendar)
 
         prev = None
         for date, value in points:
@@ -358,22 +404,27 @@ def scan_full_jumps_mechanized(data_dir: Path) -> dict:
             if prev and prev[1] > 0 and _is_finite(prev[1]):
                 jump = value / prev[1] - 1.0
                 if abs(jump) >= threshold:
-                    # 白名单判定
-                    if date in factor_wl or date in nan_gap_wl or date in ipo_wl or is_before_price_limit(date):
-                        whitelisted_count += 1
-                        prev = (date, value)
-                        continue
-                    # 低价tick豁免：前日原始价(close/factor)<2元时，涨跌停价四舍五入到0.01元
-                    # 导致有效涨跌幅超名义限制（如0.45元跌停=-11.1%），属真实行情
-                    rp = _raw_price_before(code, prev[0], data_dir) if prev and prev[0] else None
-                    if rp is not None and rp < 2.0:
-                        tl = threshold + 0.01 / rp
-                        if abs(jump) <= tl:
-                            whitelisted_count += 1
-                            prev = (date, value)
-                            continue
-                    hits.append({"code": code, "date": date, "jump": round(jump, 4),
-                                 "threshold": threshold})
+                    prev_f = factors.get(prev[0])
+                    prev_raw = (prev[1] / prev_f) if prev_f else None
+                    if date in factor_wl:
+                        wl["factor_event"] += 1
+                    elif date in nan_gap_wl:
+                        wl["nan_gap"] += 1
+                    elif date in first5_wl:
+                        wl["first5"] += 1
+                    elif is_before_price_limit(date):
+                        wl["pre_limit"] += 1
+                    elif prev_raw is not None and prev_raw < 2.0 and \
+                            abs(jump) <= threshold + 0.01 / prev_raw:
+                        wl["penny_tick"] += 1
+                    else:
+                        rec = {"code": code, "date": date, "jump": round(jump, 4),
+                               "threshold": threshold,
+                               "prev_raw_price": round(prev_raw, 3) if prev_raw else None}
+                        if (code, date) in known_issues:
+                            archived.append(rec)
+                        else:
+                            hits.append(rec)
             prev = (date, value)
 
     import json as _json
@@ -382,10 +433,30 @@ def scan_full_jumps_mechanized(data_dir: Path) -> dict:
     return {
         "status": "pass" if not hits else "fail",
         "hits": len(hits),
-        "whitelisted_count": whitelisted_count,
+        "archived_known": len(archived),
+        "whitelisted": wl,
         "all_hits_file": str(all_hits_path),
         "examples": hits[:50],
+        "archived_detail": archived,
     }
+
+
+def read_field_map(data_dir: Path, code: str, field: str, calendar: list[str]) -> dict[str, float]:
+    """读取字段 bin 为 {date: value}（仅有限正值），一次读盘供整轮扫描复用。"""
+    import numpy as np
+    p = data_dir / "features" / code / f"{field}.day.bin"
+    if not p.exists():
+        return {}
+    raw = np.fromfile(str(p), dtype="<f")
+    if len(raw) < 2:
+        return {}
+    start_idx = int(raw[0])
+    out: dict[str, float] = {}
+    for off, v in enumerate(raw[1:]):
+        cal_idx = start_idx + off
+        if 0 <= cal_idx < len(calendar) and _is_finite(float(v)) and v > 0:
+            out[calendar[cal_idx]] = float(v)
+    return out
 
 
 # ── D. 空心票 ──
@@ -478,6 +549,8 @@ def main() -> int:
     parser.add_argument("--skip-cross-source", action="store_true", help="跳过外部源对照（联网受限时用）")
     parser.add_argument("--skip-calendar-online", action="store_true", help="跳过日历完整性联网检查")
     parser.add_argument("--out", default=None, help="结果 JSON 写入路径")
+    parser.add_argument("--known-issues", default=str(Path(__file__).parent / "verify_known_issues.json"),
+                        help="已人工归因个案存档（命中计为 archived_known，不触发 fail）")
     args = parser.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -485,7 +558,7 @@ def main() -> int:
 
     checks = {
         "boundary_continuity": scan_boundary_jumps(data_dir, args.boundary),
-        "full_jump_scan": scan_full_jumps_mechanized(data_dir),
+        "full_jump_scan": scan_full_jumps_mechanized(data_dir, Path(args.known_issues)),
         "hollow_securities": check_hollow_securities(
             data_dir,
             known_hollow=[c for c in [p.parent.name for p in sorted((data_dir / "features").glob("*/close.day.bin"))]
