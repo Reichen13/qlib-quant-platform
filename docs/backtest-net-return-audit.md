@@ -20,12 +20,14 @@
 - 全市场/含科创板创业板: 0.195（±20% 宽松）
 
 ### 阶段 2-5: volume_threshold + impact_cost
-- 已编码但注释掉：Qlib 0.9.7 使用这些参数导致回测 hang
-- 待升级到 Qlib 1.x 后启用
+- 已恢复启用（commit 9b77cbb）
+- hang 的真相：Windows spawn 多进程 + if __name__ 缺失导致内存打满，非 Qlib exchange 参数问题
+- 回测端到端跑通：2025H1 毛收益 11.24% / 净收益 8.01%
 
 ### 阶段 2-6: turnover/stop_loss/max_position
 - turnover: Qlib TopkDropoutStrategy 不支持调仓周期，标注为"暂未接入"
-- stop_loss/max_position: backlog，不在阶段 2 实现
+- stop_loss/max_position: 从 schema 删除（commit 9b77cbb），TopkDropoutStrategy 不原生支持日频止损
+- 日频止损需在持仓管理层面实现，登记为 backlog
 
 ## 模拟验证
 
