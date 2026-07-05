@@ -188,19 +188,29 @@ def _read_feature_points(bin_path: Path, calendar: list[str]) -> list[dict]:
         return []
 
 
-def _find_large_price_jump(points: list[dict], threshold: float = 0.35) -> dict | None:
+def _find_large_price_jump(points: list[dict], threshold: float = 0.35, calendar: list[str] | None = None) -> dict | None:
+    """检测超过阈值的单日跳变。跨NaN区间的累计涨跌（停牌复牌）不当单日跳变。"""
+    cal_idx = {d: i for i, d in enumerate(calendar)} if calendar else {}
     previous = None
     for point in points:
         value = point.get("value")
+        date = point.get("date", "")
         if value <= 0:
             previous = None
             continue
         if previous and previous.get("value", 0) > 0:
+            prev_date = previous.get("date", "")
+            if cal_idx and prev_date and date:
+                pi = cal_idx.get(prev_date, -1)
+                ci = cal_idx.get(date, -1)
+                if pi >= 0 and ci >= 0 and (ci - pi) > 1:
+                    previous = point
+                    continue
             jump_pct = value / previous["value"] - 1.0
             if abs(jump_pct) >= threshold:
                 return {
-                    "date": point.get("date", ""),
-                    "previous_date": previous.get("date", ""),
+                    "date": date,
+                    "previous_date": prev_date,
                     "close": round(value, 4),
                     "previous_close": round(previous["value"], 4),
                     "jump_pct": round(jump_pct, 4),
@@ -248,7 +258,7 @@ def _check_price_adjustment_policy() -> dict:
         factor_path = close_path.parent / "factor.day.bin"
 
         close_points = _read_feature_points(close_path, calendar)
-        jump = _find_large_price_jump(close_points)
+        jump = _find_large_price_jump(close_points, calendar=calendar)
         if jump:
             possible_unadjusted_jumps += 1
             if len(suspect_examples) < 10:
@@ -298,24 +308,24 @@ def _check_price_adjustment_policy() -> dict:
         status = "warning"
         adjustment_mode = "qfq_price_with_placeholder_factor"
         factor_field_status = "placeholder_1.0"
-        message = "价格源策略偏前复权，但 factor 字段全为 1.0，占位痕迹明显，不能审计真实除权因子"
+        message = "factor 字段全为 1.0（占位符），数据可能为旧口径（前复权+占位因子），建议重建"
     elif latest_one_ratio >= 0.8:
         status = "warning"
         adjustment_mode = "qfq_price_with_mixed_factor"
         factor_field_status = "mixed_real_and_placeholder"
-        message = "历史 factor 存在非 1 值，但多数最新样本 factor 为 1.0，疑似老数据有真实因子、增量数据为占位因子"
+        message = "多数最新样本 factor 为 1.0，疑似增量数据为旧口径占位因子，建议全量重建"
     else:
         status = "normal"
-        adjustment_mode = "adjusted_price_with_factor"
-        factor_field_status = "real_factor_present"
-        message = "样本中存在可用 factor 字段，价格复权口径相对可审计"
+        adjustment_mode = "back_adjusted_with_cumulative_factor"
+        factor_field_status = "real_cumulative_factor"
+        message = "$close 为后复权价（原始价 x 累积后复权因子），$factor 为累积后复权因子，面向用户价格已自动换算前复权（=真实市价）"
 
     warnings: list[str] = []
     if possible_unadjusted_jumps:
         status = "warning"
         message = f"{message}；另发现疑似大幅跳变，需要抽查是否为未复权或数据断点"
         warnings.append(f"样本中 {possible_unadjusted_jumps} 只出现超过 35% 的单日跳变，建议抽查是否为未复权或数据修复断点")
-    warnings.append("更新脚本优先使用前复权/自动复权价格；若外部源缺少前复权数据，仍需人工复核")
+    warnings.append("当前口径：baostock 单源写入，后复权（backAdjustFactor），增量只追加不重写历史")
 
     return {
         "source": "Qlib cn_data 复权口径",
@@ -332,8 +342,10 @@ def _check_price_adjustment_policy() -> dict:
         "possible_unadjusted_jump_count": possible_unadjusted_jumps,
         "source_policy": {
             "primary_use": "research_backtest_factor",
-            "expected_price_adjustment": "front_adjusted_or_auto_adjusted",
-            "update_sources": ["Tencent qfqday", "Eastmoney fqt=1", "Baostock adjustflag=2", "yfinance auto_adjust=True"],
+            "expected_price_adjustment": "back_adjusted_with_cumulative_factor",
+            "write_source": "Baostock adjustflag=3 (raw price) + query_adjust_factor (backAdjustFactor)",
+            "user_facing_price": "前复权（自动换算：后复权价 / 最新factor），与券商真实市价一致",
+            "factor_semantics": "累积后复权因子，历史不可变（增量只追加不重写历史）",
             "execution_price_note": "实盘成交价应以实时未复权行情或券商行情为准",
         },
         "warnings": warnings,
@@ -448,11 +460,39 @@ def _summarize_close_value_quality(data_dir: Path) -> dict:
                 })
 
     density = finite_values / total_values if total_values else 0.0
+    # 最近 90 个交易日密度检查（股改钉子户/退市重上市的长停不应误报为数据缺陷）
+    import math as _math, numpy as _np
+    recent_gap = False
+    cal = []
+    try:
+        cal_path = data_dir / "calendars" / "day.txt"
+        if cal_path.exists():
+            cal = cal_path.read_text(encoding="utf-8").strip().splitlines()
+            if len(cal) >= 90:
+                recent = cal[-90:]
+                for close_path in sample_files:
+                    raw = _np.fromfile(str(close_path), dtype="<f")
+                    start_idx = int(raw[0]) if len(raw) >= 1 else 0
+                    recent_nan = 0
+                    for j in range(len(recent)):
+                        off = (len(cal) - 90 + j) - start_idx
+                        if 0 <= off < len(raw) - 1:
+                            v = float(raw[1 + off])
+                            if not (_math.isfinite(v) and v > 0):
+                                recent_nan += 1
+                            else:
+                                recent_nan = 0
+                    if recent_nan > 30:
+                        recent_gap = True
+                        break
+    except Exception:
+        pass
     return {
         "sample_size": len(sample_files),
         "effective_value_density": round(density, 4),
         "max_consecutive_nan": max_consecutive_nan,
         "hollow_count": hollow_count,
+        "recent_gap_warning": recent_gap,
         "quality_examples": examples,
     }
 
@@ -552,13 +592,13 @@ def _check_stocks_data() -> dict:
 
         if close_quality["sample_size"] and (
             close_quality["effective_value_density"] < 0.8
-            or close_quality["max_consecutive_nan"] >= 60
+            or close_quality["recent_gap_warning"]
             or close_quality["hollow_count"] > 0
         ):
             status = "error"
             msg = (
                 f"日线有效值密度异常({close_quality['effective_value_density']:.1%})，"
-                f"最大连续缺口 {close_quality['max_consecutive_nan']} 天，疑似存在空心股票或数据断层"
+                f"近90交易日存在有效值缺口，疑似数据断层"
             )
 
         return {
