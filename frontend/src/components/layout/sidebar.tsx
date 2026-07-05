@@ -25,6 +25,7 @@ import {
   Calculator,
   Swords,
   FlaskConical,
+  Gauge,
   ChevronLeft,
   ChevronRight,
   X,
@@ -55,6 +56,7 @@ const NAVIGATION_ITEMS = [
   { icon: Calculator, label: "交易计划", path: "/trade-plan" },
   { icon: Swords, label: "龙虎榜", path: "/dragon-tiger" },
   { icon: FlaskConical, label: "实验看板", path: "/experiments" },
+  { icon: Gauge, label: "市场情绪", path: "/market-sentiment" },
   { icon: MonitorCog, label: "系统状态", path: "/system-status" },
   { icon: Settings, label: "LLM 设置", path: "/settings" },
 ]

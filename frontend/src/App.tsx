@@ -25,6 +25,7 @@ import { SettingsPage } from "./pages/settings"
 import { SystemStatusPage } from "./pages/system-status"
 import { DragonTigerPage } from "./pages/dragon-tiger"
 import { ExperimentsPage } from "./pages/experiments"
+import { MarketSentimentPage } from "./pages/market-sentiment"
 
 // 创建路由
 const router = createBrowserRouter([
@@ -119,6 +120,10 @@ const router = createBrowserRouter([
       {
         path: "experiments",
         element: <ExperimentsPage />,
+      },
+      {
+        path: "market-sentiment",
+        element: <MarketSentimentPage />,
       },
       {
         path: "system-status",
