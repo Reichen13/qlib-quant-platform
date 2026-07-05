@@ -15,7 +15,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 try:
@@ -28,7 +28,67 @@ if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 from models.schemas import RiskAnalysisRequest
+from db.screening_history import save_run, get_last_n_runs, get_recent_runs, update_verification
 from utils.code_normalization import normalize_stock_code
+
+
+
+def _check_circuit_breaker(warnings):
+    try:
+        import json, numpy as np, qlib
+        from qlib.data import D
+        runs = get_last_n_runs(n=3, min_age_days=5)
+        if len(runs) < 3:
+            return
+        all_winrates = []
+        for run in runs:
+            buyable = json.loads(run["top_buyable_json"])
+            if not buyable:
+                continue
+            run_date = run["run_date"]
+            try:
+                cal = list(D.calendar(freq="day"))
+                cal_str = [str(d)[:10] for d in cal]
+                if run_date not in cal_str:
+                    continue
+                idx = cal_str.index(run_date)
+                t5_idx = min(idx + 5, len(cal_str) - 1)
+                t5_date = cal_str[t5_idx]
+                if t5_date == run_date:
+                    continue
+            except Exception:
+                continue
+            wins = 0
+            total = 0
+            for stock in buyable:
+                code = stock.get("code", "")
+                if not code:
+                    continue
+                try:
+                    prices = D.features([code], ["$close"], start_time=run_date, end_time=t5_date)
+                    if prices is None or prices.empty:
+                        continue
+                    cs = prices["$close"]
+                    if len(cs) < 2:
+                        continue
+                    t0 = float(cs.iloc[0])
+                    t5 = float(cs.iloc[-1])
+                    if t0 <= 0:
+                        continue
+                    total += 1
+                    if (t5 / t0 - 1) > 0:
+                        wins += 1
+                except Exception:
+                    continue
+            if total == 0:
+                continue
+            wr = wins / total
+            all_winrates.append(wr)
+            update_verification(run_date, wr, wr)
+        if len(all_winrates) >= 3 and all(w < 0.4 for w in all_winrates):
+            warnings.append("circuit_breaker: rolling_3_period_win_rate_below_40pct")
+    except Exception as e:
+        logger.warning(f"Circuit breaker failed: {e}")
 
 router = APIRouter()
 FACTOR_SCORE_BUY_THRESHOLD = 0.5
@@ -667,7 +727,7 @@ async def run_screening_workflow(request: ScreeningRunRequest | None = None):
     if request.include_llm:
         warnings.append("已收到 include_llm=true，但第一版工作流暂不自动消耗大模型额度。")
 
-    return build_screening_summary(
+    result = build_screening_summary(
         data_health=data_health,
         hot_sectors=hot_sectors,
         etf_signals=etf_signals,
@@ -679,3 +739,112 @@ async def run_screening_workflow(request: ScreeningRunRequest | None = None):
         warnings=warnings,
         include_llm=request.include_llm,
     )
+
+    try:
+        import json
+        buyable = (result.get("buckets") or {}).get("buyable", [])
+        if buyable:
+            top5 = sorted(buyable, key=lambda x: x.get("score", 0) or 0, reverse=True)[:5]
+            top5_min = [{"code": s.get("code"), "name": s.get("name"), "score": s.get("score")} for s in top5]
+            save_run(date.today().isoformat(), top5_min)
+    except Exception as e:
+        logger.warning(f"History save failed: {e}")
+
+    _check_circuit_breaker(warnings)
+    if warnings:
+        existing = result.get("warnings") or []
+        result["warnings"] = existing + [w for w in warnings if w not in existing]
+
+    return result
+
+
+@router.get("/report")
+async def get_screening_report():
+    try:
+        import json, numpy as np, qlib
+        from qlib.data import D
+        runs = get_recent_runs(limit=20)
+        if not runs:
+            return {"status": "unavailable", "message": "no_screening_history"}
+
+        period_results = []
+        all_winrates = []
+        all_returns = []
+        for run in runs:
+            buyable = json.loads(run["top_buyable_json"])
+            if not buyable:
+                continue
+            run_date = run["run_date"]
+            try:
+                cal = list(D.calendar(freq="day"))
+                cal_str = [str(d)[:10] for d in cal]
+                if run_date not in cal_str:
+                    continue
+                idx = cal_str.index(run_date)
+                t5_idx = min(idx + 5, len(cal_str) - 1)
+                t5_date = cal_str[t5_idx]
+                if t5_date == run_date:
+                    continue
+            except Exception:
+                continue
+            wins = 0
+            total = 0
+            returns = []
+            stock_results = []
+            for stock in buyable:
+                code = stock.get("code", "")
+                if not code:
+                    continue
+                try:
+                    prices = D.features([code], ["$close"], start_time=run_date, end_time=t5_date)
+                    if prices is None or prices.empty:
+                        continue
+                    cs = prices["$close"]
+                    if len(cs) < 2:
+                        continue
+                    t0 = float(cs.iloc[0])
+                    t5 = float(cs.iloc[-1])
+                    if t0 <= 0:
+                        continue
+                    ret = (t5 / t0) - 1
+                    total += 1
+                    returns.append(ret)
+                    if ret > 0:
+                        wins += 1
+                    stock_results.append({"code": code, "name": stock.get("name"), "t5_return": round(ret, 4), "hit": ret > 0})
+                except Exception:
+                    continue
+            if total == 0:
+                continue
+            wr = wins / total
+            avg_ret = sum(returns) / len(returns)
+            all_winrates.append(wr)
+            all_returns.append(avg_ret)
+            period_results.append({"run_date": run_date, "win_rate": round(wr, 4), "avg_t5_return": round(avg_ret, 4), "stocks": total, "won": wins, "stock_details": stock_results})
+            update_verification(run_date, wr, avg_ret)
+
+        if not period_results:
+            return {"status": "insufficient_data", "message": "not_enough_history"}
+
+        rolling_20_wr = round(float(np.mean(all_winrates)) if all_winrates else 0, 4)
+        rolling_20_avg_ret = round(float(np.mean(all_returns)) if all_returns else 0, 4)
+        recent_3_wr = all_winrates[-3:] if len(all_winrates) >= 3 else all_winrates
+        recent_3_avg = round(float(np.mean(recent_3_wr)) if recent_3_wr else 0, 4)
+        cb_active = len(recent_3_wr) >= 3 and all(w < 0.4 for w in recent_3_wr)
+
+        return {
+            "status": "available",
+            "total_runs": len(runs),
+            "periods_with_data": len(period_results),
+            "rolling_20_win_rate": rolling_20_wr,
+            "rolling_20_avg_t5_return": rolling_20_avg_ret,
+            "recent_3_win_rate": recent_3_avg,
+            "circuit_breaker_active": cb_active,
+            "suggestion": "defensive" if cb_active else ("normal" if rolling_20_wr >= 0.5 else "cautious"),
+            "period_details": period_results,
+        }
+    except Exception as e:
+        logger.error(f"Report failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))

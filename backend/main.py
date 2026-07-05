@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI):
         stocks, hot, quote, factors, backtest, etf,
         pair, mean_reversion, financials, industry, index, sectors, risk, portfolio,
         macro, data, dashboard, news_analysis, ai_strategy, agent_debate,
-        dl_models, stock_pool, llm_config, screening, trade_plan, system,
+        dl_models, stock_pool, llm_config, screening, trade_plan, system, positions,
     )
 
     app.include_router(stocks.router, prefix="/api/stocks", tags=["stocks"])
@@ -127,6 +127,7 @@ async def lifespan(app: FastAPI):
     app.include_router(portfolio.router, prefix="/api/portfolio", tags=["portfolio"])
     app.include_router(macro.router, prefix="/api/macro", tags=["macro"])
     app.include_router(data.router, prefix="/api/data", tags=["data"])
+    app.include_router(positions.router, prefix="/api/positions", tags=["positions"])
     app.include_router(dashboard.router, prefix="/api/dashboard", tags=["dashboard"])
     app.include_router(news_analysis.router, prefix="/api/news", tags=["news"])
     app.include_router(ai_strategy.router, prefix="/api/ai-strategy", tags=["ai-strategy"])

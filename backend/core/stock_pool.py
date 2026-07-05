@@ -96,6 +96,7 @@ class StockPoolEngine:
 
     def __init__(self):
         self._provider = None
+        self._warnings: list[str] = []
 
     def _get_provider(self):
         if self._provider is None:
@@ -238,9 +239,22 @@ class StockPoolEngine:
                         yf_code = instrument.replace("SH", "").replace("SZ", "") + (".SS" if "SH" in instrument else ".SZ")
                         scores[yf_code] = float(score)
                 else:
-                    # 无 ICIR 缓存，等权
-                    for instrument in latest_factors.index:
-                        factor_vals = latest_factors.loc[instrument]
+                    # ICIR cache missing - cross-sectional z-score standardization fallback (Stage 4)
+                    self._warnings.append("ICIR cache missing, degraded to cross-sectional z-score equal-weight scoring")
+                    logger.warning("ICIR cache unavailable, using cross-sectional z-score degradation")
+                    # Per-factor cross-sectional z-score: prevents large-magnitude factors from dominating
+                    import numpy as np
+                    z_factors = latest_factors.copy()
+                    for col in z_factors.columns:
+                        c = z_factors[col]
+                        valid = c.notna() & np.isfinite(c)
+                        if valid.sum() > 1:
+                            z_factors.loc[valid, col] = (c[valid] - c[valid].mean()) / (c[valid].std() or 1.0)
+                        else:
+                            z_factors[col] = 0.0
+                    z_factors = z_factors.fillna(0.0)
+                    for instrument in z_factors.index:
+                        factor_vals = z_factors.loc[instrument]
                         valid_vals = [v for v in factor_vals.values if not np.isnan(v)]
                         yf_code = instrument.replace("SH", "").replace("SZ", "") + (".SS" if "SH" in instrument else ".SZ")
                         scores[yf_code] = float(np.mean(valid_vals)) if valid_vals else 0.0
@@ -407,6 +421,8 @@ class StockPoolEngine:
         filtered = self.execute_layer1(codes, l1)
         scored = self.execute_layer2(filtered, l2)
         constituents = self.execute_layer3(scored, l3)
+        engine_warnings = self._warnings.copy()
+        self._warnings = []
         warning = None
         if not codes:
             warning = "暂无可靠股票范围数据，未生成示例股票池。"
@@ -437,7 +453,7 @@ class StockPoolEngine:
                 "post_layer2": len(scored),
                 "post_layer3": len(constituents),
             },
-            "warning": warning,
+            "warning": "; ".join([w for w in ([warning] if warning else []) + engine_warnings if w]) if (warning or engine_warnings) else None,
         }
 
 

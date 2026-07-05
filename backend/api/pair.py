@@ -93,6 +93,18 @@ def get_all_pair_definitions() -> list[dict]:
 
 # ── 缓存 ──
 _pair_cache: Dict[str, tuple[float, dict]] = {}
+def _adf_pvalue(series, maxlag=None):
+    """Compute ADF stationarity p-value for spread (cointegration test)."""
+    try:
+        from statsmodels.tsa.stattools import adfuller
+        clean = series.dropna()
+        if len(clean) < 30:
+            return None
+        result = adfuller(clean.values, maxlag=maxlag, autolag="AIC")
+        return float(result[1])
+    except Exception:
+        return None
+
 CACHE_TTL = 900  # 15 分钟
 
 
@@ -191,8 +203,20 @@ def calc_zscore_from_qlib(code1: str, code2: str, days: int = 60) -> float | Non
         p1, p2 = p1.loc[common], p2.loc[common]
 
         # 对冲比率
-        beta = np.cov(p1, p2)[0, 1] / np.var(p2) if np.var(p2) > 0 else 1.0
-        spread = p1 - beta * p2
+        # Expanding-window rolling beta (no future leak)
+        n = len(p1)
+        min_window = min(20, max(5, n // 3))
+        spread_vals = []
+        for i in range(n):
+            if i < min_window:
+                spread_vals.append(np.nan)
+                continue
+            p1w = p1.iloc[:i+1]
+            p2w = p2.iloc[:i+1]
+            var2 = np.var(p2w)
+            beta_i = np.cov(p1w, p2w)[0, 1] / var2 if var2 > 0 else 1.0
+            spread_vals.append(p1.iloc[i] - beta_i * p2.iloc[i])
+        spread = pd.Series(spread_vals, index=p1.index, dtype=float)
 
         mean = spread.rolling(20).mean()
         std = spread.rolling(20).std()
@@ -244,7 +268,31 @@ def _compute_pair_metrics(pair_def: dict) -> dict:
     else:
         signal, status = "关注", "观察中"
 
-    p_value = 0.05 if abs(correlation) > 0.8 else (0.01 if abs(correlation) > 0.9 else 0.1)
+    # ADF cointegration test on spread (replaces hardcoded dead-branch p-value)
+    try:
+        from qlib.data import D
+        qlib_code1 = _normalize_pair_code(code1)
+        qlib_code2 = _normalize_pair_code(code2)
+        end_date = datetime.now().strftime("%Y-%m-%d")
+        start_date = (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
+        df = D.features([qlib_code1, qlib_code2], ["$close"], start_time=start_date, end_time=end_date)
+        if not df.empty:
+            p1 = _instrument_field_series(df, qlib_code1, "$close")
+            p2 = _instrument_field_series(df, qlib_code2, "$close")
+            common = p1.index.intersection(p2.index)
+            p1, p2 = p1.loc[common], p2.loc[common]
+            if len(p1) >= 20:
+                var2 = np.var(p2)
+                beta = np.cov(p1, p2)[0, 1] / var2 if var2 > 0 else 1.0
+                adf_p = _adf_pvalue(p1 - beta * p2)
+            else:
+                adf_p = None
+        else:
+            adf_p = None
+    except Exception:
+        adf_p = None
+
+    p_value = adf_p if adf_p is not None else (0.05 if abs(correlation) > 0.8 else 0.1)
 
     result = {
         **pair_def,
@@ -307,11 +355,20 @@ def calc_spread_data(code1: str, code2: str, days: int = 60) -> List[Dict]:
         if len(p1) < 2:
             return []
 
-        beta = np.cov(p1, p2)[0, 1] / np.var(p2) if np.var(p2) > 0 else 1.0
-        spread = p1 - beta * p2
+        # Expanding-window rolling beta (no future leak)
+        n = len(p1)
+        min_window = min(20, n // 3)
+        spread_ew = pd.Series(np.nan, index=p1.index, dtype=float)
+        for i in range(min_window, n):
+            p1w = p1.iloc[:i+1]
+            p2w = p2.iloc[:i+1]
+            var2 = np.var(p2w)
+            beta_i = np.cov(p1w, p2w)[0, 1] / var2 if var2 > 0 else 1.0
+            spread_ew.iloc[i] = p1.iloc[i] - beta_i * p2.iloc[i]
+        spread = spread_ew
 
-        mean = spread.rolling(window=20).mean()
-        std = spread.rolling(window=20).std()
+        mean = spread.rolling(20).mean()
+        std = spread.rolling(20).std()
         zscore = (spread - mean) / std
 
         result = []
@@ -332,12 +389,14 @@ def calc_spread_data(code1: str, code2: str, days: int = 60) -> List[Dict]:
 
 
 @router.get("/list")
-async def list_pairs():
+async def list_pairs(limit: int = Query(default=10, ge=1, le=200, description="最多返回几组配对")):
     """
     获取配对交易列表
 
     列表页只读取已有缓存，避免每次打开页面都触发 Qlib 重计算。
     """
+    if not isinstance(limit, int):
+        limit = 10
     try:
         updated_pairs = []
         for pair_def in get_all_pair_definitions():
@@ -358,8 +417,9 @@ async def list_pairs():
                 })
 
         return {
-            "pairs": updated_pairs,
+            "pairs": updated_pairs[:limit],
             "total": len(updated_pairs),
+            "shown": min(len(updated_pairs), limit),
             "date": datetime.now().strftime("%Y-%m-%d"),
         }
 
@@ -432,7 +492,8 @@ async def analyze_pair(
         else:
             signal, status = "关注", "观察中"
 
-        p_value = 0.05 if abs(correlation) > 0.8 else 0.1
+        # Use correlation strength as p-value proxy (ADF on 60d spread unreliable at small N)
+        p_value = 0.01 if abs(correlation) > 0.9 else (0.05 if abs(correlation) > 0.8 else 0.1)
 
         return {
             "pair": f"{get_stock_name_from_file(stock1)} / {get_stock_name_from_file(stock2)}",
