@@ -130,8 +130,7 @@ export function BacktestPage() {
       turnover: parseInt(params.rebalance),
       buy_cost: parseFloat(params.commission),
       sell_cost: parseFloat(params.slippage),
-      max_position: parseFloat(params.singlePosition),
-      stop_loss: parseFloat(params.stopLoss),
+      // stop_loss/max_position removed: TopkDropoutStrategy does not support stop-loss natively
       universe: params.universe,
     }
     if (params.sourceFactor) {

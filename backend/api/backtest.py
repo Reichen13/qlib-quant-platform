@@ -449,7 +449,8 @@ def run_backtest_task(task_id: str, params: BacktestParams):
             "open_cost": params.buy_cost,
             "close_cost": params.sell_cost,
             "min_cost": 5,
-            # volume_threshold/impact_cost reserved for future Qlib upgrade
+            "volume_threshold": ("current", "0.05 * $volume"),  # 单票不超日成交 5%
+            "impact_cost": 0.001,  # 市场冲击成本 0.1%/次
         }
 
         # TopkDropoutStrategy: topk=持仓数, n_drop=每次调仓换手数

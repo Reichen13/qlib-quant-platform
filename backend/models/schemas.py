@@ -155,9 +155,8 @@ class BacktestParams(BaseModel):
     account: int = Field(default=300_000, ge=10_000, le=100_000_000, description="账户初始资金")
     turnover: int = Field(default=5, ge=1, le=20, description="调仓周期(天)")
 
-    # 风险控制
-    max_position: float = Field(default=0.05, ge=0.01, le=0.3, description="单票最大仓位")
-    stop_loss: float = Field(default=-0.08, le=0, description="止损比例")
+    # 风险控制 (stop_loss/max_position: Qlib TopkDropoutStrategy 不原生支持，
+    # 日频止损需在持仓管理层面实现，暂从参数中移除，见 docs/backtest-net-return-audit.md)
 
     # 交易成本
     buy_cost: float = Field(default=0.0003, ge=0, le=0.01, description="买入佣金(万2.5+过户费≈万3)")
