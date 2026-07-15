@@ -68,7 +68,29 @@ def _load_calendar() -> list[str]:
         return [line.strip() for line in f if line.strip()]
 
 
+def _load_close_at_calendar_index(code: str, cal_index: int) -> float | None:
+    """读取某日历索引上的收盘价；无效则返回 None。"""
+    bin_path = Path.home() / ".qlib" / "qlib_data" / "cn_data" / "features" / code.lower() / "close.day.bin"
+    if not bin_path.exists():
+        return None
+
+    values = np.fromfile(bin_path, dtype="float32")
+    if len(values) <= 1:
+        return None
+
+    bin_start_index = int(values[0])
+    data = values[1:]
+    offset = cal_index - bin_start_index
+    if offset < 0 or offset >= len(data):
+        return None
+    price = float(data[offset])
+    if not np.isfinite(price) or price <= 0:
+        return None
+    return price
+
+
 def _load_close_prices(code: str, start_index: int, end_index: int) -> pd.Series:
+    """兼容旧调用：返回 [start, end] 切片（含端点）。优先用点查价。"""
     bin_path = Path.home() / ".qlib" / "qlib_data" / "cn_data" / "features" / code.lower() / "close.day.bin"
     if not bin_path.exists():
         return pd.Series(dtype="float64")
@@ -87,16 +109,25 @@ def _load_close_prices(code: str, start_index: int, end_index: int) -> pd.Series
     return pd.to_numeric(pd.Series(data[slice_start:slice_end]), errors="coerce").dropna()
 
 
-def _sector_change_from_local_bins(stock_codes: list[str], start_index: int, end_index: int) -> tuple[float | None, int]:
+def _sector_change_from_local_bins(
+    stock_codes: list[str],
+    start_index: int,
+    end_index: int,
+) -> tuple[float | None, int]:
+    """按交易日索引计算涨跌幅： (P[end] - P[start]) / P[start]。
+
+    days=1 时 start=end-1，即为 1 日涨跌，不再额外 padding。
+    """
+    if end_index <= start_index:
+        return None, 0
+
     changes = []
     for code in stock_codes:
-        close = _load_close_prices(code, start_index, end_index)
-        if len(close) < 2:
+        first_price = _load_close_at_calendar_index(code, start_index)
+        last_price = _load_close_at_calendar_index(code, end_index)
+        if first_price is None or last_price is None:
             continue
-        first_price = float(close.iloc[0])
-        last_price = float(close.iloc[-1])
-        if first_price > 0:
-            changes.append((last_price - first_price) / first_price)
+        changes.append((last_price - first_price) / first_price)
     if not changes:
         return None, 0
     return round(float(np.mean(changes)) * 100, 2), len(changes)
@@ -109,7 +140,10 @@ def _build_hot_sectors(days: int) -> HotSectorsResponse:
             raise RuntimeError("calendar data is unavailable")
 
         end_index = len(calendar) - 1
-        start_index = max(0, end_index - days - 20)
+        # N 个交易日涨跌：用 end 与 end-N 两点，禁止 +20 的错误 padding
+        start_index = end_index - int(days)
+        if start_index < 0:
+            raise RuntimeError(f"calendar too short for days={days}")
         end_date = pd.to_datetime(calendar[end_index])
 
         from core.sector_definitions import get_sectors_qlib
@@ -175,31 +209,38 @@ async def get_sector_stocks(
         if not end_date_str:
             raise HTTPException(status_code=500, detail="无法获取日历数据")
 
-        end_date = pd.to_datetime(end_date_str)
-        start_date = end_date - timedelta(days=days + 20)
+        calendar = _load_calendar()
+        if not calendar:
+            raise HTTPException(status_code=500, detail="无法获取日历数据")
+        end_index = len(calendar) - 1
+        start_index = end_index - int(days)
+        if start_index < 0:
+            raise HTTPException(status_code=400, detail=f"日历过短，无法计算 {days} 日涨跌")
 
-        # 获取股票数据
-        df = D.features(
-            stock_codes,
-            ["$close", "$volume"],
-            start_time=start_date.strftime("%Y-%m-%d"),
-            end_time=end_date.strftime("%Y-%m-%d")
-        )
-
-        if df.empty:
-            return {"sector": sector_name, "stocks": []}
-
+        # 优先本地 bin 按交易日索引取价，避免自然日 +20 错窗
         results = []
-
         from models.schemas import SectorStockInfo
 
         for code in stock_codes:
-            close = _instrument_field_series(df, code, "$close")
-            if len(close) < 2 or float(close.iloc[0]) <= 0:
+            first_price = _load_close_at_calendar_index(code, start_index)
+            last_price = _load_close_at_calendar_index(code, end_index)
+            if first_price is None or last_price is None:
                 continue
-            volume = _instrument_field_series(df, code, "$volume")
-            change_pct = (float(close.iloc[-1]) - float(close.iloc[0])) / float(close.iloc[0]) * 100
-            vol = float(volume.iloc[-1]) if len(volume) else 0
+            change_pct = (last_price - first_price) / first_price * 100
+            # 成交量仍走 Qlib（可选，失败则为 0）
+            vol = 0.0
+            try:
+                vol_df = D.features(
+                    [code],
+                    ["$volume"],
+                    start_time=calendar[end_index],
+                    end_time=calendar[end_index],
+                )
+                vol_s = _instrument_field_series(vol_df, code, "$volume")
+                if len(vol_s):
+                    vol = float(vol_s.iloc[-1])
+            except Exception:
+                vol = 0.0
             results.append(SectorStockInfo(
                 code=code,
                 name=get_stock_name(code),
