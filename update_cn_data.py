@@ -18,6 +18,7 @@ import time
 import atexit
 import os
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,8 @@ _BAOSTOCK_LOGGED_IN = False
 _baostock_available = True  # 启动时假设可用，update() 中探测更新
 REBUILD_GAP_THRESHOLD = 500
 REQUEST_SLEEP_SECONDS = 0.15  # 全量重建长时间运行，提高到 150ms 避免被限流
+# baostock 个别退市/异常票 query_adjust_factor(1990~今) 会永久挂起；必须有超时
+BAOSTOCK_QUERY_TIMEOUT_SEC = float(os.environ.get("BAOSTOCK_QUERY_TIMEOUT_SEC", "20"))
 
 
 # ── 日历 ──
@@ -135,13 +138,26 @@ def _get_baostock():
 
 
 def _logout_baostock():
-    global _BAOSTOCK_LOGGED_IN
+    global _BAOSTOCK_LOGGED_IN, _BAOSTOCK
     if _BAOSTOCK_LOGGED_IN and _BAOSTOCK is not None:
         try:
             _BAOSTOCK.logout()
         except Exception:
             pass
         _BAOSTOCK_LOGGED_IN = False
+        _BAOSTOCK = None
+
+
+def _reset_baostock_session():
+    """超时/挂起后强制重新 login，避免复用坏会话。"""
+    global _BAOSTOCK_LOGGED_IN, _BAOSTOCK, _baostock_available
+    try:
+        _logout_baostock()
+    except Exception:
+        pass
+    _BAOSTOCK_LOGGED_IN = False
+    _BAOSTOCK = None
+    _baostock_available = True
 
 
 atexit.register(_logout_baostock)
@@ -169,7 +185,7 @@ def fetch_yfinance(yf_code: str, start: str, end: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def _query_baostock_history(bs, yf_code: str, start: str, end: str, adjustflag: str) -> pd.DataFrame:
+def _query_baostock_history_impl(bs, yf_code: str, start: str, end: str, adjustflag: str) -> pd.DataFrame:
     rs = bs.query_history_k_data_plus(
         yf_to_baostock(yf_code),
         "date,code,open,high,low,close,volume,amount,tradestatus",
@@ -204,6 +220,37 @@ def _query_baostock_history(bs, yf_code: str, start: str, end: str, adjustflag: 
     return df[[f for f in FIELDS + ["amount"] if f in df.columns]]
 
 
+def _query_baostock_history(bs, yf_code: str, start: str, end: str, adjustflag: str) -> pd.DataFrame:
+    result = _run_with_timeout(
+        lambda: _query_baostock_history_impl(bs, yf_code, start, end, adjustflag),
+        BAOSTOCK_QUERY_TIMEOUT_SEC,
+        f"Baostock 日线 {yf_code} {start}~{end}",
+    )
+    if result is None:
+        return pd.DataFrame()
+    return result
+
+
+def _run_with_timeout(fn, timeout_sec: float, label: str):
+    """在线程里跑阻塞 IO，超时返回 None（不杀线程，但调用方可继续下一票）。"""
+    if timeout_sec <= 0:
+        return fn()
+    ex = ThreadPoolExecutor(max_workers=1)
+    try:
+        fut = ex.submit(fn)
+        return fut.result(timeout=timeout_sec)
+    except FuturesTimeoutError:
+        print(f"  WARN: {label} 超时 ({timeout_sec:.0f}s)，跳过/降级")
+        _reset_baostock_session()
+        return None
+    except Exception as e:
+        print(f"  WARN: {label} 异常: {e}")
+        return None
+    finally:
+        # 不 wait：超时后底层 baostock 可能仍阻塞；进程内下一次 login 可能受影响
+        ex.shutdown(wait=False, cancel_futures=True)
+
+
 def _query_baostock_adjust_factor(bs, yf_code: str, start: str, end: str) -> pd.DataFrame:
     """拉取 baostock 累积复权因子表。
 
@@ -211,26 +258,39 @@ def _query_baostock_adjust_factor(bs, yf_code: str, start: str, end: str) -> pd.
     code / dividOperateDate / foreAdjustFactor / backAdjustFactor / adjustFactor。
     backAdjustFactor 即后复权累积因子（历史不可变）。
     """
-    rs = bs.query_adjust_factor(
-        code=yf_to_baostock(yf_code),
-        start_date=start,
-        end_date=end,
+
+    def _do() -> pd.DataFrame:
+        rs = bs.query_adjust_factor(
+            code=yf_to_baostock(yf_code),
+            start_date=start,
+            end_date=end,
+        )
+        if getattr(rs, "error_code", "0") != "0":
+            print(
+                f"  WARN: Baostock 复权因子获取 {yf_code} 失败: "
+                f"{getattr(rs, 'error_code', '')} {getattr(rs, 'error_msg', '')}"
+            )
+            return pd.DataFrame()
+
+        rows = []
+        while rs.next():
+            rows.append(rs.get_row_data())
+        if not rows:
+            return pd.DataFrame()
+
+        columns = getattr(rs, "fields", None) or [
+            "code", "dividOperateDate", "foreAdjustFactor", "backAdjustFactor", "adjustFactor",
+        ]
+        return pd.DataFrame(rows, columns=list(columns))
+
+    result = _run_with_timeout(
+        _do,
+        BAOSTOCK_QUERY_TIMEOUT_SEC,
+        f"Baostock 复权因子 {yf_code} {start}~{end}",
     )
-    if getattr(rs, "error_code", "0") != "0":
-        print(f"  WARN: Baostock 复权因子获取 {yf_code} 失败: {getattr(rs, 'error_code', '')} {getattr(rs, 'error_msg', '')}")
+    if result is None:
         return pd.DataFrame()
-
-    rows = []
-    while rs.next():
-        rows.append(rs.get_row_data())
-    if not rows:
-        return pd.DataFrame()
-
-    columns = getattr(rs, "fields", None) or [
-        "code", "dividOperateDate", "foreAdjustFactor", "backAdjustFactor", "adjustFactor",
-    ]
-    df = pd.DataFrame(rows, columns=list(columns))
-    return df
+    return result
 
 
 def _build_cumulative_back_factor(factor_rows: pd.DataFrame, raw_index: pd.Index) -> pd.Series:
@@ -426,10 +486,41 @@ def fetch_baostock(yf_code: str, start: str, end: str) -> pd.DataFrame:
         if raw_df.empty:
             return pd.DataFrame()
 
-        # 2. 累积后复权因子表（查询窗口固定从上市日起，与抓取窗口无关）
-        #    否则增量更新窗口内无除权事件 → factor=1.0 → 追加段断层
+        # 2. 累积后复权因子表（优先全历史；超时则降级本地 bin 末因子，适合短窗增量）
+        #    全历史查询在个别退市/异常代码上会永久挂起，见 BAOSTOCK_QUERY_TIMEOUT_SEC。
         factor_rows = _query_baostock_adjust_factor(bs, yf_code, "1990-01-01", end)
-        cumulative_factor = _build_cumulative_back_factor(factor_rows, raw_df.index)
+        if factor_rows is None or factor_rows.empty:
+            qlib_code = yf_to_qlib(yf_code) if "yf_to_qlib" in globals() else None
+            # yf 600000.SS -> sh600000
+            try:
+                from utils.code_normalization import normalize_stock_code  # type: ignore
+            except Exception:
+                normalize_stock_code = None
+            code_for_bin = None
+            if normalize_stock_code is not None:
+                try:
+                    code_for_bin = normalize_stock_code(yf_code, target="qlib").lower()
+                except Exception:
+                    code_for_bin = None
+            if not code_for_bin:
+                # 本地 fallback: 600000.SS -> sh600000
+                s = yf_code.upper().replace(".SS", "").replace(".SZ", "").replace(".BJ", "")
+                if yf_code.upper().endswith(".SS"):
+                    code_for_bin = "sh" + s[:6]
+                elif yf_code.upper().endswith(".SZ"):
+                    code_for_bin = "sz" + s[:6]
+                elif yf_code.upper().endswith(".BJ"):
+                    code_for_bin = "bj" + s[:6]
+                else:
+                    code_for_bin = yf_code.lower()
+            last_f = _read_last_factor_from_bin(code_for_bin)
+            print(
+                f"  WARN: {yf_code} 复权因子降级为 bin 末因子={last_f:.6f} "
+                f"(短窗增量；若窗口内有除权可能偏差)"
+            )
+            cumulative_factor = pd.Series(float(last_f), index=raw_df.index)
+        else:
+            cumulative_factor = _build_cumulative_back_factor(factor_rows, raw_df.index)
 
         # 3. 组装：OHLC 复权价 = 原始价 × 累积因子；volume/amount 保持原始口径
         df = raw_df.copy()
