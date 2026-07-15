@@ -1,5 +1,5 @@
 // 因子分析页面 - Alpha158 因子 IC 分析
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useAppStore } from "@/stores/app-store"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -123,6 +123,13 @@ export function FactorAnalysisPage() {
   })
 
   const clearAnalysisTask = () => setFactorParams({ analysisTaskId: null })
+
+  // 自动清除僵尸 task ID（任务不存在或超时）
+  useEffect(() => {
+    if (analysisStatus && (analysisStatus.status === "not_found" || analysisStatus.status === "timeout")) {
+      clearAnalysisTask()
+    }
+  }, [analysisStatus, clearAnalysisTask])
 
   const handleRunAnalysis = async () => {
     setSubmitError(null)
@@ -828,7 +835,7 @@ export function FactorAnalysisPage() {
                       singlePosition: "0.05",
                       stopLoss: "-0.08",
                       sourceFactor: selectedFactor,
-                      universe: "csi300",
+                      universe: "core650",
                     })
                     setBacktestActiveTab("config")
                     navigate("/backtest")

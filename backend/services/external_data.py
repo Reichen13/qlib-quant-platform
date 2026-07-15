@@ -4,6 +4,9 @@ import json
 import logging
 import time
 import urllib.request
+import struct
+import os
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +23,23 @@ def _em_fetch(url: str, timeout: int = 10) -> dict:
 
 def _qt_fetch(codes: list, timeout: int = 10) -> dict:
     """腾讯财经行情（不封 IP）"""
+    # 指数代码需要正确的前缀映射
+    INDEX_PREFIX = {
+        "000001": "sh",  # 上证指数
+        "000016": "sh",  # 上证50
+        "000300": "sh",  # 沪深300
+        "000688": "sh",  # 科创50
+        "000905": "sh",  # 中证500
+        "399001": "sz",  # 深证成指
+        "399005": "sz",  # 中小100
+        "399006": "sz",  # 创业板指
+        "399330": "sz",  # 深证100
+    }
     prefixed = []
     for c in codes:
+        if c in INDEX_PREFIX:
+            prefixed.append(f"{INDEX_PREFIX[c]}{c}")
+            continue
         if c.startswith("6"): prefixed.append(f"sh{c}")
         elif c.startswith(("0","3")): prefixed.append(f"sz{c}")
         elif c.startswith("8"): prefixed.append(f"bj{c}")
@@ -143,16 +161,115 @@ def fetch_industry_ranking() -> list:
             return rows
     except Exception:
         pass
-    indices = {"000001": "上证指数","399006":"创业板指","399001":"深证成指","000688":"科创50"}
-    quotes = _qt_fetch(list(indices.keys()), timeout=5)
+    # push2 不可用时，用本地 Qlib 数据计算行业涨跌
+    try:
+        return fetch_industry_ranking_from_qlib()
+    except Exception as e:
+        logger.warning(f"Qlib 行业排名也失败: {e}")
+    return [{"industry": "行业数据不可用（可能周末或数据缺失）", "change_pct": 0, "stock_count": 0}]
+
+
+def _load_industry_cache() -> dict:
+    """加载或构建 股票代码 → 行业名称 的本地缓存"""
+    cache_path = Path.home() / ".qlib" / "cache" / "industry_cache.json"
+    if cache_path.exists():
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # 从 baostock 拉取全量行业分类
+    mapping = {}
+    try:
+        import baostock as bs
+        lg = bs.login()
+        if lg.error_code == "0":
+            rs = bs.query_stock_industry()
+            while (rs.error_code == "0") and rs.next():
+                row = rs.get_row_data()
+                code = row[1].replace(".", "")  # sh.600000 → sh600000
+                industry = row[3] if row[3] else "未分类"
+                mapping[code] = industry
+            bs.logout()
+    except Exception as e:
+        logger.warning(f"baostock 行业分类拉取失败: {e}")
+    if mapping:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump(mapping, f, ensure_ascii=False)
+    return mapping
+
+
+def _read_qlib_close_factor(stock_dir: Path) -> tuple | None:
+    """读取 Qlib bin 文件的最新两个交易日的 close，返回 (prev_orig, latest_orig) 原始价"""
+    try:
+        close_bin = stock_dir / "close.day.bin"
+        factor_bin = stock_dir / "factor.day.bin"
+        if not close_bin.exists():
+            return None
+        close_data = close_bin.read_bytes()
+        factor_data = factor_bin.read_bytes() if factor_bin.exists() else None
+        elem_size = 4
+        total_days = len(close_data) // elem_size
+        if total_days < 2:
+            return None
+        offset = (total_days - 2) * elem_size
+        prev_close = struct.unpack("f", close_data[offset:offset + 4])[0]
+        latest_close = struct.unpack("f", close_data[offset + 4:offset + 8])[0]
+        prev_factor = 1.0
+        latest_factor = 1.0
+        if factor_data and len(factor_data) >= total_days * elem_size:
+            prev_factor = struct.unpack("f", factor_data[offset:offset + 4])[0]
+            latest_factor = struct.unpack("f", factor_data[offset + 4:offset + 8])[0]
+        prev_orig = prev_close / prev_factor if prev_factor and prev_factor != 0 else prev_close
+        latest_orig = latest_close / latest_factor if latest_factor and latest_factor != 0 else latest_close
+        return prev_orig, latest_orig
+    except Exception:
+        return None
+
+
+def fetch_industry_ranking_from_qlib() -> list:
+    """使用本地 Qlib 数据 + baostock 行业分类计算行业涨跌幅排名"""
+    features_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data" / "features"
+    if not features_dir.exists():
+        return [{"industry": "Qlib数据目录不存在", "change_pct": 0, "stock_count": 0}]
+    industry_map = _load_industry_cache()
+    if not industry_map:
+        return [{"industry": "行业缓存为空，需先拉取baostock分类", "change_pct": 0, "stock_count": 0}]
+    # 聚合每只股票的最近日涨跌（基于原始价）
+    industry_returns = {}  # industry → [returns]
+    stock_dirs = [d for d in features_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
+    skipped = 0
+    for d in stock_dirs:
+        code = d.name
+        industry = industry_map.get(code, "未分类")
+        result = _read_qlib_close_factor(d)
+        if result is None:
+            skipped += 1
+            continue
+        prev_orig, latest_orig = result
+        if prev_orig and prev_orig > 0 and latest_orig and latest_orig > 0:
+            ret = (latest_orig - prev_orig) / prev_orig * 100
+            if abs(ret) < 50:  # 过滤极端异常值
+                if industry not in industry_returns:
+                    industry_returns[industry] = []
+                industry_returns[industry].append(ret)
+    if skipped > 0:
+        logger.warning(f"行业排名: {skipped} 只股票无 bin 数据")
     rows = []
-    for code, name in indices.items():
-        if code in quotes:
-            rows.append({"industry": name, "change_pct": round(quotes[code].get("change_pct", 0), 2), "stock_count": 0})
-    if rows:
-        rows.sort(key=lambda x: x["change_pct"], reverse=True)
-        return rows
-    return [{"industry": "数据源暂不可用", "change_pct": 0, "stock_count": 0}]
+    for ind, returns in industry_returns.items():
+        if len(returns) < 2:
+            continue
+        avg_ret = sum(returns) / len(returns)
+        rows.append({
+            "industry": ind,
+            "change_pct": round(avg_ret, 2),
+            "stock_count": len(returns),
+        })
+    rows.sort(key=lambda x: x["change_pct"], reverse=True)
+    if not rows:
+        return [{"industry": "行业数据不可用（可能周末或数据缺失）", "change_pct": 0, "stock_count": 0}]
+    return rows
 
 
 # ── 手动宏观数据回退机制 ──

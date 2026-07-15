@@ -1,5 +1,8 @@
 """MLflow 实验管理 API — 查看回测实验历史与对比"""
 
+import os
+os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+
 from fastapi import APIRouter, HTTPException, Query
 from loguru import logger
 import mlflow

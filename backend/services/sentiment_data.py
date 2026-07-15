@@ -16,8 +16,23 @@ def _em_fetch(url: str, timeout: int = 12) -> dict:
 
 def _qt_fetch(codes: list[str]) -> dict:
     """腾讯财经行情 (不封IP)"""
+    # 指数代码需要正确的前缀映射 (0 开头的可能是深市也可能是沪市指数)
+    INDEX_PREFIX = {
+        "000001": "sh",  # 上证指数
+        "000016": "sh",  # 上证50
+        "000300": "sh",  # 沪深300
+        "000688": "sh",  # 科创50
+        "000905": "sh",  # 中证500
+        "399001": "sz",  # 深证成指
+        "399005": "sz",  # 中小100
+        "399006": "sz",  # 创业板指
+        "399330": "sz",  # 深证100
+    }
     prefixed = []
     for c in codes:
+        if c in INDEX_PREFIX:
+            prefixed.append(f"{INDEX_PREFIX[c]}{c}")
+            continue
         if c.startswith("6"): prefixed.append(f"sh{c}")
         elif c.startswith(("0", "3")): prefixed.append(f"sz{c}")
         elif c.startswith("8"): prefixed.append(f"bj{c}")
@@ -163,7 +178,8 @@ def fetch_market_sentiment() -> dict:
 
     # 6. 概念板块热度 TOP10
     try:
-        url = ("https://push2.eastmoney.com/api/qt/clist/get"
+        # push2.eastmoney.com 被 Clash TUN 拦截，用 push2his 替代
+        url = ("https://push2his.eastmoney.com/api/qt/clist/get"
                "?pn=1&pz=10&po=1&np=1&fltt=2&invt=2&fid=f3&fs=m:90+t:3"
                "&fields=f2,f3,f12,f14,f104,f105")
         data = _em_fetch(url, timeout=15)
@@ -184,7 +200,13 @@ def fetch_market_sentiment() -> dict:
         }
     except Exception as e:
         logger.warning(f"概念板块获取失败: {e}")
-        result["dimensions"]["hot_boards"] = {"label": "概念板块", "count": 0, "boards": [], "status": "unavailable"}
+        result["dimensions"]["hot_boards"] = {
+            "label": "概念板块",
+            "count": 0,
+            "boards": [],
+            "status": "unavailable",
+            "message": "概念板块数据需 push2.eastmoney.com，当前网络环境下不可用。如需恢复，可将 push2.eastmoney.com 加入 Clash 代理绕过列表。",
+        }
 
     # 综合情绪评分 (粗略)
     score = 50

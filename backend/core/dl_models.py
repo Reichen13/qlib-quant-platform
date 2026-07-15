@@ -6,7 +6,7 @@
 - hist: HIST — 图神经网络，股票间关系建模
 - transformer: Transformer/Localformer — 多头注意力
 - tra: TRA — 市场状态自适应
-- ddg_da: DDG-DA — 分布偏移适应
+- gru: GRU — 门控循环单元，简洁高效
 
 模型存储: ~/.qlib/dl_models/{name}/model.pkl + config.json
 """
@@ -96,19 +96,20 @@ MODEL_REGISTRY: dict = {
             "early_stop": 10,
         },
     },
-    "ddg_da": {
-        "name": "DDG-DA",
-        "full_name": "Distribution Drift-Guided Domain Adaptation",
-        "description": "分布偏移适应模型，通过域适应技术减少训练集和测试集之间的分布差异",
-        "category": "域适应",
-        "paper": "DDG-DA: Distribution Drift Adaptation for Stock Prediction",
-        "best_for": ["长回测期", "市场结构变化"],
+    "gru": {
+        "name": "GRU",
+        "full_name": "Gated Recurrent Unit",
+        "description": "门控循环单元，结构简洁计算高效，擅长捕抓短u671f依u8d56关系。对波段交易者是不错的基u7ebfu6a21u578b。",
+        "category": "时序",
+        "paper": "Empirical Evaluation of Gated Recurrent Neural Networks on Sequence Modeling",
+        "best_for": ["短u671fu8d8bu52bf", "快u901fu8badu7ec3"],
         "default_config": {
             "d_feat": 158,
             "hidden_size": 64,
-            "alpha": 0.1,
+            "num_layers": 2,
+            "dropout": 0.0,
             "n_epochs": 50,
-            "lr": 0.0005,
+            "lr": 0.001,
             "early_stop": 10,
         },
     },
@@ -286,14 +287,17 @@ def _run_training(task_id: str, model_name: str, config: dict, model_dir: Path):
 
         _update("正在准备数据...", 0.05)
 
-        # 获取沪深300成分股
-        instruments = D.list_instruments(D.instruments("csi300"), as_list=True)
+        # 获取核心研究池（约650只，非官方沪深300）
+        from core.universe import DEFAULT_UNIVERSE, ensure_core650_instruments
+        ensure_core650_instruments()
+        instruments = D.list_instruments(D.instruments(DEFAULT_UNIVERSE), as_list=True)
 
         # 数据集配置
         today = datetime.now()
         end_time = today.strftime("%Y-%m-%d")
-        train_end = (today - timedelta(days=60)).strftime("%Y-%m-%d")
         train_start = (today - timedelta(days=365 * 2)).strftime("%Y-%m-%d")
+        valid_start = (today - timedelta(days=120)).strftime("%Y-%m-%d")
+        valid_end = (today - timedelta(days=60)).strftime("%Y-%m-%d")
 
         handler_conf = {
             "class": "Alpha158",
@@ -302,7 +306,7 @@ def _run_training(task_id: str, model_name: str, config: dict, model_dir: Path):
                 "start_time": train_start,
                 "end_time": end_time,
                 "fit_start_time": train_start,
-                "fit_end_time": train_end,
+                "fit_end_time": valid_start,
                 "instruments": instruments,
             },
         }
@@ -316,8 +320,9 @@ def _run_training(task_id: str, model_name: str, config: dict, model_dir: Path):
             "kwargs": {
                 "handler": handler,
                 "segments": {
-                    "train": (train_start, train_end),
-                    "test": (train_end, end_time),
+                    "train": (train_start, valid_start),
+                    "valid": (valid_start, valid_end),
+                    "test": (valid_end, end_time),
                 },
             },
         }
@@ -338,9 +343,9 @@ def _run_training(task_id: str, model_name: str, config: dict, model_dir: Path):
         elif model_name == "tra":
             model_class = "TRA"
             model_module = "qlib.contrib.model.pytorch_tra"
-        elif model_name == "ddg_da":
-            model_class = "DDG_DA"
-            model_module = "qlib.contrib.model.pytorch_ddg_da"
+        elif model_name == "gru":
+            model_class = "GRU"
+            model_module = "qlib.contrib.model.pytorch_gru"
         else:
             model_class = "LGBModel"
             model_module = "qlib.contrib.model.gbdt"
@@ -400,6 +405,249 @@ def _run_training(task_id: str, model_name: str, config: dict, model_dir: Path):
             })
             task_snapshot = _training_tasks[task_id].copy()
         _persist_training_task(task_id, task_snapshot)
+
+
+
+_prediction_tasks: dict = {}
+_prediction_lock = threading.Lock()
+
+
+def start_prediction(model_name: str, top_n: int = 20) -> str:
+    """启动异步预测任务，使用已训练的 DL 模型对最新数据运行推理。
+
+    Returns:
+        task_id
+    """
+    task_id = str(uuid.uuid4())[:8]
+
+    if model_name not in MODEL_REGISTRY:
+        raise ValueError(f"未知模型: {model_name}")
+
+    model_path = MODEL_BASE / model_name / "model.pkl"
+    if not model_path.exists():
+        raise ValueError(f"模型 {model_name} 尚未训练，请先训练再预测")
+
+    with _prediction_lock:
+        _prediction_tasks[task_id] = {
+            "status": "running",
+            "model": model_name,
+            "top_n": top_n,
+            "started_at": datetime.now().isoformat(),
+            "progress": 0.0,
+            "message": f"启动 {model_name} 预测...",
+        }
+
+    thread = threading.Thread(
+        target=_run_prediction,
+        args=(task_id, model_name, top_n),
+        daemon=True,
+    )
+    thread.start()
+    return task_id
+
+
+def _run_prediction(task_id: str, model_name: str, top_n: int):
+    """后台预测线程。"""
+    try:
+        import pickle
+        import qlib
+        from qlib.data import D
+        from qlib.data.dataset import DatasetH
+        from qlib.data.dataset.handler import DataHandlerLP
+        from qlib.utils import init_instance_by_config
+        import pandas as pd
+        from datetime import datetime, timedelta
+
+        from stock_names import get_stock_name
+
+        def _update(msg, progress):
+            with _prediction_lock:
+                _prediction_tasks[task_id]["message"] = msg
+                _prediction_tasks[task_id]["progress"] = min(progress, 1.0)
+            _persist_prediction(task_id)
+
+        _update("正在加载模型...", 0.05)
+
+        model_path = MODEL_BASE / model_name / "model.pkl"
+        with open(model_path, "rb") as f:
+            model = pickle.load(f)
+
+        _update("正在准备 Alpha158 特征...", 0.15)
+
+        from core.universe import DEFAULT_UNIVERSE, ensure_core650_instruments
+        ensure_core650_instruments()
+        instruments = D.list_instruments(D.instruments(DEFAULT_UNIVERSE), as_list=True)
+
+        today = datetime.now()
+        end_time = today.strftime("%Y-%m-%d")
+        start_time = (today - timedelta(days=365)).strftime("%Y-%m-%d")
+
+        handler_conf = {
+            "class": "Alpha158",
+            "module_path": "qlib.contrib.data.handler",
+            "kwargs": {
+                "start_time": start_time,
+                "end_time": end_time,
+                "fit_start_time": start_time,
+                "fit_end_time": start_time,
+                "instruments": instruments,
+            },
+        }
+        handler = init_instance_by_config(handler_conf)
+
+        dataset_conf = {
+            "class": "DatasetH",
+            "module_path": "qlib.data.dataset",
+            "kwargs": {
+                "handler": handler,
+                "segments": {
+                    "test": (start_time, end_time),
+                },
+            },
+        }
+        dataset = init_instance_by_config(dataset_conf)
+
+        _update("正在运行模型预测...", 0.50)
+
+        predictions = model.predict(dataset, segment="test")
+
+        _update("正在整理预测结果...", 0.80)
+
+        if not hasattr(predictions, "index"):
+            predictions = pd.Series(predictions)
+
+        pred_date = end_time
+        if hasattr(predictions.index, "get_level_values"):
+            datetime_level = None
+            for level_name in ["datetime", "time", "date"]:
+                try:
+                    datetime_level = predictions.index.get_level_values(level_name)
+                    break
+                except (KeyError, AttributeError):
+                    continue
+
+            if datetime_level is not None and hasattr(datetime_level, "max"):
+                latest_date = datetime_level.max()
+                mask = datetime_level == latest_date
+                predictions = predictions[mask]
+                pred_date = str(latest_date)[:10]
+
+        sorted_preds = predictions.sort_values(ascending=False)
+        top = sorted_preds.head(top_n)
+
+        results = []
+        for idx, val in top.items():
+            code = idx
+            if isinstance(idx, tuple):
+                code = idx[0]
+            code_str = str(code)
+            try:
+                name = get_stock_name(code_str) or code_str
+            except Exception:
+                name = code_str
+            results.append({
+                "code": code_str,
+                "name": name,
+                "score": round(float(val), 6),
+            })
+
+        with _prediction_lock:
+            _prediction_tasks[task_id].update({
+                "status": "completed",
+                "progress": 1.0,
+                "message": f"{model_name} 预测完成，返回前 {len(results)} 只股票",
+                "predictions": results,
+                "pred_date": pred_date,
+            })
+        _persist_prediction(task_id)
+        logger.info(f"DL 预测完成: {model_name} (task={task_id}), top-{len(results)}")
+
+    except Exception as e:
+        logger.error(f"DL 预测失败 ({model_name}): {e}")
+        with _prediction_lock:
+            _prediction_tasks[task_id].update({
+                "status": "failed",
+                "progress": 0.0,
+                "message": f"预测失败: {e}",
+            })
+        _persist_prediction(task_id)
+
+
+def _persist_prediction(task_id: str):
+    with _prediction_lock:
+        task = _prediction_tasks.get(task_id)
+        if task is None:
+            return
+        snapshot = task.copy()
+    try:
+        import json
+        dl_training_task_store.init_db()
+        existing = dl_training_task_store.get_task(task_id)
+        payload = json.dumps(snapshot, ensure_ascii=False, default=str)
+        if existing is None:
+            dl_training_task_store.create_task(task_id, payload)
+        else:
+            dl_training_task_store.set_running(task_id, int(snapshot.get("progress", 0) * 100), payload)
+    except Exception:
+        pass
+
+
+def get_prediction_status(task_id: str) -> dict | None:
+    """获取预测任务状态。"""
+    with _prediction_lock:
+        task = _prediction_tasks.get(task_id)
+        if task is not None:
+            return task.copy()
+
+    try:
+        import json
+        dl_training_task_store.init_db()
+        row = dl_training_task_store.get_task(task_id)
+        if row is None:
+            return None
+        payload = {}
+        if row.get("result_json"):
+            try:
+                payload = json.loads(row["result_json"])
+            except Exception:
+                payload = {}
+        if not payload and row.get("params_json"):
+            try:
+                payload = json.loads(row["params_json"])
+            except Exception:
+                payload = {}
+        return {
+            **payload,
+            "task_id": task_id,
+            "status": payload.get("status") or row.get("status"),
+            "progress": payload.get("progress") if payload.get("progress") is not None else row.get("progress"),
+        }
+    except Exception:
+        return None
+
+
+def get_latest_prediction(model_name: str) -> dict | None:
+    """返回某个模型最近一次完成的预测结果。"""
+    import json
+    dl_training_task_store.init_db()
+    tasks = dl_training_task_store.list_tasks(limit=50)
+    for row in tasks:
+        result_json = row.get("result_json") or ""
+        if not result_json:
+            continue
+        try:
+            payload = json.loads(result_json)
+        except Exception:
+            continue
+        if (
+            payload.get("model") == model_name
+            and payload.get("status") == "completed"
+            and "predictions" in payload
+        ):
+            return payload
+    return None
+
+
 
 
 def get_training_status(task_id: str) -> dict | None:

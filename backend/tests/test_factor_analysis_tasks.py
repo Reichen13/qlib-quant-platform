@@ -2,6 +2,7 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -36,7 +37,7 @@ from backend.models.schemas import FactorAnalysisResponse, FactorIC
 class FactorAnalysisTaskTests(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
-        self.store = TaskStore(Path(self.tmp_dir.name) / "factor_tasks.db")
+        self.store = TaskStore(Path(self.tmp_dir.name) / "factor_tasks.db", table_name="factor_analysis_tasks")
         self.store.init_db()
         self.store_patch = patch.object(factors, "factor_task_store", self.store, create=True)
         self.store_patch.start()
@@ -59,7 +60,12 @@ class FactorAnalysisTaskTests(unittest.TestCase):
             summary={"total_factors": 1},
         )
 
-        with patch.object(factors, "_run_factor_analysis", return_value=result):
+        def fast_analysis(_params, progress_cb=None):
+            if progress_cb:
+                progress_cb(40, "mid")
+            return result
+
+        with patch.object(factors, "_run_factor_analysis", side_effect=fast_analysis):
             submit = self.client.post(
                 "/api/factors/analyze/submit",
                 json={
@@ -74,7 +80,7 @@ class FactorAnalysisTaskTests(unittest.TestCase):
             task_id = submit.json()["task_id"]
 
             status = None
-            for _ in range(20):
+            for _ in range(40):
                 status = self.client.get(f"/api/factors/analyze/status/{task_id}")
                 if status.json().get("status") == "completed":
                     break
@@ -99,7 +105,9 @@ class FactorAnalysisTaskTests(unittest.TestCase):
         )
         release_analysis = threading.Event()
 
-        def slow_analysis(_params):
+        def slow_analysis(_params, progress_cb=None):
+            if progress_cb:
+                progress_cb(30, "waiting")
             release_analysis.wait(timeout=3)
             return result
 
@@ -125,7 +133,7 @@ class FactorAnalysisTaskTests(unittest.TestCase):
             self.assertEqual(status.json()["status"], "running")
 
             release_analysis.set()
-            for _ in range(20):
+            for _ in range(40):
                 status = self.client.get(f"/api/factors/analyze/status/{task_id}")
                 if status.json().get("status") == "completed":
                     break
@@ -137,6 +145,27 @@ class FactorAnalysisTaskTests(unittest.TestCase):
         status = self.client.get("/api/factors/analyze/status/not-found")
 
         self.assertEqual(status.status_code, 404)
+
+    def test_stale_running_task_marked_failed_on_status(self):
+        task_id = "stale-zombie-task"
+        # 超过 FACTOR_TASK_STALE_MINUTES（45）无心跳
+        old = (datetime.now(timezone.utc) - timedelta(minutes=50)).isoformat()
+        self.store.create_task(task_id, "{}")
+        # 直接改时间戳模拟僵尸
+        import sqlite3
+        conn = sqlite3.connect(self.store._db_path)
+        conn.execute(
+            f"UPDATE {self.store._table_name} SET status='running', progress=45, created_at=?, updated_at=? WHERE task_id=?",
+            (old, old, task_id),
+        )
+        conn.commit()
+        conn.close()
+
+        status = self.client.get(f"/api/factors/analyze/status/{task_id}")
+        self.assertEqual(status.status_code, 200)
+        body = status.json()
+        self.assertEqual(body["status"], "failed")
+        self.assertIn("中断", body["error"])
 
 
 if __name__ == "__main__":

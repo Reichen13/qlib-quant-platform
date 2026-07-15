@@ -46,21 +46,54 @@ def _default_start_date(end_dt: pd.Timestamp, frequency: str) -> pd.Timestamp:
     return end_dt - timedelta(days=default_days)
 
 
+def _row_adjust_divisor(close: float, row_factor: float | None, latest_real_factor: float) -> float:
+    """Per-row divisor to convert stored price toward user-facing forward price.
+
+    Canonical storage: back-adjusted close with cumulative factor > 1.
+    Explicit factor≈1.0 rows are treated as already market/forward scale (do not divide).
+    When $factor column is missing, fall back to latest real cumulative factor.
+    """
+    if row_factor is not None:
+        if row_factor > 1.01:
+            return row_factor
+        # placeholder / forward tail written with factor=1.0
+        return 1.0
+    if latest_real_factor > 1.01 and close > 0:
+        fwd = close / latest_real_factor
+        if fwd >= 1.0:
+            return latest_real_factor
+    return 1.0
+
+
 def _build_price_frame(df: pd.DataFrame, code: str = "") -> pd.DataFrame:
-    """从 Qlib DataFrame 构建价格帧，自动换算后复权→前复权（≈真实市价）。"""
+    """Build user-facing forward-adjusted price frame from Qlib OHLC (+ optional $factor)."""
     from core.price_adjust import get_latest_factor
-    factor = get_latest_factor(code) if code else 1.0
-    if factor < 1.0001:
-        factor = 1.0  # 无需换算
+
+    latest_real_factor = get_latest_factor(code) if code else 1.0
+    has_factor_col = "$factor" in df.columns
     records = []
     for idx, row in df.iterrows():
         date_val = idx[1] if isinstance(idx, tuple) else idx
+        o = float(row["$open"]) if pd.notna(row["$open"]) else 0.0
+        h = float(row["$high"]) if pd.notna(row["$high"]) else 0.0
+        l = float(row["$low"]) if pd.notna(row["$low"]) else 0.0
+        c = float(row["$close"]) if pd.notna(row["$close"]) else 0.0
+
+        row_factor = None
+        if has_factor_col and pd.notna(row.get("$factor")):
+            try:
+                row_factor = float(row["$factor"])
+            except (TypeError, ValueError):
+                row_factor = None
+
+        adj = _row_adjust_divisor(c, row_factor, latest_real_factor)
+
         records.append({
             "date": pd.to_datetime(date_val),
-            "open": round(float(row["$open"]) / factor, 2) if pd.notna(row["$open"]) else 0.0,
-            "high": round(float(row["$high"]) / factor, 2) if pd.notna(row["$high"]) else 0.0,
-            "low": round(float(row["$low"]) / factor, 2) if pd.notna(row["$low"]) else 0.0,
-            "close": round(float(row["$close"]) / factor, 2) if pd.notna(row["$close"]) else 0.0,
+            "open": round(o / adj, 2) if o else 0.0,
+            "high": round(h / adj, 2) if h else 0.0,
+            "low": round(l / adj, 2) if l else 0.0,
+            "close": round(c / adj, 2) if c else 0.0,
             "volume": float(row["$volume"]) if pd.notna(row["$volume"]) else 0.0,
             "amount": float(row["$money"]) if pd.notna(row["$money"]) else None,
         })
@@ -179,12 +212,20 @@ async def get_quote(
         end_dt = pd.to_datetime(end_date) if end_date else pd.to_datetime(latest_date_str)
         start_dt = pd.to_datetime(start_date) if start_date else _default_start_date(end_dt, frequency)
 
-        df = D.features(
-            [code_upper],
-            ["$open", "$high", "$low", "$close", "$volume", "$money"],
-            start_time=start_dt.strftime("%Y-%m-%d"),
-            end_time=end_dt.strftime("%Y-%m-%d"),
-        )
+        try:
+            df = D.features(
+                [code_upper],
+                ["$open", "$high", "$low", "$close", "$volume", "$money", "$factor"],
+                start_time=start_dt.strftime("%Y-%m-%d"),
+                end_time=end_dt.strftime("%Y-%m-%d"),
+            )
+        except Exception:
+            df = D.features(
+                [code_upper],
+                ["$open", "$high", "$low", "$close", "$volume", "$money"],
+                start_time=start_dt.strftime("%Y-%m-%d"),
+                end_time=end_dt.strftime("%Y-%m-%d"),
+            )
 
         if df.empty:
             raise HTTPException(status_code=404, detail=f"No quote data for {code_upper}")

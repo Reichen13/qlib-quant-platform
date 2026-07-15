@@ -2,12 +2,13 @@
 因子分析 API - 完整 Alpha158 因子体系 (Qlib 原生)
 """
 
+import json
 import os
 import uuid
 import threading
 from pathlib import Path
-from datetime import date, datetime, timedelta
-from typing import List
+from datetime import date, datetime, timedelta, timezone
+from typing import Callable, List, Optional
 import pandas as pd
 import numpy as np
 import random
@@ -23,6 +24,7 @@ from core.factor_utils import (
     cluster_factors_by_ic,
 )
 from core.alpha158_cache import load_cached_features, save_features_cache
+from core.compat import force_serial_joblib
 
 def _save_icir_cache(factors_ics: list):
     try:
@@ -42,11 +44,20 @@ from db.task_store import TaskStore
 router = APIRouter()
 factor_task_store = TaskStore(Path.home() / ".qlib" / "factor_analysis_tasks.db", table_name="factor_analysis_tasks")
 
+# 因子分析在后台线程跑；无心跳超时视为僵尸（Alpha158 生成可能很久，靠心跳续命）
+FACTOR_TASK_STALE_MINUTES = 45
+FACTOR_TASK_MAX_MINUTES = 90
+FACTOR_TASK_HEARTBEAT_SECONDS = 20
+INTERRUPTED_FACTOR_ERROR = "因子分析任务已中断：服务重启或后台进程退出，请重新提交分析。"
+
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 os.environ['NUMBA_NUM_THREADS'] = '1'
 os.environ['QLIB_NO_MULTI_PROCESS'] = '1'
+os.environ['OMP_NUM_THREADS'] = '1'
+os.environ['JOBLIB_MULTIPROCESSING'] = '0'
+os.environ['LOKY_MAX_CPU_COUNT'] = '1'
 
 # ── 因子类别映射（基于 Alpha158 命名前缀）──
 FACTOR_CATEGORIES = {
@@ -80,10 +91,58 @@ def _sample_stocks(codes: list, n: int = 150) -> list:
     return random.sample(codes, min(n, len(codes)))
 
 
-from core.compat import fix_parallel_ext
+ProgressCallback = Optional[Callable[[int, str], None]]
 
 
-def _run_factor_analysis(params: FactorAnalysisRequest):
+def _emit_progress(progress_cb: ProgressCallback, progress: int, message: str = "") -> None:
+    if progress_cb is None:
+        return
+    try:
+        progress_cb(int(max(0, min(99, progress))), message)
+    except Exception as e:
+        logger.debug(f"进度回调失败: {e}")
+
+
+def _parse_task_time(value: object) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+def _fail_stale_factor_task(task: dict) -> Optional[dict]:
+    """若 running 任务超时/无心跳，标记失败并返回最新 task。"""
+    if not task or task.get("status") != "running":
+        return task
+
+    now = datetime.now(timezone.utc)
+    created = _parse_task_time(task.get("created_at"))
+    updated = _parse_task_time(task.get("updated_at")) or created
+    task_id = task.get("task_id")
+    if not task_id:
+        return task
+
+    if created and now - created > timedelta(minutes=FACTOR_TASK_MAX_MINUTES):
+        msg = (
+            f"因子分析超时（已运行超过 {FACTOR_TASK_MAX_MINUTES} 分钟）。"
+            "常见原因：Alpha158 生成卡死或服务曾重启。请缩短日期区间后重试。"
+        )
+        factor_task_store.set_failed(task_id, msg)
+        return factor_task_store.get_task(task_id)
+
+    if updated and now - updated > timedelta(minutes=FACTOR_TASK_STALE_MINUTES):
+        factor_task_store.set_failed(task_id, INTERRUPTED_FACTOR_ERROR)
+        return factor_task_store.get_task(task_id)
+
+    return task
+
+
+def _run_factor_analysis(params: FactorAnalysisRequest, progress_cb: ProgressCallback = None):
     """
     因子 IC 分析 - 完整 Alpha158 因子 (Qlib 原生)
 
@@ -96,7 +155,8 @@ def _run_factor_analysis(params: FactorAnalysisRequest):
         from qlib.utils import init_instance_by_config
 
         qlib.config.N_PROC = 1
-        fix_parallel_ext()
+        force_serial_joblib(n_jobs=1)
+        _emit_progress(progress_cb, 10, "初始化 Qlib / 串行并行后端")
 
         start_str = str(params.start_date)
         end_str = str(params.end_date)
@@ -105,47 +165,65 @@ def _run_factor_analysis(params: FactorAnalysisRequest):
         logger.info(f"Alpha158 因子分析: {start_str}~{end_str}, 预测期={pred_period}天")
 
         # ── 1. 尝试从缓存加载 Alpha158 特征 ──
-        df_features = load_cached_features(start_str, end_str, "csi300")
+        _emit_progress(progress_cb, 15, "检查 Alpha158 特征缓存")
+        df_features = load_cached_features(start_str, end_str, "core650")
 
         if df_features is None:
             # ── 缓存未命中，使用 Qlib 原生 Alpha158 handler 生成 ──
-            dataset = init_instance_by_config({
-                "class": "DatasetH",
-                "module_path": "qlib.data.dataset",
-                "kwargs": {
-                    "handler": {
-                        "class": "Alpha158",
-                        "module_path": "qlib.contrib.data.handler",
-                        "kwargs": {
-                            "start_time": start_str,
-                            "end_time": end_str,
-                            "fit_start_time": start_str,
-                            "fit_end_time": end_str,
-                            "instruments": "csi300",
+            _emit_progress(progress_cb, 25, "缓存未命中，开始生成 Alpha158（可能数分钟）")
+            logger.info("Alpha158 缓存未命中，开始串行生成特征")
+
+            # joblib threading 后端，避免 daemon 线程内 spawn 子进程卡死
+            try:
+                from joblib import parallel_backend
+                backend_cm = parallel_backend("threading", n_jobs=1)
+            except Exception:
+                from contextlib import nullcontext
+                backend_cm = nullcontext()
+
+            with backend_cm:
+                dataset = init_instance_by_config({
+                    "class": "DatasetH",
+                    "module_path": "qlib.data.dataset",
+                    "kwargs": {
+                        "handler": {
+                            "class": "Alpha158",
+                            "module_path": "qlib.contrib.data.handler",
+                            "kwargs": {
+                                "start_time": start_str,
+                                "end_time": end_str,
+                                "fit_start_time": start_str,
+                                "fit_end_time": end_str,
+                                "instruments": "core650",
+                            },
+                        },
+                        "segments": {
+                            "test": (start_str, end_str),
                         },
                     },
-                    "segments": {
-                        "test": (start_str, end_str),
-                    },
-                },
-            })
+                })
 
-            logger.info("Alpha158 数据集构建完成")
+                _emit_progress(progress_cb, 45, "Alpha158 handler 就绪，准备特征矩阵")
+                logger.info("Alpha158 数据集构建完成")
 
-            df_features = dataset.prepare("test", col_set="feature")
+                df_features = dataset.prepare("test", col_set="feature")
 
-            # 如果 prepare 不可用，直接从 handler 获取
-            if df_features is None or (hasattr(df_features, 'empty') and df_features.empty):
-                handler = dataset.handler
-                df_features = handler.fetch(col_set="feature")
+                # 如果 prepare 不可用，直接从 handler 获取
+                if df_features is None or (hasattr(df_features, 'empty') and df_features.empty):
+                    handler = dataset.handler
+                    df_features = handler.fetch(col_set="feature")
 
             if df_features is not None and not df_features.empty:
-                save_features_cache(df_features, start_str, end_str, "csi300")
+                save_features_cache(df_features, start_str, end_str, "core650")
+                _emit_progress(progress_cb, 55, "Alpha158 特征已写入缓存")
+        else:
+            _emit_progress(progress_cb, 50, "命中 Alpha158 特征缓存")
 
         if df_features is None or df_features.empty:
             raise HTTPException(status_code=500, detail="Alpha158 因子数据为空")
 
         logger.info(f"特征数据: {df_features.shape}, 列数: {len(df_features.columns)}")
+        _emit_progress(progress_cb, 58, f"特征就绪 shape={df_features.shape}")
 
         # ── 3. 获取收盘价计算前向收益 ──
         stock_codes = _sample_stocks(df_features.index.get_level_values("instrument").unique().tolist())
@@ -155,6 +233,7 @@ def _run_factor_analysis(params: FactorAnalysisRequest):
             raise HTTPException(status_code=500, detail="无法获取收盘价数据")
 
         # ── 4. 计算前向收益 ──
+        _emit_progress(progress_cb, 62, "计算前向收益")
         dates = sorted(raw_df.index.get_level_values("datetime").unique())
         n_dates = len(dates)
 
@@ -182,6 +261,7 @@ def _run_factor_analysis(params: FactorAnalysisRequest):
         label_available_until = str(label_dates[-1])[:10] if label_dates else None
 
         # ── 5. 加载行业映射（始终加载，用于行业加权 IC 分解）──
+        _emit_progress(progress_cb, 68, "加载行业映射")
         all_codes = df_features.index.get_level_values("instrument").unique().tolist()
         industry_map = load_industry_mapping(all_codes)
         if params.neutralize == "industry":
@@ -194,10 +274,16 @@ def _run_factor_analysis(params: FactorAnalysisRequest):
         factors_ics = []
         feature_names = [str(c) for c in df_features.columns]
         all_daily_ics = {}  # 收集所有因子的 daily IC 用于聚类
+        n_features = max(len(feature_names), 1)
 
         # 计算全部158个因子IC/ICIR,仅前端返回时截断top_k
-        for feat_name in feature_names:
+        for idx, feat_name in enumerate(feature_names):
             try:
+                # 真实进度 70→94，按因子推进
+                if idx == 0 or (idx + 1) % 10 == 0 or idx + 1 == n_features:
+                    pct = 70 + int(24 * (idx + 1) / n_features)
+                    _emit_progress(progress_cb, pct, f"计算因子 IC {idx + 1}/{n_features}")
+
                 feat_col = df_features[feat_name] if feat_name in df_features.columns else df_features.iloc[:, feature_names.index(feat_name)]
 
                 # ── 可选中性化 ──
@@ -274,6 +360,7 @@ def _run_factor_analysis(params: FactorAnalysisRequest):
         # 按 |IC| 排序
         factors_ics.sort(key=lambda x: abs(x.ic), reverse=True)
 
+        _emit_progress(progress_cb, 96, "写入 ICIR 缓存并聚类")
         _save_icir_cache(factors_ics)
 
         # ── 因子层次聚类降维 ──
@@ -326,17 +413,54 @@ def analyze_factors(params: FactorAnalysisRequest):
 
 
 def _run_factor_analysis_task(task_id: str, params: FactorAnalysisRequest):
+    """后台执行因子分析：真实阶段进度 + 心跳刷新 updated_at。"""
+    stop_heartbeat = threading.Event()
+    latest_progress = [8]
+
+    def _heartbeat() -> None:
+        """长耗时 Alpha158 期间也持续刷新 updated_at，避免被误判为僵尸。"""
+        while not stop_heartbeat.wait(FACTOR_TASK_HEARTBEAT_SECONDS):
+            try:
+                factor_task_store.update_progress(task_id, int(latest_progress[0]))
+            except Exception:
+                return
+
     try:
-        factor_task_store.create_task(task_id, params.model_dump_json())
-        factor_task_store.update_progress(task_id, 20)
-        result = _run_factor_analysis(params)
-        factor_task_store.set_completed(task_id, result.model_dump_json())
+        # 任务已在 submit 时 create；此处只推进进度
+        factor_task_store.set_running(task_id, 8)
+        hb = threading.Thread(
+            target=_heartbeat,
+            daemon=True,
+            name=f"factor-heartbeat-{task_id[:8]}",
+        )
+        hb.start()
+
+        def _on_progress(progress: int, message: str = "") -> None:
+            try:
+                latest_progress[0] = int(max(0, min(99, progress)))
+                factor_task_store.update_progress(task_id, latest_progress[0])
+                if message:
+                    logger.info(f"因子分析 {task_id[:8]} [{latest_progress[0]}%] {message}")
+            except Exception as e:
+                logger.debug(f"更新因子进度失败: {e}")
+
+        result = _run_factor_analysis(params, progress_cb=_on_progress)
+        # 避免 nan 写入 JSON 后前端/状态接口解析失败
+        payload = result.model_dump(mode="json")
+        factor_task_store.set_completed(task_id, json.dumps(payload, ensure_ascii=False, allow_nan=False))
+        logger.info(f"因子分析任务 {task_id[:8]} 完成")
     except HTTPException as e:
         detail = e.detail if isinstance(e.detail, str) else str(e.detail)
         factor_task_store.set_failed(task_id, detail)
+    except ValueError as e:
+        # allow_nan=False 触发时给出可读错误
+        logger.error(f"因子分析任务 {task_id} 序列化失败: {e}")
+        factor_task_store.set_failed(task_id, f"结果含无效数值(nan/inf): {e}")
     except Exception as e:
         logger.error(f"因子分析任务 {task_id} 失败: {e}")
         factor_task_store.set_failed(task_id, str(e))
+    finally:
+        stop_heartbeat.set()
 
 
 def _start_factor_analysis_thread(task_id: str, params: FactorAnalysisRequest):
@@ -366,13 +490,13 @@ def submit_factor_analysis(params: FactorAnalysisRequest):
         "task_id": task_id,
         "status": "running",
         "progress": 5,
-        "message": "因子分析任务已启动",
+        "message": "因子分析任务已启动（串行 Alpha158 + 真实阶段进度）",
     }
 
 
 @router.get("/analyze/status/{task_id}")
 def get_factor_analysis_status(task_id: str):
-    """查询因子分析后台任务状态。"""
+    """查询因子分析后台任务状态；自动识别僵尸/超时任务。"""
     try:
         factor_task_store.init_db()
     except Exception as e:
@@ -380,9 +504,11 @@ def get_factor_analysis_status(task_id: str):
 
     task = factor_task_store.get_task(task_id)
     if task is None:
-        raise HTTPException(status_code=404, detail="任务不存在")
+        raise HTTPException(status_code=404, detail="任务不存在，请重新提交分析")
 
-    if task["status"] == "completed" and task["result_json"]:
+    task = _fail_stale_factor_task(task) or task
+
+    if task["status"] == "completed" and task.get("result_json"):
         return {
             "task_id": task_id,
             "status": "completed",
@@ -393,14 +519,14 @@ def get_factor_analysis_status(task_id: str):
         return {
             "task_id": task_id,
             "status": "failed",
-            "progress": 0,
-            "error": task["error"],
+            "progress": int(task.get("progress") or 0),
+            "error": task.get("error") or "因子分析失败",
         }
 
     return {
         "task_id": task_id,
         "status": "running",
-        "progress": task["progress"],
+        "progress": int(task.get("progress") or 0),
     }
 
 
@@ -462,7 +588,7 @@ def factor_correlation(request: FactorAnalysisRequest):
                 "end_time": end_date,
                 "fit_start_time": start_date,
                 "fit_end_time": end_date,
-                "instruments": "csi300",
+                "instruments": "core650",
                 "infer_processors": [
                     {"class": "RobustZScoreNorm", "kwargs": {"fields_group": "feature", "clip_outlier": True}},
                     {"class": "Fillna", "kwargs": {"fields_group": "feature"}},
@@ -478,7 +604,7 @@ def factor_correlation(request: FactorAnalysisRequest):
         handler = init_instance_by_config(handler_conf)
 
         # 获取因子数据
-        instruments = D.instruments("csi300")
+        instruments = D.instruments("core650")
         df = handler.fetch()
 
         if df is None or df.empty:
@@ -597,7 +723,7 @@ def factor_quantile_returns(
                         "end_time": end_date,
                         "fit_start_time": start_date,
                         "fit_end_time": end_date,
-                        "instruments": "csi300",
+                        "instruments": "core650",
                     },
                 },
                 "segments": {"test": (start_date, end_date)},
@@ -743,7 +869,7 @@ def factor_decay(request: FactorAnalysisRequest):
                         "end_time": end_str,
                         "fit_start_time": start_str,
                         "fit_end_time": end_str,
-                        "instruments": "csi300",
+                        "instruments": "core650",
                     },
                 },
                 "segments": {"test": (start_str, end_str)},
@@ -862,7 +988,7 @@ def combine_signals(request: FactorAnalysisRequest):
                         "end_time": end_str,
                         "fit_start_time": start_str,
                         "fit_end_time": end_str,
-                        "instruments": "csi300",
+                        "instruments": "core650",
                     },
                 },
                 "segments": {"test": (start_str, end_str)},
@@ -1002,7 +1128,7 @@ def factor_detail(factor_name: str, start_date: str, end_date: str, predict_peri
                         "end_time": end_date,
                         "fit_start_time": start_date,
                         "fit_end_time": end_date,
-                        "instruments": "csi300",
+                        "instruments": "core650",
                     },
                 },
                 "segments": {"test": (start_date, end_date)},

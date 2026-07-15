@@ -29,15 +29,34 @@ def get_stock_name(code: str) -> str:
         return code
 
 
+def _safe_json_float(value, digits: int | None = None) -> float | None:
+    """将数值转为 JSON 安全的有限 float；nan/inf 返回 None。"""
+    try:
+        if value is None:
+            return None
+        f = float(value)
+        if not np.isfinite(f):
+            return None
+        if digits is not None:
+            return round(f, digits)
+        return f
+    except (TypeError, ValueError):
+        return None
+
+
 def calc_rsi(prices: pd.Series, period: int = 14) -> pd.Series:
-    """计算 RSI 指标"""
+    """计算 RSI 指标（loss=0 时安全处理，避免 nan/inf）"""
     delta = prices.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
 
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
+    # loss=0 且 gain>0 → RSI=100；两者都为 0 → 中性 50
+    rsi = pd.Series(np.where(
+        loss == 0,
+        np.where(gain == 0, 50.0, 100.0),
+        100.0 - (100.0 / (1.0 + gain / loss)),
+    ), index=prices.index)
+    return rsi.replace([np.inf, -np.inf], np.nan)
 
 
 def calc_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int = 2) -> Dict:
@@ -47,9 +66,10 @@ def calc_bollinger_bands(prices: pd.Series, period: int = 20, std_dev: int = 2) 
     upper = sma + (std * std_dev)
     lower = sma - (std * std_dev)
 
-    # 计算价格在布林带中的位置 (0-1)
-    bb_position = (prices - lower) / (upper - lower)
-    bb_position = bb_position.fillna(0.5)
+    # 计算价格在布林带中的位置 (0-1)；带宽为 0 时取中位
+    band_width = (upper - lower).replace(0, np.nan)
+    bb_position = (prices - lower) / band_width
+    bb_position = bb_position.replace([np.inf, -np.inf], np.nan).fillna(0.5)
 
     return {
         "upper": upper,
@@ -85,9 +105,12 @@ def _get_scan_universe() -> list[str]:
         if codes:
             return list(dict.fromkeys(codes))
 
-    csi300_file = data_dir / "instruments" / "csi300.txt"
-    if csi300_file.exists():
-        with open(csi300_file, encoding="utf-8") as f:
+    # 回退：核心研究池 core650（兼容旧文件名 csi300.txt）
+    from core.universe import instruments_path, ensure_core650_instruments
+    ensure_core650_instruments(data_dir)
+    pool_file = instruments_path(data_dir, "core650")
+    if pool_file.exists():
+        with open(pool_file, encoding="utf-8") as f:
             return [
                 normalize_stock_code(line.strip().split("\t")[0], target="qlib")
                 for line in f
@@ -122,7 +145,7 @@ def scan_mean_reversion_signals(
 
         scan_codes = stock_codes or _get_scan_universe()
 
-        for code in scan_codes[:200]:  # 控制单次扫描耗时，同时避免只绑定 CSI300
+        for code in scan_codes[:200]:  # 控制单次扫描耗时
             try:
                 # 获取价格数据
                 df = D.features(
@@ -142,11 +165,15 @@ def scan_mean_reversion_signals(
 
                 # 计算 RSI
                 rsi = calc_rsi(prices)
-                current_rsi = rsi.iloc[-1]
+                current_rsi = _safe_json_float(rsi.iloc[-1], digits=1)
 
                 # 计算布林带
                 bb = calc_bollinger_bands(prices, bollinger_period)
-                bb_pos = bb["position"].iloc[-1]
+                bb_pos = _safe_json_float(bb["position"].iloc[-1], digits=2)
+
+                # 指标不可用则跳过，避免 JSON nan 导致 500
+                if current_rsi is None or bb_pos is None:
+                    continue
 
                 # 确定信号
                 signal = "关注"
@@ -188,8 +215,8 @@ def scan_mean_reversion_signals(
                 signals.append({
                     "code": code,
                     "name": get_stock_name(code),
-                    "rsi": round(float(current_rsi), 1),
-                    "bollingerPosition": round(float(bb_pos), 2),
+                    "rsi": current_rsi,
+                    "bollingerPosition": bb_pos,
                     "signal": signal,
                     "score": score,
                     "strength": strength
@@ -277,8 +304,11 @@ async def get_stock_signal(
         rsi = calc_rsi(prices)
         bb = calc_bollinger_bands(prices, bollinger_period)
 
-        current_rsi = float(rsi.iloc[-1])
-        bb_pos = float(bb["position"].iloc[-1])
+        current_rsi = _safe_json_float(rsi.iloc[-1], digits=1)
+        bb_pos = _safe_json_float(bb["position"].iloc[-1], digits=2)
+        price = _safe_json_float(prices.iloc[-1], digits=4)
+        if current_rsi is None or bb_pos is None or price is None:
+            raise HTTPException(status_code=404, detail="指标数据无效（价格序列不足或含缺失）")
 
         # 确定信号
         is_overbought_rsi = current_rsi > rsi_threshold
@@ -305,11 +335,11 @@ async def get_stock_signal(
         return {
             "code": code,
             "name": get_stock_name(code),
-            "rsi": round(current_rsi, 1),
-            "bollingerPosition": round(bb_pos, 2),
+            "rsi": current_rsi,
+            "bollingerPosition": bb_pos,
             "signal": signal,
             "strength": strength,
-            "price": float(prices.iloc[-1]),
+            "price": price,
             "rsiThreshold": rsi_threshold,
             "bollingerPeriod": bollinger_period
         }
@@ -333,16 +363,18 @@ async def get_summary():
         # 计算统计信息
         signals = result.get("signals", [])
 
-        avg_rsi = 0
+        avg_rsi = 0.0
         if signals:
-            avg_rsi = sum(s["rsi"] for s in signals) / len(signals)
+            rsi_vals = [s["rsi"] for s in signals if s.get("rsi") is not None]
+            if rsi_vals:
+                avg_rsi = sum(rsi_vals) / len(rsi_vals)
 
         return {
             "overbought": result.get("overbought", 0),
             "oversold": result.get("oversold", 0),
             "watch": result.get("watch", 0),
             "total": result.get("total", 0),
-            "avgRsi": round(avg_rsi, 1),
+            "avgRsi": _safe_json_float(avg_rsi, digits=1) or 0.0,
             "date": datetime.now().strftime("%Y-%m-%d")
         }
 
