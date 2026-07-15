@@ -68,7 +68,10 @@ async def _derive_candidate_inputs(candidate: TurtleCandidate, atr_period: int) 
     if entry_price and atr:
         return normalized_code, name, entry_price, atr, data_status, warning
 
-    quote_response = await get_quote(normalized_code, start_date=None, end_date=None, frequency="daily", indicators=False)
+    # Use a short window (~40 trading days) to avoid price-adjustment gaps in ATR
+    from datetime import timedelta
+    start_dt = (pd.Timestamp.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+    quote_response = await get_quote(normalized_code, start_date=str(start_dt), end_date=None, frequency="daily", indicators=False)
     quote_dict = _as_dict(quote_response)
     rows = [_as_dict(row) for row in quote_dict.get("data", [])]
     if not rows:

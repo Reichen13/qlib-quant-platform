@@ -307,7 +307,11 @@ def run_backtest_task(task_id: str, params: BacktestParams):
     - 科创板/创业板: 自动排除（±20% 涨跌幅不匹配 0.095 阈值）
     """
     try:
+        from core.universe import resolve_universe, universe_label, ensure_core650_instruments, DEFAULT_UNIVERSE
+
         params.model = validate_backtest_model_available(params.model)
+        params.universe = resolve_universe(params.universe or DEFAULT_UNIVERSE)
+        ensure_core650_instruments()
         task_store.init_db()
         if task_store.get_task(task_id) is None:
             task_store.create_task(task_id, params.model_dump_json())
@@ -315,7 +319,7 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         import qlib
         from qlib.utils import init_instance_by_config
         from qlib.contrib.evaluate import backtest_daily
-        from qlib.contrib.strategy import TopkDropoutStrategy
+        # TopkDropout imported via core.periodic_topk
 
         # 单线程模式，避免多进程冲突
         qlib.config.N_PROC = 1
@@ -426,21 +430,24 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         task_store.update_progress(task_id, 60)
 
         # ── 执行回测 ──
-        # 获取沪深300成分股并运行A股约束检测
+        # 获取研究股票池成分并运行A股约束检测（默认 core650 核心研究池，非官方沪深300）
         instruments = D.instruments(params.universe)
-        logger.info(f"回测股票池: {params.universe}, 成分数: {len(D.list_instruments(instruments, as_list=True))}")
-        all_csi300 = D.list_instruments(instruments, as_list=True)
-        constraint_analysis = _check_a_share_constraints(all_csi300, safe_train_start, safe_backtest_end)
+        universe_codes = D.list_instruments(instruments, as_list=True)
+        logger.info(
+            f"回测股票池: {params.universe} ({universe_label(params.universe)}), "
+            f"成分数: {len(universe_codes)}"
+        )
+        constraint_analysis = _check_a_share_constraints(universe_codes, safe_train_start, safe_backtest_end)
 
         task_store.update_progress(task_id, 65)
 
         # 涨跌停阈值：Qlib 0.9.7 exchange 支持 flat float 阈值
         # 分板阈值通过 universe 过滤 + 单阈值近似实现：
-        # - 沪深300/中证500(主板为主): 0.099(±10%)
+        # - 核心研究池/中证500扩展(主板为主): 0.099(±10%)
         # - 全市场/含科创板创业板: 0.195(±20%宽松阈值，避免误判)
         has_chi_next = any(
             c.startswith(("SH688", "SZ300", "SZ301"))
-            for c in all_csi300
+            for c in universe_codes
         )
         limit_threshold = 0.195 if (params.universe == "all" or has_chi_next) else 0.099
         logger.info(f"涨跌停阈值: {limit_threshold} (universe={params.universe}, 含科创创业={has_chi_next})")
@@ -457,10 +464,22 @@ def run_backtest_task(task_id: str, params: BacktestParams):
             "impact_cost": 0.001,  # 市场冲击成本 0.1%/次
         }
 
-        # TopkDropoutStrategy: topk=持仓数, n_drop=每次调仓换手数
+        # TopkDropout + 真实调仓周期：非调仓日空单持有（见 core.periodic_topk）
+        from core.periodic_topk import build_periodic_topk_strategy, resolve_n_drop
+
         topk = params.hold_num
-        n_drop = max(1, topk // 5)  # 每次换手约20%持仓
-        strategy = TopkDropoutStrategy(topk=topk, n_drop=n_drop, signal=pred)
+        rebalance_days = max(1, int(params.turnover))
+        n_drop = resolve_n_drop(topk, rebalance_days)
+        strategy = build_periodic_topk_strategy(
+            topk=topk,
+            n_drop=n_drop,
+            signal=pred,
+            rebalance_days=rebalance_days,
+        )
+        logger.info(
+            f"回测调仓口径: rebalance_days={rebalance_days}, topk={topk}, n_drop={n_drop} "
+            f"(每{rebalance_days}个交易日调仓一次，换出约{n_drop}/{topk}只)"
+        )
 
         task_store.update_progress(task_id, 70)
 
@@ -537,45 +556,42 @@ def run_backtest_task(task_id: str, params: BacktestParams):
         tracking_error = (r_net - bench).std() * np.sqrt(252)
         information_ratio = ((r_net - bench).mean() * 252) / tracking_error if tracking_error > 0 else 0
 
-        # Sortino 比率（使用下行标准差）
+        # Sortino 比率（净收益口径）
         downside = r_net[r_net < 0]
         downside_std = downside.std() * np.sqrt(252) if len(downside) > 0 else ann_std
-        sortino = ann_r / downside_std if downside_std > 0 else 0
+        sortino = ann_r_net / downside_std if downside_std > 0 else 0
 
         # 月度胜率
         monthly_r = r_net.resample("ME").apply(lambda x: (1 + x).prod() - 1)
         monthly_win_rate = (monthly_r > 0).mean()
 
-        # ── 交易成本影响估算 ──
-        # 注：turnover 调仓周期参数当前未接入 Qlib TopkDropoutStrategy（日频回测默认每日评估）
+        # ── 交易成本影响估算（与真实 rebalance_days / 报告换手对齐）──
         try:
-            avg_daily_turnover = report["turnover"].mean() if "turnover" in report.columns else 0
-            daily_vol = r.std()
-            # 平方根冲击模型（修正版）: 单次冲击 ≈ σ * sqrt(participation_rate)
-            # participation_rate 取持仓占日成交的比例，保守估计 2%（不再用 Qlib turnover 直接除）
+            avg_daily_turnover = (
+                float(report["turnover"].mean()) if "turnover" in report.columns else 0.0
+            )
+            # 年化双边换手 ≈ 日均换手 * 252（report turnover 已是日度成交/资产）
+            annual_turnover = avg_daily_turnover * 252
+            daily_vol = float(r_net.std()) if len(r_net) else float(r.std())
             participation_rate = 0.02
             estimated_impact_per_trade = daily_vol * np.sqrt(participation_rate)
-            # 年化：按实际调仓频率，不是每天。调仓周期 params.turnover 天一次。
-            rebalance_days = max(int(params.turnover), 1)
+            # 按实际调仓事件次数估算：一年约 252/rebalance_days 次调仓
             trades_per_year = 252 / rebalance_days
-            annual_impact = estimated_impact_per_trade * trades_per_year * 0.5  # 每次调仓半次换手
-            # 钳制到合理区间：单次冲击不超 1%，年化不超 50%（避免短窗口高换手放大成荒诞值）
+            # 每次调仓换出 n_drop/topk 仓位，往返约 2 * fraction
+            fraction = n_drop / max(topk, 1)
+            annual_impact = estimated_impact_per_trade * trades_per_year * fraction
             estimated_impact_per_trade = min(float(estimated_impact_per_trade), 0.01)
             annual_impact = min(float(annual_impact), 0.5)
-            fixed_cost_annual = (params.buy_cost + params.sell_cost) * trades_per_year
-            if annual_impact > fixed_cost_annual * 1.5:
-                cost_impact_estimate = (
-                    f"市场冲击成本估计约 {annual_impact:.2%}/年（单次约 {estimated_impact_per_trade:.2%}，"
-                    f"每 {rebalance_days} 天调仓），高于固定佣金 ({fixed_cost_annual:.2%}/年)。"
-                    f"小盘股实际冲击可达 0.5-1.0%/次，建议据此下调回测收益。"
-                )
-            else:
-                cost_impact_estimate = (
-                    f"市场冲击成本估计约 {annual_impact:.2%}/年，与固定佣金 ({fixed_cost_annual:.2%}/年)接近，"
-                    f"流动性可控。"
-                )
+            fixed_cost_annual = (params.buy_cost + params.sell_cost) * trades_per_year * fraction * 2
+            cost_impact_estimate = (
+                f"调仓口径：每 {rebalance_days} 个交易日调仓一次，每次约换出 {n_drop}/{topk} 只"
+                f"（n_drop≈20%仓）。报告日均换手 {avg_daily_turnover:.2%}，"
+                f"年化换手约 {annual_turnover:.1%}；估计冲击 {annual_impact:.2%}/年，"
+                f"固定费率约 {fixed_cost_annual:.2%}/年。"
+            )
         except Exception:
             cost_impact_estimate = None
+            avg_daily_turnover = 0.0
 
         # ── Brinson 绩效归因 ──
         attribution_result = _compute_brinson_attribution(
@@ -707,13 +723,20 @@ def run_backtest_task(task_id: str, params: BacktestParams):
                 cost_impact_estimate=cost_impact_estimate,
                 cumulative_cost=round(cumulative_cost, 4),
                 price_adjustment_note="后复权历史价 × 复权因子，面向用户价格已换算前复权（=真实市价）",
+                rebalance_days=rebalance_days,
+                n_drop=n_drop,
+                hold_num=topk,
+                rebalance_note=(
+                    f"每 {rebalance_days} 个交易日调仓一次；调仓日换出约 {n_drop}/{topk} 只；"
+                    f"非调仓日空单持有（PeriodicTopkDropout）"
+                ),
                 warnings=result_warnings or None,
             )
         task_store.set_completed(task_id, result.model_dump_json())
 
         # MLflow 实验跟踪：自动记录参数+指标+市场环境标签
         try:
-            strategy_name = params.strategy_name or "qlib_alpha"
+            strategy_name = getattr(params, "strategy_name", None) or f"{params.model}_{params.universe}"
             mlflow.set_experiment(strategy_name)
             with mlflow.start_run(run_name=f"{strategy_name}_{str(start_date)}_{str(end_date)}"):
                 # 参数
@@ -860,7 +883,7 @@ def _compute_brinson_attribution(
     """
     Brinson 绩效归因 — 将超额收益分解为配置效应、选股效应、交互效应
 
-    基准采用 CSI300 等权近似（cn_data 不含成分股权重数据）
+    基准采用研究池等权近似 vs 沪深300指数 SH000300（cn_data 不含官方成分股权重）
     """
     try:
         from qlib.data import D
@@ -876,16 +899,16 @@ def _compute_brinson_attribution(
         if len(dates) < 5:
             return None
 
-        all_csi300 = D.list_instruments(instruments, as_list=True)
+        all_universe = D.list_instruments(instruments, as_list=True)
 
         # 2. 加载行业映射
-        industry_map = load_industry_mapping(all_csi300)
+        industry_map = load_industry_mapping(all_universe)
         if not industry_map:
             return None
 
         # 3. 获取日收益
         close_raw = D.features(
-            all_csi300, ["$close"],
+            all_universe, ["$close"],
             start_time=start_date, end_time=end_date, freq="day",
         )
         if close_raw is None or close_raw.empty:
@@ -901,7 +924,7 @@ def _compute_brinson_attribution(
         for dt_key in sorted(positions_dict.keys()):
             pos = positions_dict[dt_key]
             w = pos.get_stock_weight_dict(only_stock=False)
-            w_filtered = {k: v for k, v in w.items() if k in all_csi300 and v > 0}
+            w_filtered = {k: v for k, v in w.items() if k in all_universe and v > 0}
             if w_filtered:
                 total = sum(w_filtered.values())
                 w_filtered = {k: v / total for k, v in w_filtered.items()}
@@ -940,8 +963,8 @@ def _compute_brinson_attribution(
                 ind = industry_map.get(c, "其他")
                 held_industries[c] = ind
 
-            # CSI300 成分股当日的行业归属（等权基准）
-            valid_csi = [c for c in all_csi300 if c in day_ret.index and pd.notna(day_ret[c])]
+            # 研究池当日的行业归属（等权基准近似）
+            valid_csi = [c for c in all_universe if c in day_ret.index and pd.notna(day_ret[c])]
             if len(valid_csi) < 5:
                 continue
 
@@ -1066,12 +1089,12 @@ def _compute_brinson_attribution(
 
         if total_term > 0:
             interp = (
-                f"回测期间，策略相对CSI300基准取得了 {total_term:.2f}% 的超额收益。"
+                f"回测期间，策略相对沪深300指数(SH000300)取得了 {total_term:.2f}% 的超额收益。"
                 f"其中，{main_type}是主要贡献来源（{main_val:+.2f}%）。"
             )
         else:
             interp = (
-                f"回测期间，策略相对CSI300基准落后 {abs(total_term):.2f}%。"
+                f"回测期间，策略相对沪深300指数(SH000300)落后 {abs(total_term):.2f}%。"
                 f"其中，{main_type}是主要拖累因素（{main_val:+.2f}%）。"
             )
 
@@ -1080,7 +1103,7 @@ def _compute_brinson_attribution(
         else:
             interp += "配置与选股的交互效应较小，两者较为独立。"
 
-        interp += "（注：基准采用CSI300等权近似，非真实市值加权。）"
+        interp += "（注：行业归因中的基准侧采用研究池等权近似；净值对标为沪深300指数 SH000300，非官方市值加权分解。）"
 
         return {
             "summary": {
@@ -1240,6 +1263,15 @@ async def run_backtest(params: BacktestParams, background_tasks: BackgroundTasks
     """
     启动回测任务
     """
+    # 尾部复权污染时禁止回测，避免“漂亮净值”基于假跳空
+    allow_untrusted = bool(getattr(params, "allow_untrusted_data", False))
+    try:
+        from core.data_trust import require_data_trusted
+
+        require_data_trusted(action="backtest_run", allow_untrusted=allow_untrusted)
+    except HTTPException:
+        raise
+
     params.model = validate_backtest_model_available(params.model)
     task_id = str(uuid.uuid4())
     try:

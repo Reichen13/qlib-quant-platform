@@ -461,7 +461,7 @@ async def get_ai_screening_signals(req: AIScreeningSignalsRequest | None = None)
 async def generate_strategy(req: NLStrategyRequest):
     """NL→策略：将自然语言描述转换为回测参数
 
-    示例输入: "买入沪深300成分股中ROE>15%且处于60日均线以上的股票，每月调仓"
+    示例输入: "买入核心研究池中ROE>15%且处于60日均线以上的股票，每月调仓"
     """
     _check_llm_available(req.api_key)
 

@@ -20,7 +20,8 @@ CN_DATA_DIR = Path.home() / ".qlib" / "qlib_data" / "cn_data"
 
 @lru_cache(maxsize=2048)
 def get_latest_factor(code: str) -> float:
-    """读取单只股票的最新（最后一个有效值）累积后复权因子。"""
+    """Read latest real cumulative factor, skipping trailing 1.0 values
+    written by Tencent fallback incremental updates."""
     code_lower = code.lower()
     factor_path = CN_DATA_DIR / "features" / code_lower / "factor.day.bin"
     if not factor_path.exists():
@@ -29,12 +30,16 @@ def get_latest_factor(code: str) -> float:
     if len(raw) < 2:
         return 1.0
     arr = raw[1:]
-    # 从末尾向前找第一个有限且 >0 的值
+    fallback = 1.0
     for i in range(len(arr) - 1, -1, -1):
         val = float(arr[i])
-        if np.isfinite(val) and val > 0:
+        if not (np.isfinite(val) and val > 0):
+            continue
+        if val > 1.01:
             return val
-    return 1.0
+        if fallback == 1.0:
+            fallback = val
+    return fallback
 
 
 def to_forward_price(back_adj_price: float, code: str) -> float:

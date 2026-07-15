@@ -16,6 +16,7 @@ import sys
 import pathlib
 import time
 import atexit
+import os
 import urllib.request
 
 import numpy as np
@@ -28,6 +29,7 @@ FIELDS   = ["open", "close", "high", "low", "volume"]
 EXTRA_FIELDS = ["amount", "factor"]
 _BAOSTOCK = None
 _BAOSTOCK_LOGGED_IN = False
+_baostock_available = True  # 启动时假设可用，update() 中探测更新
 REBUILD_GAP_THRESHOLD = 500
 REQUEST_SLEEP_SECONDS = 0.15  # 全量重建长时间运行，提高到 150ms 避免被限流
 
@@ -113,15 +115,18 @@ def yf_to_baostock(code: str) -> str:
 
 
 def _get_baostock():
-    global _BAOSTOCK, _BAOSTOCK_LOGGED_IN
+    global _BAOSTOCK, _BAOSTOCK_LOGGED_IN, _baostock_available
     if _BAOSTOCK_LOGGED_IN:
         return _BAOSTOCK
+    if not _baostock_available:
+        return None
 
     import baostock as bs
 
     lg = bs.login()
     if lg.error_code != "0":
         print(f"  WARN: Baostock 登录失败: {lg.error_code} {lg.error_msg}")
+        _baostock_available = False
         return None
 
     _BAOSTOCK = bs
@@ -147,7 +152,7 @@ atexit.register(_logout_baostock)
 def fetch_yfinance(yf_code: str, start: str, end: str) -> pd.DataFrame:
     try:
         t = yf.Ticker(yf_code)
-        df = t.history(start=start, end=end, auto_adjust=True)
+        df = t.history(start=start, end=end, auto_adjust=False)
         if df.empty:
             return pd.DataFrame()
         df.index = df.index.tz_localize(None)
@@ -155,7 +160,7 @@ def fetch_yfinance(yf_code: str, start: str, end: str) -> pd.DataFrame:
             "Open": "open", "High": "high", "Low": "low",
             "Close": "close", "Volume": "volume",
         })
-        df["amount"] = df["close"] * df["volume"]
+        df["amount"] = df["close"] * df["volume"]  # 腾讯不提供 amount，用成交额估算
         df["factor"] = 1.0
         df.index = [d.strftime("%Y-%m-%d") for d in df.index]
         return df[[f for f in FIELDS + EXTRA_FIELDS if f in df.columns]]
@@ -289,6 +294,107 @@ def _stock_already_rebuilt(qlib_code: str, calendar: list[str], min_density: flo
     return True
 
 
+def _read_last_factor_from_bin(qlib_code: str) -> float:
+    """读取现有 factor bin 中最后一个【真实】累积因子（跳过尾部 1.0 占位）。
+
+    如果 factor bin 不存在 / 为空 / 全 NaN，返回 1.0（假设无除权）。
+    """
+    factor_path = DATA_DIR / "features" / qlib_code.lower() / "factor.day.bin"
+    if not factor_path.exists():
+        return 1.0
+    try:
+        raw = np.fromfile(factor_path, dtype="<f")
+        if len(raw) < 2:
+            return 1.0
+        values = raw[1:]
+        fallback = 1.0
+        # 从后往前：优先返回 >1.01 的真实累积因子，跳过腾讯 fallback 写入的 1.0 占位
+        for v in reversed(values):
+            if not (np.isfinite(v) and v > 0):
+                continue
+            if float(v) > 1.01:
+                return float(v)
+            if fallback == 1.0:
+                fallback = float(v)
+        return fallback
+    except Exception:
+        return 1.0
+
+
+def _read_last_close_from_bin(qlib_code: str) -> float | None:
+    """读取 close.bin 最后一个有效收盘价（后复权口径）。"""
+    close_path = DATA_DIR / "features" / qlib_code.lower() / "close.day.bin"
+    if not close_path.exists():
+        return None
+    try:
+        raw = np.fromfile(close_path, dtype="<f")
+        if len(raw) < 2:
+            return None
+        for v in reversed(raw[1:]):
+            if np.isfinite(v) and float(v) > 0:
+                return float(v)
+    except Exception:
+        return None
+    return None
+
+
+def _align_tencent_df_to_back_adjust(yf_code: str, df: pd.DataFrame) -> pd.DataFrame:
+    """将腾讯 fallback 行情对齐到后复权×累积因子口径；无法安全对齐则返回空表。
+
+    禁止再把 factor=1.0 的前复权/市价尾部直接 append 进历史后复权 bin。
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    code = str(yf_code).upper()
+    if code.endswith(".SS"):
+        qlib_code = "sh" + code[:6]
+    elif code.endswith(".SZ"):
+        qlib_code = "sz" + code[:6]
+    elif code.endswith(".BJ"):
+        qlib_code = "bj" + code[:6]
+    elif code.startswith(("SH", "SZ", "BJ")):
+        qlib_code = code[:2].lower() + code[2:8]
+    else:
+        qlib_code = code.lower()
+
+    last_factor = _read_last_factor_from_bin(qlib_code)
+    last_close = _read_last_close_from_bin(qlib_code)
+    out = df.copy()
+
+    if last_factor <= 1.01 or last_close is None or last_close <= 0:
+        # 无历史真实因子：允许写入，但 factor 保持 1.0（次新/无分红）
+        if "factor" not in out.columns:
+            out["factor"] = 1.0
+        return out
+
+    first_new = float(out["close"].iloc[0]) if "close" in out.columns else float("nan")
+    if not np.isfinite(first_new) or first_new <= 0:
+        return pd.DataFrame()
+
+    ratio_same_scale = first_new / last_close
+    ratio_if_fwd = (first_new * last_factor) / last_close
+
+    if 0.70 <= ratio_same_scale <= 1.35:
+        # 腾讯 hfq 与历史后复权同尺度：只补真实 factor，不改价格
+        out["factor"] = last_factor
+        return out
+
+    if 0.70 <= ratio_if_fwd <= 1.35:
+        # 腾讯价更像前复权/市价：抬到后复权尺度并写真实 factor
+        for field in ("open", "high", "low", "close"):
+            if field in out.columns:
+                out[field] = out[field] * last_factor
+        out["factor"] = last_factor
+        return out
+
+    print(
+        f"  WARN: Tencent fallback for {yf_code} cannot align to back-adjust "
+        f"(last_close={last_close:.4f}, first_new={first_new:.4f}, factor={last_factor:.4f}); skip write"
+    )
+    return pd.DataFrame()
+
+
 def _fetch_with_retry(yf_code: str, start: str, end: str, retries: int = 2) -> pd.DataFrame:
     """带重试的抓取。baostock 长时间高频查询可能偶发失败，重试 2 次再放弃。"""
     df = pd.DataFrame()
@@ -414,19 +520,59 @@ def yf_to_tencent_code(code: str) -> str:
 
 
 def fetch_tencent(yf_code: str, start: str, end: str) -> pd.DataFrame:
+    """腾讯行情日线，作为写入链路的 fallback 源。
+
+    优先使用 fqkline/get + hfq（后复权），失败时降级到 kline/kline（前复权）。
+    前复权数据 factor 恒为 1.0（口径与后复权不同，但增量追加的几天偏差可接受）。
+    腾讯不提供 amount 字段，用 close x volume 估算。
+    """
     try:
         tencent_code = yf_to_tencent_code(yf_code)
-        url = (
+
+        # 方案 A：fqkline/get + hfq（后复权）
+        url_hfq = (
+            "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+            f"?param={tencent_code},day,,,640,hfq"
+        )
+        try:
+            req = urllib.request.Request(
+                url_hfq,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 Chrome/126 Safari/537.36",
+                    "Referer": "https://gu.qq.com/",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            data = (payload.get("data") or {}).get(tencent_code) or {}
+            rows = data.get("hfqday") or []
+            if rows and len(rows) > 0:
+                df = pd.DataFrame(
+                    [row[:6] for row in rows if len(row) >= 6],
+                    columns=["date", "open", "close", "high", "low", "volume"],
+                )
+                if not df.empty:
+                    df.index = df["date"].astype(str)
+                    for field in FIELDS:
+                        df[field] = pd.to_numeric(df[field], errors="coerce")
+                    df["amount"] = df["close"] * df["volume"]
+                    df["factor"] = 1.0
+                    df = df.dropna(subset=["open", "high", "low", "close"])
+                    return df[[f for f in FIELDS + EXTRA_FIELDS if f in df.columns]]
+        except Exception:
+            pass  # hfq 不可用，继续尝试方案 B
+
+        # 方案 B：kline/kline（前复权，兼容所有股票和 ETF）
+        url_day = (
             "https://web.ifzq.gtimg.cn/appstock/app/kline/kline"
             f"?param={tencent_code},day,{start},{end},640"
         )
         req = urllib.request.Request(
-            url,
+            url_day,
             headers={
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
-                ),
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/126 Safari/537.36",
                 "Referer": "https://gu.qq.com/",
             },
         )
@@ -458,15 +604,61 @@ def fetch_tencent(yf_code: str, start: str, end: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def fetch(yf_code: str, start: str, end: str) -> pd.DataFrame:
-    """写入链路只能使用 baostock（同时具备原始价与累积复权因子）。
+def fetch_tushare(yf_code: str, start: str, end: str) -> pd.DataFrame:
+    """tushare 数据源：token 从环境变量 TUSHARE_TOKEN 读取，未配置返回空。
 
-    腾讯/东财只提供前复权、yfinance auto_adjust 含分红全收益回调，三者
-    在"原始价 + 因子"口径下均无法给出正确输入，故不再进入写入链路；
-    它们保留为 fetch_tencent/fetch_eastmoney/fetch_yfinance，仅用于校验对照。
+    口径与 baostock 写入链路一致（OHLC 复权价 + 累积因子），可直接写入 bin。
+    150 次/分钟限流由 tushare_client 内部滑动窗口保护。
     """
-    return fetch_baostock(yf_code, start, end)
+    try:
+        import os
+        import sys as _sys
 
+        if not os.getenv("TUSHARE_TOKEN", "").strip():
+            return pd.DataFrame()
+        # 定位 backend 目录以导入 services.tushare_client
+        _root = pathlib.Path(__file__).resolve().parent
+        _backend = _root / "backend"
+        if str(_backend) not in _sys.path:
+            _sys.path.insert(0, str(_backend))
+        from services import tushare_client as _tc
+
+        return _tc.fetch_daily(yf_code, start, end)
+    except Exception as e:
+        print(f"  WARN: Tushare fetch {yf_code} failed: {e}")
+        return pd.DataFrame()
+
+def fetch(yf_code: str, start: str, end: str, allow_tencent_fallback: bool | None = None) -> pd.DataFrame:
+    """写入链路：Baostock 单源优先；腾讯仅在显式允许且可对齐复权口径时写入。
+
+    默认拒绝未对齐的腾讯 fallback，避免历史后复权 + 尾部前复权/factor=1.0 混拼。
+    环境变量 ALLOW_TENCENT_FALLBACK=1 或参数 allow_tencent_fallback=True 可打开。
+    """
+    import os
+
+    # 数据源选择：PREFERRED_SOURCE=tushare 时跳过 baostock，用 tushare 单源
+    # （tushare/baostock 复权因子基准不同，不可混写同一 bin，需配合 --full-rebuild）
+    preferred = os.environ.get("PREFERRED_SOURCE", "baostock").strip().lower()
+    if preferred == "tushare":
+        df = fetch_tushare(yf_code, start, end)
+        if not df.empty:
+            return df
+
+    df = fetch_baostock(yf_code, start, end)
+    if not df.empty:
+        return df
+
+    if allow_tencent_fallback is None:
+        allow_tencent_fallback = os.environ.get("ALLOW_TENCENT_FALLBACK", "").strip() in {
+            "1", "true", "TRUE", "yes", "YES",
+        }
+    if not allow_tencent_fallback:
+        return pd.DataFrame()
+
+    df = fetch_tencent(yf_code, start, end)
+    if df.empty:
+        return df
+    return _align_tencent_df_to_back_adjust(yf_code, df)
 
 def _clip_to_requested_range(df: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     """Keep only rows that fall inside the requested inclusive date window."""
@@ -806,7 +998,7 @@ def update(
     migrate_instruments: bool = False,
 ) -> int:
     if end is None:
-        end = (pd.Timestamp.now() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        end = (pd.Timestamp.now() + pd.DateOffset(days=1)).strftime("%Y-%m-%d")
 
     if full_rebuild:
         start = "1990-01-01"  # 重建模式从上市日起拉，覆盖完整历史
@@ -818,6 +1010,7 @@ def update(
     mode = "全量重建" if full_rebuild else "增量更新"
     print(f"=== {mode} {start} ~ {end} ===")
     print(f"  数据目录: {DATA_DIR}")
+
 
     if full_rebuild:
         _init_rebuild_skeleton(codes)
@@ -880,7 +1073,11 @@ def update(
 
         # 拉取新数据（带重试）
         df = _fetch_with_retry(yf_code, start, end)
+        # Baostock 已返回后复权价+因子；腾讯 fallback 也是后复权（hfq），无需额外处理
         df = _clip_to_requested_range(df, start, end)
+
+        # 仅 Baostock 空且腾讯对齐成功时 df 非空；重叠校验在 overwrite 时跳过
+        _ow = overwrite_existing
 
         if df.empty:
             fail += 1
@@ -894,7 +1091,7 @@ def update(
                     df,
                     calendar,
                     rebuild_stale=rebuild_stale,
-                    overwrite_existing=overwrite_existing,
+                    overwrite_existing=_ow,
                 )
             if appended > 0:
                 success += 1
@@ -1004,7 +1201,7 @@ def _rebuild_calendar_from_baostock(start: str = "1990-01-01", end: str | None =
     不能直接复制——会导致 df 被静默丢弃这些日期的数据，并制造跨洞收益率。
     """
     if end is None:
-        end = (pd.Timestamp.now() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        end = (pd.Timestamp.now() + pd.DateOffset(days=1)).strftime("%Y-%m-%d")
     try:
         bs = _get_baostock()
         if bs is None:
@@ -1127,7 +1324,10 @@ if __name__ == "__main__":
     parser.add_argument("--full-rebuild", action="store_true", help="全量重建模式：从 df 从零构造完整 bin，不走 repair+append；须配合 --data-dir 指向新目录")
     parser.add_argument("--rebuild-stale", action="store_true", help="重建明显异常的短历史文件，用于修复少量核心股票缺口")
     parser.add_argument("--overwrite-existing", action="store_true", help="覆盖指定日期窗口内已有的非 0 价格/成交/factor 字段（新方案 factor 为真实累积因子，重建单票时需一并重写）")
+    parser.add_argument("--source", default="baostock", choices=["baostock", "tushare"], help="主数据源，tushare须配合--full-rebuild，不可混写增量")
     args = parser.parse_args()
+    if getattr(args, "source", None):
+        os.environ["PREFERRED_SOURCE"] = args.source
 
     if args.data_dir:
         DATA_DIR = pathlib.Path(args.data_dir)

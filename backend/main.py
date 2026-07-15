@@ -76,11 +76,13 @@ def _preload_industry_mapping_background():
     def worker():
         try:
             from qlib.data import D
-            instruments = D.instruments("csi300")
+            from core.universe import DEFAULT_UNIVERSE, ensure_core650_instruments
+            ensure_core650_instruments()
+            instruments = D.instruments(DEFAULT_UNIVERSE)
             codes = D.list_instruments(instruments, as_list=True)
             from core.factor_utils import load_industry_mapping
             load_industry_mapping(codes)
-            logger.info(f"✅ 行业映射后台预加载完成: {len(codes)} 只 CSI300 成分股")
+            logger.info(f"✅ 行业映射后台预加载完成: {len(codes)} 只核心研究池股票")
         except Exception as e:
             logger.warning(f"⚠️ 行业映射后台预加载跳过（非致命）: {e}")
 

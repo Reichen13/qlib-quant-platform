@@ -46,6 +46,8 @@ def normalize_stock_code(code: str, target: str = "qlib") -> str:
         return f"{market}{symbol}"
     if target_lower == "yf" or target_lower == "yfinance":
         return f"{symbol}.SS" if market == "SH" else f"{symbol}.{market}"
+    if target_lower == "tushare":
+        return f"{symbol}.{market}"
     if target_lower == "baostock":
         return f"{market.lower()}.{symbol}"
     if target_lower == "plain":

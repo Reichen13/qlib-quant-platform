@@ -86,3 +86,12 @@ _*.txt
 *.7z
 *.tgz
 *.tar.gz
+
+# Tushare API token (contains credentials)
+TUSHARE_SETUP.md
+
+# Local agent skills / corpora (not product runtime)
+.agents/
+zhengxi-views/
+skills-lock.json
+

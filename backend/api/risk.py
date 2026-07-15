@@ -132,7 +132,7 @@ def _compute_stress_tests(returns: pd.DataFrame) -> List[dict]:
     for sc in a_share_scenarios:
         if sc.get("actual_return") is not None:
             # 有实际市场数据：基于组合 beta 估算影响
-            # 假设组合 beta ≈ 1.0（相对CSI300），用实际市场跌幅 × 组合杠杆
+            # 假设组合 beta ≈ 1.0（相对沪深300指数），用实际市场跌幅 × 组合杠杆
             impact = sc["actual_return"] * 100
         else:
             # 无实际数据：用组合 VaR 逻辑估算
@@ -152,7 +152,7 @@ def _load_a_share_stress_scenarios() -> List[dict]:
     """
     加载 A 股历史压力事件库
 
-    每个事件包含: name, description, date_range, actual_return (CSI300 区间收益)
+    每个事件包含: name, description, date_range, actual_return (沪深300指数 SH000300 区间收益)
     优先从 Qlib 数据获取实际收益，数据不可用时用文献/市场记录估计
     """
     scenarios = []
@@ -161,7 +161,7 @@ def _load_a_share_stress_scenarios() -> List[dict]:
         from qlib.data import D
         calendars = D.calendar(freq="day")
 
-        # 辅助函数：获取 CSI300 区间收益
+        # 辅助函数：获取沪深300指数(SH000300)区间收益
         def _get_csi300_return(start, end):
             try:
                 close_data = D.features(
@@ -299,7 +299,7 @@ async def analyze_risk(request: RiskAnalysisRequest):
     try:
         codes = [normalize_stock_code(code, target="yf") for code in request.codes]
         if not codes:
-            # 默认使用 CSI300 成分股中的代表性股票
+            # 默认使用核心研究池中的代表性大票（非「官方沪深300名单」含义）
             codes = ["600519.SS", "000858.SZ", "601318.SS", "000333.SZ", "600036.SS"]
 
         start_date = request.start_date or (date.today() - timedelta(days=365)).isoformat()

@@ -254,9 +254,9 @@ def run_update(start: str = None, end: str = None, data_dir: Path = None):
     data_dir.mkdir(parents=True, exist_ok=True)
 
     if end is None:
-        end = (pd.Timestamp.now() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        end = (pd.Timestamp.now() + pd.Timedelta(days=1, unit="D")).strftime("%Y-%m-%d")
     if start is None:
-        start = (pd.Timestamp.now() - pd.Timedelta(days=40)).strftime("%Y-%m-%d")
+        start = (pd.Timestamp.now() - pd.Timedelta(days=40, unit="D")).strftime("%Y-%m-%d")
 
     print(f"=== 增量更新 {start} ~ {end} ===\n")
 
@@ -316,7 +316,7 @@ def run_update(start: str = None, end: str = None, data_dir: Path = None):
 def run_init(start: str = "2015-01-01", end: str = None, data_dir: Path = None):
     """全量收集（历史数据）"""
     if end is None:
-        end = (pd.Timestamp.now() + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        end = (pd.Timestamp.now() + pd.Timedelta(days=1, unit="D")).strftime("%Y-%m-%d")
     print(f"=== 全量收集 {start} ~ {end} ===")
     print("提示：数据量大，ETF约 10 年历史，预计 5-10 分钟\n")
     run_update(start=start, end=end, data_dir=data_dir)

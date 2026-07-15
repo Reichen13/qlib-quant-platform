@@ -157,7 +157,7 @@ async def get_financial_rank(
     根据 ROE、净利润增长率等指标对股票进行排序
     """
     try:
-        # 获取沪深300成分股
+        # 获取指数成分（baostock hs300=官方沪深300；财务排行榜场景可用）
         stocks = provider.get_index_stocks("hs300")
 
         if not stocks:

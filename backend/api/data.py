@@ -577,7 +577,10 @@ def _check_stocks_data() -> dict:
     """检查股票日线数据状态（使用 Qlib 日历作为真实来源）"""
     data_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data"
     cal_path = data_dir / "calendars" / "day.txt"
-    csi300_counts = _get_instrument_count(data_dir / "instruments" / "csi300.txt")
+    from core.universe import instruments_path, ensure_core650_instruments
+    ensure_core650_instruments(data_dir)
+    core_pool_path = instruments_path(data_dir, "core650")
+    core_pool_counts = _get_instrument_count(core_pool_path)
     feature_stock_counts = _get_feature_stock_count(data_dir)
 
     if cal_path.exists():
@@ -614,9 +617,14 @@ def _check_stocks_data() -> dict:
             "total": feature_stock_counts["total"],
             "raw_total": feature_stock_counts["total"],
             "duplicate_count": 0,
-            "csi300_total": csi300_counts["total"],
-            "csi300_raw_total": csi300_counts["raw_total"],
-            "csi300_duplicate_count": csi300_counts["duplicate_count"],
+            # core650 = 核心研究池；保留 csi300_* 字段名作兼容别名（数值相同）
+            "core650_total": core_pool_counts["total"],
+            "core650_raw_total": core_pool_counts["raw_total"],
+            "core650_duplicate_count": core_pool_counts["duplicate_count"],
+            "core650_label": "核心研究池（约650只，非官方沪深300）",
+            "csi300_total": core_pool_counts["total"],
+            "csi300_raw_total": core_pool_counts["raw_total"],
+            "csi300_duplicate_count": core_pool_counts["duplicate_count"],
             "last_date": last_date,
             "lag_days": lag_days,
             "status": status,
@@ -763,7 +771,7 @@ def _get_core_update_codes(limit: int | None = 800) -> list[str]:
     ]
     codes: list[str] = []
     seen: set[str] = set()
-    for code in priority + _read_instrument_codes(["csi300", "csi500", "all"], limit=limit):
+    for code in priority + _read_instrument_codes(["core650", "csi300", "csi500", "all"], limit=limit):
         normalized = code.lower()
         if normalized not in seen:
             seen.add(normalized)
@@ -808,15 +816,36 @@ def _clear_module_caches() -> dict:
     except Exception as exc:
         failures["core.factor_utils._industry_cache"] = str(exc)
 
-    alpha158_cache = Path.home() / ".qlib" / "alpha158_cache"
-    if alpha158_cache.exists():
-        try:
-            import shutil
+    try:
+        from core.alpha158_cache import clear_all_cache, invalidate_fingerprint_cache
 
-            shutil.rmtree(alpha158_cache)
-            cleared.append("alpha158_cache")
-        except Exception as exc:
+        n = clear_all_cache()
+        invalidate_fingerprint_cache()
+        cleared.append(f"alpha158_cache({n})")
+    except Exception as exc:
+        # Fallback: directory wipe
+        alpha158_cache = Path.home() / ".qlib" / "alpha158_cache"
+        if alpha158_cache.exists():
+            try:
+                import shutil
+
+                shutil.rmtree(alpha158_cache)
+                cleared.append("alpha158_cache")
+            except Exception as exc2:
+                failures["alpha158_cache"] = str(exc2)
+        else:
             failures["alpha158_cache"] = str(exc)
+
+    try:
+        from core.data_trust import invalidate_data_trust_cache
+        from core.price_adjust import get_latest_factor
+
+        invalidate_data_trust_cache()
+        get_latest_factor.cache_clear()
+        cleared.append("data_trust_cache")
+        cleared.append("price_adjust.factor_cache")
+    except Exception as exc:
+        failures["data_trust_cache"] = str(exc)
 
     return {
         "cache_cleared": bool(cleared),
@@ -997,6 +1026,7 @@ async def data_health_check(include_external: bool = False):
     检查项:
     - Qlib cn_data 数据目录是否存在、最后更新日期
     - 股票日线数据滞后天数
+    - 尾部复权一致性 / 交易可信门禁（data_trust）
     - Baostock 行业数据服务可用性（默认不检查，避免外部网络拖慢页面）
     """
     qlib_check = _check_qlib_data()
@@ -1005,6 +1035,20 @@ async def data_health_check(include_external: bool = False):
     baostock_check = _check_baostock_industry() if include_external else _baostock_skipped_status()
     tdx_check = _check_tdx_mcp(include_external)
 
+    try:
+        from core.data_trust import evaluate_data_trust
+
+        trust_check = evaluate_data_trust()
+    except Exception as e:
+        logger.warning(f"data_trust evaluation failed: {e}")
+        trust_check = {
+            "trusted": False,
+            "status": "error",
+            "trading_allowed": False,
+            "message": f"data_trust 评估失败: {e}",
+            "reasons": ["evaluate_failed"],
+        }
+
     # 总体状态
     statuses = [
         qlib_check.get("status", "error"),
@@ -1012,6 +1056,7 @@ async def data_health_check(include_external: bool = False):
         adjustment_check.get("status", "warning"),
         baostock_check.get("status", "error"),
         tdx_check.get("status", "unknown"),
+        "error" if not trust_check.get("trusted") else "normal",
     ]
     if "error" in statuses:
         overall = "degraded"
@@ -1020,15 +1065,21 @@ async def data_health_check(include_external: bool = False):
     else:
         overall = "healthy"
 
+    # 数据不可信时强制降级，避免“healthy 但不可交易”
+    if not trust_check.get("trusted"):
+        overall = "degraded"
+
     logger.info(f"数据健康检查: 总体={overall}, Qlib={qlib_check.get('status')}, "
-                f"Baostock={baostock_check.get('status')}")
+                f"Baostock={baostock_check.get('status')}, trust={trust_check.get('status')}")
 
     return {
         "overall_status": overall,
+        "trading_allowed": bool(trust_check.get("trading_allowed")),
         "checked_at": datetime.now().isoformat(),
         "sources": {
             "qlib": qlib_check,
             "price_adjustment": adjustment_check,
+            "data_trust": trust_check,
             "stocks": {
                 **stocks_check,
                 "etf": {
@@ -1049,6 +1100,17 @@ async def data_health_check(include_external: bool = False):
             "tdx_mcp": tdx_check,
         },
     }
+
+
+@router.get("/trust")
+async def data_trust_check(refresh: bool = False):
+    """Explicit trading-trust endpoint for UI banners and ops scripts."""
+    from core.data_trust import evaluate_data_trust, invalidate_data_trust_cache
+
+    if refresh:
+        invalidate_data_trust_cache()
+    report = evaluate_data_trust(use_cache=not refresh)
+    return report
 
 
 def _freshness_module_matrix(stocks_check: dict, adjustment_check: dict) -> list[dict]:

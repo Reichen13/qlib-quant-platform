@@ -105,13 +105,18 @@ async def get_pool(pool_id: str):
 
 
 @router.post("/{pool_id}/refresh")
-async def refresh_pool(pool_id: str):
-    """刷新股票池筛选"""
+async def refresh_pool(pool_id: str, allow_untrusted_data: bool = False):
+    """刷新股票池筛选。数据尾部复权不可信时默认拒绝，避免噪声选股。"""
     try:
+        from core.data_trust import require_data_trusted
+
+        require_data_trusted(action="stock_pool_refresh", allow_untrusted=allow_untrusted_data)
         engine = get_engine()
         result = engine.refresh_pool(pool_id)
         logger.info(f"股票池已刷新: {pool_id}, {len(result['constituents'])} 只")
         return result
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
