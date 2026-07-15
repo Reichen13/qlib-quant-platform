@@ -7,13 +7,13 @@ Qlib Quant Platform 是一个面向 A 股个人量化研究、策略验证和盘
 ## 技术栈与关键版本
 
 - Backend: Python 3.11, FastAPI 0.115.0, Pydantic 2.9.2, Uvicorn 0.32.0。
-- Quant/Data: pyqlib 0.9.6, pandas 2.2.3, numpy 2.0.0, baostock, yfinance 0.2.50, akshare。
+- Quant/Data: pyqlib 0.9.6+, pandas, numpy; baostock default, optional tushare (TUSHARE_TOKEN), akshare; yfinance not primary.
 - ML/AI: scikit-learn, LightGBM/XGBoost 相关策略接口, langchain, langchain-openai, OpenAI-compatible LLM。
 - Frontend: React 19, TypeScript 6.0, Vite 8, Tailwind CSS 4, TanStack Query 5, Zustand 5。
 - UI/Charts: Radix UI, lucide-react, Recharts, lightweight-charts。
 - Deploy: Docker Compose, backend container `quant-backend`, optional frontend container `quant-frontend`, Nginx reverse proxy/static hosting。
-- Persistence: SQLite files under `~/.qlib/`, including task/report/stock-pool stores; Qlib data under `~/.qlib/qlib_data/cn_data`。
-- Security/env: `API_KEY` for protected server operations, `TDX_API_KEY` for Tongdaxin MCP, `LLM_API_KEY` or user-provided localStorage LLM key for AI features.
+- Persistence: SQLite under ~/.qlib/ (task/report/stock-pool/screening/factor); Qlib data ~/.qlib/qlib_data/cn_data.
+- Security/env: API_KEY admin; TDX_API_KEY; LLM_API_KEY/user LLM; optional TUSHARE_TOKEN. Never mix admin/LLM/market keys.
 
 ## 核心架构原则
 
@@ -24,7 +24,12 @@ Qlib Quant Platform 是一个面向 A 股个人量化研究、策略验证和盘
 - 线上受保护操作必须经 `X-API-Key`；管理 Key 只用于权限控制，不用于抓行情、LLM 或通达信。
 - LLM 功能必须能区分：服务器默认 LLM 配置、用户 per-request LLM Key、服务器管理 Key；不要混用。
 - 代码修改应小步、可验证、可回滚；线上服务器还有其它项目，部署时只碰 `/home/ubuntu/quant-platform`、`quant-backend` 和明确的静态目录。
-- 业务结果要讲清口径：A 股覆盖数、Qlib 覆盖数、CSI300 辅助统计、ETF/指数代理状态不能混写。
+- 业务结果要讲清口径：A 股覆盖数、Qlib 覆盖数、**core650 核心研究池**（约 650，不是官方沪深300）、ETF/指数代理状态不能混写。
+- **data_trust 门禁**：尾部复权污染或信任失败时，`trading_allowed=false`，清空 buyable、默认拒绝股票池刷新与回测；详见 `docs/data-trust-p0-runbook.md`。
+- **研究宇宙默认 `core650`**（`instruments/core650.txt`）；旧名 `csi300` 仅兼容映射，展示名用「核心研究池」。真实指数用 `SH000300`。
+- **Alpha158 缓存**必须带数据指纹；修 bin 后旧缓存不可复用。
+- **因子分析**在 daemon 线程跑时强制串行 joblib（Windows 禁 loky 风暴），用真实阶段进度 + 心跳；无心跳超时标 failed，不要假进度伪装完成。
+- JSON 响应禁止 `nan`/`inf`；数值缺失用 `null` 或跳过该标的。
 
 ## 编码规范与约定
 
@@ -112,7 +117,7 @@ curl -X POST http://127.0.0.1:8001/api/data/update \
 ## 禁止事项（Anti-patterns）
 
 - 禁止用模拟数据冒充真实行情、真实因子、真实 ETF 指标或真实配对信号。
-- 禁止把 CSI300 数量、Qlib 覆盖数量、全市场股票清单混成同一个口径。
+- 禁止把 core650/旧 csi300 文件数量、官方沪深300、Qlib 覆盖数量、全市场清单混成同一口径。
 - 禁止让前端页面调用已知不稳定外部源作为主链路，例如 yfinance 板块批量接口。
 - 禁止在页面组件里复制后端计算逻辑；应复用 API 或后端 helper。
 - 禁止在未确认的情况下全量更新、删除、重建 Qlib 数据目录或服务器静态目录。
@@ -124,11 +129,10 @@ curl -X POST http://127.0.0.1:8001/api/data/update \
 
 ## 当前重点开发方向
 
-- 数据源治理：继续减少 yfinance 主链路依赖，优先 Qlib、本地数据、通达信 MCP 或明确标注的代理数据。
-- A 股覆盖：补齐全市场股票池和 Qlib 日线覆盖差距，明确科创板、创业板、北交所支持状态。
-- 智能体辩论：已打通技术面 K 线/RSI/MACD/成交量摘要；下一步改善基本面、情绪面和行业数据输入。
-- 配对交易：从相关性/Z-score 升级到真实协整检验、滚动 OLS 对冲比率、交易成本和流动性约束。
-- 主题热点：从代表股样本扩展到完整行业分类，并统一成交额、成分股、强弱排名口径。
-- 任务体验：因子分析、回测、数据更新等长任务继续异步化、持久化、可恢复、可解释。
-- 性能与缓存：减少页面切换丢状态，增加轻量缓存和结果复用，避免重任务阻塞健康检查。
+- 数据信任与复权：维护 data_trust；增量避免未对齐污染；tushare 可选但勿与 baostock 混写同一 bin。
+- 研究宇宙：core650 为因子/回测/DL 默认池；全市场 all 与官方指数口径分开。
+- 盘后闭环：筛选异步、T+5 验证、focus 与 buyable 联动。
+- 因子分析：串行 Alpha158 + 指纹缓存 + 心跳；长区间性能。
+- A 股覆盖：北交所与 ETF/指数缺口继续补。
+- 任务体验与性能：长任务可解释进度，避免拖死 health/focus。
 
