@@ -232,7 +232,7 @@ export function AiStrategyPage() {
             </CardHeader>
             <CardContent className="space-y-4">
               <textarea
-                placeholder='例如："买入沪深300中ROE>15%且处于60日均线以上的股票，每月调仓，单票不超过10%，止损-8%"'
+                placeholder='例如："买入核心研究池中ROE>15%且处于60日均线以上的股票，每月调仓，单票不超过10%，止损-8%"'
                 value={nlInput}
                 onChange={(e) => setAiStrategyParams({ nlInput: e.target.value })}
                 className="min-h-24 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"

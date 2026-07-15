@@ -142,7 +142,10 @@ class BacktestParams(BaseModel):
     model: str = Field(default="lightgbm", description="模型类型: lightgbm, xgboost")
 
     # 股票池（universe）
-    universe: str = Field(default="csi300", description="回测股票池: csi300(默认,约650只,快)、all(全市场约4484只,慢)、csi500")
+    universe: str = Field(
+        default="core650",
+        description="回测股票池: core650=核心研究池约650只(默认,快); csi500; all=全市场约4500只(慢)。旧值 csi300 自动映射到 core650",
+    )
 
     # 数据设置
     train_start: date
@@ -153,7 +156,12 @@ class BacktestParams(BaseModel):
     # 策略参数
     hold_num: int = Field(default=30, ge=1, le=50, description="持仓股票数(TopK)")
     account: int = Field(default=300_000, ge=10_000, le=100_000_000, description="账户初始资金")
-    turnover: int = Field(default=5, ge=1, le=20, description="调仓周期(天)")
+    turnover: int = Field(
+        default=5,
+        ge=1,
+        le=63,
+        description="调仓周期（交易日）：每 N 日调仓一次；非调仓日持有不动（已接入引擎）",
+    )
 
     # 风险控制 (stop_loss/max_position: Qlib TopkDropoutStrategy 不原生支持，
     # 日频止损需在持仓管理层面实现，暂从参数中移除，见 docs/backtest-net-return-audit.md)
@@ -165,6 +173,10 @@ class BacktestParams(BaseModel):
     # 因子选择（从因子分析页面跳转时带入）
     selected_factors: Optional[List[str]] = Field(default=None, description="指定使用哪些因子（None=全部158个）")
     source_factor: Optional[str] = Field(default=None, description="跳转来源因子名（用于展示）")
+    allow_untrusted_data: bool = Field(
+        default=False,
+        description="数据尾部复权不可信时是否仍强制启动回测（默认否）",
+    )
 
 
 class EquityPoint(BaseModel):
@@ -247,6 +259,11 @@ class BacktestResponse(BaseModel):
     cost_impact_estimate: Optional[str] = None
     cumulative_cost: Optional[float] = None  # 累计交易成本
     price_adjustment_note: Optional[str] = None  # 价格口径说明
+    # 调仓口径（已接入引擎）
+    rebalance_days: Optional[int] = None
+    n_drop: Optional[int] = None
+    hold_num: Optional[int] = None
+    rebalance_note: Optional[str] = None
     warnings: Optional[List[str]] = None
     # 错误信息
     error: Optional[str] = None

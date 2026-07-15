@@ -214,12 +214,15 @@ export function BacktestPage() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="csi300">沪深300（约650只，快）</SelectItem>
+                      <SelectItem value="core650">核心研究池（约650只，快）</SelectItem>
+                      <SelectItem value="csi300">核心研究池（兼容旧名 csi300）</SelectItem>
                       <SelectItem value="all">全市场（约4484只，慢）</SelectItem>
                       <SelectItem value="csi500">中证500</SelectItem>
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">默认沪深300；选全市场标的更多但训练更慢</p>
+                  <p className="text-xs text-muted-foreground">
+                    默认「核心研究池」约650只（主板为主研究样本，不是官方沪深300的300只）；全市场更慢
+                  </p>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
@@ -282,13 +285,17 @@ export function BacktestPage() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label>调仓周期 (天)</Label>
+                  <Label>调仓周期 (交易日)</Label>
                   <Input
                     type="number"
+                    min={1}
+                    max={63}
                     value={params.rebalance}
                     onChange={(e) => setParams({ ...params, rebalance: e.target.value })}
                   />
-                  <p className="text-xs text-muted-foreground">每隔 N 天调仓一次</p>
+                  <p className="text-xs text-muted-foreground">
+                    每 N 个交易日调仓一次（已接入引擎）；非调仓日持有不动。1=每日调仓。
+                  </p>
                 </div>
 
                 <div className="space-y-2">
@@ -770,7 +777,7 @@ export function BacktestPage() {
                       绩效归因 (Brinson)
                     </CardTitle>
                     <CardDescription>
-                      相对 CSI300 基准的超额收益分解
+                      相对沪深300指数(SH000300)的超额收益分解
                       <span className="text-xs text-muted-foreground ml-1">(等权基准近似)</span>
                     </CardDescription>
                   </CardHeader>

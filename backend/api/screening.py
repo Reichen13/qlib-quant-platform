@@ -7,11 +7,13 @@ one result that the UI can show as a practical post-close shortlist.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import logging
 import json
 import sys
-from datetime import date, timedelta
+import time
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -28,73 +30,37 @@ if backend_dir not in sys.path:
     sys.path.insert(0, backend_dir)
 
 from models.schemas import RiskAnalysisRequest
-from db.screening_history import save_run, get_last_n_runs, get_recent_runs, update_verification
+from db.screening_history import (
+    save_run,
+    get_last_n_runs,
+    get_recent_runs,
+    update_verification,
+    get_latest_buyable,
+)
 from utils.code_normalization import normalize_stock_code
-
-
-
-def _check_circuit_breaker(warnings):
-    try:
-        import json, numpy as np, qlib
-        from qlib.data import D
-        runs = get_last_n_runs(n=3, min_age_days=5)
-        if len(runs) < 3:
-            return
-        all_winrates = []
-        for run in runs:
-            buyable = json.loads(run["top_buyable_json"])
-            if not buyable:
-                continue
-            run_date = run["run_date"]
-            try:
-                cal = list(D.calendar(freq="day"))
-                cal_str = [str(d)[:10] for d in cal]
-                if run_date not in cal_str:
-                    continue
-                idx = cal_str.index(run_date)
-                t5_idx = min(idx + 5, len(cal_str) - 1)
-                t5_date = cal_str[t5_idx]
-                if t5_date == run_date:
-                    continue
-            except Exception:
-                continue
-            wins = 0
-            total = 0
-            for stock in buyable:
-                code = stock.get("code", "")
-                if not code:
-                    continue
-                try:
-                    prices = D.features([code], ["$close"], start_time=run_date, end_time=t5_date)
-                    if prices is None or prices.empty:
-                        continue
-                    cs = prices["$close"]
-                    if len(cs) < 2:
-                        continue
-                    t0 = float(cs.iloc[0])
-                    t5 = float(cs.iloc[-1])
-                    if t0 <= 0:
-                        continue
-                    total += 1
-                    if (t5 / t0 - 1) > 0:
-                        wins += 1
-                except Exception:
-                    continue
-            if total == 0:
-                continue
-            wr = wins / total
-            all_winrates.append(wr)
-            update_verification(run_date, wr, wr)
-        if len(all_winrates) >= 3 and all(w < 0.4 for w in all_winrates):
-            warnings.append("circuit_breaker: rolling_3_period_win_rate_below_40pct")
-    except Exception as e:
-        logger.warning(f"Circuit breaker failed: {e}")
 
 router = APIRouter()
 FACTOR_SCORE_BUY_THRESHOLD = 0.5
 FACTOR_SCORE_DRAG_THRESHOLD = -0.5
+DEFAULT_CANDIDATE_TOP_N = 15  # 盘后选股默认候选数
+SCREENING_RISK_CODE_LIMIT = 8  # 风险摘要只取前 N 只（默认关闭，见 include_risk）
+CIRCUIT_BREAKER_WIN_RATE = 0.40
+CIRCUIT_BREAKER_MIN_PERIODS = 3
+CN_DATA_DIR = Path.home() / ".qlib" / "qlib_data" / "cn_data"
 
+# Async task store (same pattern as backtest) — eliminates browser HTTP timeout
+from db.task_store import TaskStore
 
+screening_task_store = TaskStore(
+    Path.home() / ".qlib" / "screening_run_tasks.db",
+    table_name="screening_run_tasks",
+)
+try:
+    screening_task_store.init_db()
+except Exception:
+    pass
+
+# Last-resort only when no stock-pool history exists
 DEFAULT_CANDIDATES = [
     "002156",
     "600487",
@@ -116,12 +82,280 @@ DEFAULT_CANDIDATE_NAMES = {
 }
 
 
+def _extract_close_series(prices) -> list[float]:
+    """Normalize Qlib D.features output to a list of finite closes."""
+    if prices is None or getattr(prices, "empty", True):
+        return []
+    try:
+        if "$close" in prices.columns:
+            series = prices["$close"]
+        else:
+            series = prices.iloc[:, 0]
+        # MultiIndex may leave instrument level; dropna and flatten
+        values = [float(v) for v in series.dropna().tolist() if float(v) > 0]
+        return values
+    except Exception:
+        return []
+
+
+def verify_run_t5(run: dict, *, persist: bool = True) -> dict | None:
+    """Compute T+5 win_rate and avg_t5_return for one screening history row.
+
+    win_rate and avg_t5_return are ALWAYS separate metrics (never copy wr into return).
+    """
+    try:
+        buyable = json.loads(run.get("top_buyable_json") or "[]")
+    except Exception:
+        return None
+    if not buyable:
+        return None
+
+    run_date = str(run.get("run_date") or "")
+    if not run_date:
+        return None
+
+    try:
+        from qlib.data import D
+
+        cal = list(D.calendar(freq="day"))
+        cal_str = [str(d)[:10] for d in cal]
+        if run_date not in cal_str:
+            return None
+        idx = cal_str.index(run_date)
+        t5_idx = idx + 5
+        if t5_idx >= len(cal_str):
+            # T+5 not yet available
+            return None
+        t5_date = cal_str[t5_idx]
+    except Exception:
+        return None
+
+    wins = 0
+    returns: list[float] = []
+    stock_results: list[dict] = []
+    for stock in buyable:
+        code = stock.get("code", "")
+        if not code:
+            continue
+        try:
+            try:
+                qlib_code = normalize_stock_code(code, target="qlib")
+            except Exception:
+                qlib_code = code
+            prices = D.features([qlib_code], ["$close"], start_time=run_date, end_time=t5_date)
+            closes = _extract_close_series(prices)
+            if len(closes) < 2:
+                continue
+            t0, t5 = closes[0], closes[-1]
+            if t0 <= 0:
+                continue
+            ret = t5 / t0 - 1.0
+            returns.append(ret)
+            if ret > 0:
+                wins += 1
+            stock_results.append({
+                "code": qlib_code,
+                "name": stock.get("name"),
+                "t5_return": round(ret, 4),
+                "hit": ret > 0,
+            })
+        except Exception:
+            continue
+
+    if not returns:
+        return None
+
+    wr = wins / len(returns)
+    avg_ret = sum(returns) / len(returns)
+    if persist:
+        update_verification(run_date, wr, avg_ret)
+    return {
+        "run_date": run_date,
+        "win_rate": round(wr, 4),
+        "avg_t5_return": round(avg_ret, 4),
+        "stocks": len(returns),
+        "won": wins,
+        "t5_date": t5_date,
+        "stock_details": stock_results,
+    }
+
+
+def _check_circuit_breaker(warnings: list[str] | None = None) -> dict:
+    """Evaluate rolling 3-period win-rate circuit breaker.
+
+    Prefer already-verified rows in SQLite to avoid re-querying Qlib on every screening run.
+    """
+    result = {
+        "active": False,
+        "periods_checked": 0,
+        "recent_win_rates": [],
+        "recent_avg_t5_returns": [],
+        "message": None,
+    }
+    try:
+        runs = get_last_n_runs(n=12, min_age_days=5)
+        verified: list[dict] = []
+        for run in runs:
+            wr = run.get("win_rate_verified")
+            avg_ret = run.get("avg_t5_return")
+            if wr is not None and avg_ret is not None and run.get("verified_at"):
+                verified.append({
+                    "run_date": run.get("run_date"),
+                    "win_rate": float(wr),
+                    "avg_t5_return": float(avg_ret),
+                })
+            else:
+                stats = verify_run_t5(run, persist=True)
+                if not stats:
+                    continue
+                verified.append(stats)
+            if len(verified) >= CIRCUIT_BREAKER_MIN_PERIODS:
+                break
+
+        result["periods_checked"] = len(verified)
+        result["recent_win_rates"] = [v["win_rate"] for v in verified]
+        result["recent_avg_t5_returns"] = [v["avg_t5_return"] for v in verified]
+
+        if (
+            len(verified) >= CIRCUIT_BREAKER_MIN_PERIODS
+            and all(v["win_rate"] < CIRCUIT_BREAKER_WIN_RATE for v in verified[:CIRCUIT_BREAKER_MIN_PERIODS])
+        ):
+            result["active"] = True
+            result["message"] = (
+                f"circuit_breaker: rolling_{CIRCUIT_BREAKER_MIN_PERIODS}_period_win_rate_below_"
+                f"{int(CIRCUIT_BREAKER_WIN_RATE * 100)}pct"
+            )
+            if warnings is not None:
+                warnings.append(result["message"])
+                warnings.append(
+                    "策略近3期 T+5 胜率均低于40%，建议暂停新开仓，进入观察期"
+                )
+    except Exception as e:
+        logger.warning(f"Circuit breaker failed: {e}")
+        result["error"] = str(e)
+    return result
+
+
+def load_latest_pool_candidates(top_n: int = DEFAULT_CANDIDATE_TOP_N) -> tuple[list[str], dict | None]:
+    """Load Top-N codes from the most recent stock-pool refresh history."""
+    try:
+        from core.stock_pool import _get_db
+
+        conn = _get_db()
+        row = conn.execute(
+            """
+            SELECT h.pool_id, h.date, h.constituents_json, p.name AS pool_name, p.updated_at
+            FROM pool_history h
+            JOIN pools p ON p.id = h.pool_id
+            ORDER BY h.date DESC, p.updated_at DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        conn.close()
+        if not row:
+            return [], None
+
+        constituents = json.loads(row["constituents_json"] or "[]")
+        if not isinstance(constituents, list) or not constituents:
+            return [], None
+
+        def _sort_key(item: dict):
+            rank = item.get("rank")
+            score = item.get("score")
+            try:
+                rank_v = int(rank) if rank is not None else 10_000
+            except Exception:
+                rank_v = 10_000
+            try:
+                score_v = -float(score) if score is not None else 0.0
+            except Exception:
+                score_v = 0.0
+            return (rank_v, score_v)
+
+        ordered = sorted(
+            [c for c in constituents if isinstance(c, dict) and c.get("code")],
+            key=_sort_key,
+        )
+        codes: list[str] = []
+        for item in ordered[: max(int(top_n), 1)]:
+            codes.append(str(item["code"]))
+        meta = {
+            "source": "stock_pool",
+            "pool_id": row["pool_id"],
+            "pool_name": row["pool_name"],
+            "as_of": row["date"],
+            "count": len(codes),
+            "top_n": top_n,
+        }
+        return codes, meta
+    except Exception as e:
+        logger.warning(f"load_latest_pool_candidates failed: {e}")
+        return [], None
+
+
+def resolve_screening_candidates(
+    request_candidates: list[str] | None,
+    *,
+    top_n: int = DEFAULT_CANDIDATE_TOP_N,
+    warnings: list[str] | None = None,
+) -> tuple[list[str], dict]:
+    """Resolve candidate codes: request > stock-pool TopN > hardcoded fallback."""
+    if request_candidates:
+        meta = {
+            "source": "request",
+            "count": len(request_candidates),
+            "top_n": top_n,
+        }
+        return list(request_candidates), meta
+
+    codes, meta = load_latest_pool_candidates(top_n=top_n)
+    if codes and meta:
+        if warnings is not None:
+            warnings.append(
+                f"候选来自股票池「{meta.get('pool_name')}」Top{len(codes)}"
+                f"（刷新日 {meta.get('as_of')}）"
+            )
+        return codes, meta
+
+    if warnings is not None:
+        warnings.append(
+            "无股票池历史，回退硬编码候选名单；请先在「智能股票池」刷新一次以启用真实选股"
+        )
+    return list(DEFAULT_CANDIDATES), {
+        "source": "hardcoded_fallback",
+        "count": len(DEFAULT_CANDIDATES),
+        "top_n": top_n,
+    }
+
+
 class ScreeningRunRequest(BaseModel):
     candidates: list[str] | None = Field(default=None, description="Stock codes to screen")
     include_llm: bool = Field(default=False, description="Reserved for optional heavy LLM review")
     risk_start_date: str | None = Field(default=None, description="Risk window start date")
     risk_end_date: str | None = Field(default=None, description="Risk window end date")
     generated_strategy: dict | None = Field(default=None, description="Optional AI-generated strategy params")
+    allow_untrusted_data: bool = Field(
+        default=False,
+        description="若为 true，数据不可信时仍返回诊断结果，但买入桶仍会被清空",
+    )
+    candidate_top_n: int = Field(
+        default=DEFAULT_CANDIDATE_TOP_N,
+        ge=5,
+        le=50,
+        description="未传 candidates 时，从最新股票池取 TopN",
+    )
+    include_risk: bool = Field(
+        default=False,
+        description="是否计算组合风险摘要（较慢，默认关闭以避免超时）",
+    )
+    include_pairs: bool = Field(
+        default=False,
+        description="是否拉取配对信号（较慢，默认关闭）",
+    )
+    async_mode: bool = Field(
+        default=True,
+        description="异步任务模式：立即返回 task_id，前端轮询 /status（推荐，避免超时）",
+    )
 
 
 def _json_safe(value: Any) -> Any:
@@ -629,49 +863,197 @@ async def _collect_pair_signals(warnings: list[str]) -> list[dict]:
         return []
 
 
-async def _collect_candidates(codes: list[str], warnings: list[str], factor_scores: dict[str, dict] | None = None) -> list[dict]:
-    from .mean_reversion import get_stock_signal
+def _code_to_feature_dir(code: str) -> str:
+    c = str(code).strip()
+    if "." in c:  # 600519.SS
+        try:
+            return normalize_stock_code(c, target="qlib").lower()
+        except Exception:
+            pass
+    return c.lower()
+
+
+def _read_recent_closes_from_bin(code: str, lookback: int = 60) -> list[float] | None:
+    """Read recent close prices directly from Qlib bin — no D.features / joblib.
+
+    This avoids Windows joblib spawn hang that made screening exceed 90s.
+    """
+    import numpy as np
+
+    feature_name = _code_to_feature_dir(code)
+    bin_path = CN_DATA_DIR / "features" / feature_name / "close.day.bin"
+    if not bin_path.exists():
+        # try uppercase qlib form folder variants
+        alt = feature_name
+        if feature_name.startswith("sh") or feature_name.startswith("sz"):
+            pass
+        bin_path = CN_DATA_DIR / "features" / alt / "close.day.bin"
+        if not bin_path.exists():
+            return None
+    try:
+        raw = np.fromfile(str(bin_path), dtype="<f")
+        if len(raw) < 3:
+            return None
+        vals = raw[1:]
+        valid = vals[np.isfinite(vals) & (vals > 0)]
+        if len(valid) < 20:
+            return None
+        return [float(x) for x in valid[-lookback:]]
+    except Exception:
+        return None
+
+
+def _signal_from_closes(
+    code: str,
+    closes: list[float],
+    *,
+    rsi_threshold: int = 70,
+    bollinger_period: int = 20,
+) -> dict | None:
+    import pandas as pd
+    from api.mean_reversion import calc_rsi, calc_bollinger_bands, get_stock_name
+
+    if len(closes) < max(bollinger_period, 15):
+        return None
+    prices = pd.Series(closes)
+    rsi = calc_rsi(prices)
+    bb = calc_bollinger_bands(prices, bollinger_period)
+    current_rsi = float(rsi.iloc[-1])
+    bb_pos = float(bb["position"].iloc[-1])
+    if not math.isfinite(current_rsi):
+        current_rsi = 50.0
+    if not math.isfinite(bb_pos):
+        bb_pos = 0.5
+
+    is_overbought_rsi = current_rsi > rsi_threshold
+    is_oversold_rsi = current_rsi < (100 - rsi_threshold)
+    is_overbought_bb = bb_pos > 0.8
+    is_oversold_bb = bb_pos < 0.2
+    if is_overbought_rsi and is_overbought_bb:
+        signal, strength = "超买", "强"
+    elif is_oversold_rsi and is_oversold_bb:
+        signal, strength = "超卖", "强"
+    elif is_overbought_rsi or is_overbought_bb:
+        signal, strength = "超买", "中"
+    elif is_oversold_rsi or is_oversold_bb:
+        signal, strength = "超卖", "中"
+    else:
+        signal, strength = "关注", "弱"
+
+    last = float(prices.iloc[-1])
+    prev = float(prices.iloc[-2]) if len(prices) >= 2 else last
+    change_pct = ((last / prev) - 1.0) * 100 if prev > 0 else 0.0
+    try:
+        from core.price_adjust import to_forward_price
+        display_price = float(to_forward_price(last, code))
+    except Exception:
+        display_price = last
+
+    return {
+        "code": code,
+        "name": get_stock_name(code),
+        "rsi": round(current_rsi, 1),
+        "bollingerPosition": round(bb_pos, 2),
+        "signal": signal,
+        "strength": strength,
+        "price": round(display_price, 2),
+        "change_pct": round(change_pct, 2),
+        "rsiThreshold": rsi_threshold,
+        "bollingerPeriod": bollinger_period,
+        "status": "ok",
+        "source": "bin",
+    }
+
+
+def _batch_mean_reversion_signals(
+    codes: list[str],
+    *,
+    rsi_threshold: int = 70,
+    bollinger_period: int = 20,
+) -> dict[str, dict]:
+    """Fast mean-reversion via local close.day.bin (no Qlib Dataset multiprocessing)."""
+    if not codes:
+        return {}
+    out: dict[str, dict] = {}
+    for raw in list(dict.fromkeys(codes)):
+        try:
+            code = normalize_stock_code(raw, target="qlib")
+        except Exception:
+            code = str(raw)
+        closes = _read_recent_closes_from_bin(code, lookback=60)
+        if not closes:
+            continue
+        sig = _signal_from_closes(
+            code,
+            closes,
+            rsi_threshold=rsi_threshold,
+            bollinger_period=bollinger_period,
+        )
+        if sig:
+            out[code] = sig
+    return out
+
+
+def _collect_candidates_sync(
+    codes: list[str],
+    warnings: list[str],
+    factor_scores: dict[str, dict] | None = None,
+) -> list[dict]:
+    """Sync candidate build (safe for background thread)."""
+    t0 = time.perf_counter()
+    signal_map = _batch_mean_reversion_signals(codes)
+    elapsed = time.perf_counter() - t0
+    logger.info(f"screening bin mean-reversion: {len(signal_map)}/{len(codes)} in {elapsed:.2f}s")
 
     candidates = []
     for raw_code in codes:
         try:
             code = normalize_stock_code(raw_code, target="qlib")
-            signal = await get_stock_signal(code=code, rsi_threshold=70, bollinger_period=20)
-            signal_data = _json_safe(signal)
-            candidate = {
+        except Exception:
+            code = str(raw_code)
+        signal_data = signal_map.get(code)
+        if signal_data:
+            candidates.append({
                 "code": code,
                 "name": _resolve_candidate_name(code, signal_data.get("name")),
                 "price": signal_data.get("price"),
                 "change_pct": signal_data.get("change_pct", 0),
                 "mean_reversion": signal_data,
                 "agent": {"status": "missing"},
-            }
-            candidates.append(candidate)
-        except Exception as exc:
-            logger.warning(f"Screening candidate {raw_code} failed: {exc}")
-            warnings.append(f"{raw_code} 均值回归信号读取失败：{exc}")
-            try:
-                code = normalize_stock_code(raw_code, target="qlib")
-            except Exception:
-                code = raw_code
+            })
+        else:
+            warnings.append(f"{code} 均值回归信号暂不可用（本地bin无效）")
             candidates.append({
                 "code": code,
                 "name": _resolve_candidate_name(code),
                 "mean_reversion": {"status": "unavailable"},
                 "agent": {"status": "missing"},
-                "warning": str(exc),
+                "warning": "mean_reversion_unavailable",
             })
     return attach_factor_scores_to_candidates(candidates, factor_scores)
+
+
+async def _collect_candidates(codes: list[str], warnings: list[str], factor_scores: dict[str, dict] | None = None) -> list[dict]:
+    return await asyncio.to_thread(_collect_candidates_sync, codes, warnings, factor_scores)
 
 
 async def _collect_risk_summary(codes: list[str], start_date: str | None, end_date: str | None, warnings: list[str]) -> dict:
     try:
         from .risk import analyze_risk
 
+        limited = codes[:SCREENING_RISK_CODE_LIMIT]
+        if len(codes) > SCREENING_RISK_CODE_LIMIT:
+            warnings.append(
+                f"风险摘要仅用前{SCREENING_RISK_CODE_LIMIT}只候选加速计算（共{len(codes)}只）"
+            )
+        if not limited:
+            return {"status": "unavailable", "message": "no_codes"}
+
         if not start_date:
             start_date = (date.today() - timedelta(days=120)).isoformat()
-        request = RiskAnalysisRequest(codes=codes, start_date=start_date, end_date=end_date)
-        response = await analyze_risk(request)
+        request = RiskAnalysisRequest(codes=limited, start_date=start_date, end_date=end_date)
+        # Risk can hang on external fallback; bound wait
+        response = await asyncio.wait_for(analyze_risk(request), timeout=25.0)
         data = _json_safe(response)
         metrics = data.get("metrics", {})
         return {
@@ -681,32 +1063,100 @@ async def _collect_risk_summary(codes: list[str], start_date: str | None, end_da
             "metrics": metrics,
             "position_sizing": data.get("position_sizing", {}),
         }
+    except asyncio.TimeoutError:
+        logger.warning("Screening risk summary timed out after 25s")
+        warnings.append("组合风险分析超时（25s），已跳过")
+        return {"status": "timeout", "error": "risk_timeout_25s"}
     except Exception as exc:
         logger.warning(f"Screening risk summary failed: {exc}")
         warnings.append(f"组合风险分析失败：{exc}")
         return {"status": "unavailable", "error": str(exc)}
 
 
-@router.post("/run")
-async def run_screening_workflow(request: ScreeningRunRequest | None = None):
-    request = request or ScreeningRunRequest()
+async def _timed(coro, timeout_s: float, default, warnings: list[str], label: str):
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout_s)
+    except asyncio.TimeoutError:
+        warnings.append(f"{label}超时（{timeout_s:.0f}s），已跳过")
+        return default
+    except Exception as e:
+        warnings.append(f"{label}失败：{e}")
+        return default
+
+
+async def execute_screening_workflow(request: ScreeningRunRequest) -> dict:
+    """Core screening logic (used by sync and async runners)."""
     warnings: list[str] = []
-    raw_candidates = request.candidates or DEFAULT_CANDIDATES
-    codes = []
+    run_t0 = time.perf_counter()
+
+    trust_report = None
+    try:
+        from core.data_trust import evaluate_data_trust
+
+        # Smaller sample for speed on cold cache; cache hit is instant
+        trust_report = evaluate_data_trust(max_sample=120)
+        if not trust_report.get("trusted"):
+            warnings.append(f"DATA_UNTRUSTED: {trust_report.get('message')}")
+            if not request.allow_untrusted_data:
+                warnings.append("data_trust: buyable signals will be cleared")
+    except Exception as exc:
+        warnings.append(f"data_trust 评估失败：{exc}")
+
+    raw_candidates, candidate_source = resolve_screening_candidates(
+        request.candidates,
+        top_n=request.candidate_top_n,
+        warnings=warnings,
+    )
+    codes: list[str] = []
     for raw_code in raw_candidates:
         try:
             codes.append(normalize_stock_code(raw_code, target="qlib"))
         except Exception as exc:
             warnings.append(f"股票代码格式不支持：{raw_code}（{exc}）")
 
-    data_health = await _collect_data_health(warnings)
-    hot_sectors = await _collect_hot_sectors(warnings)
-    etf_signals = await _collect_etf_signals(warnings)
-    pair_signals = await _collect_pair_signals(warnings)
+    health_w: list[str] = []
+    hot_w: list[str] = []
+    etf_w: list[str] = []
+    pair_w: list[str] = []
+
+    # Bound each side-channel; pair/risk are optional (slow)
+    coros = [
+        _timed(_collect_data_health(health_w), 12.0, {"overall_status": "unknown"}, warnings, "数据健康"),
+        _timed(_collect_hot_sectors(hot_w), 10.0, [], warnings, "热点板块"),
+        _timed(_collect_etf_signals(etf_w), 10.0, [], warnings, "ETF信号"),
+    ]
+    if request.include_pairs:
+        coros.append(_timed(_collect_pair_signals(pair_w), 8.0, [], warnings, "配对信号"))
+
+    gathered = await asyncio.gather(*coros)
+    data_health = gathered[0]
+    hot_sectors = gathered[1]
+    etf_signals = gathered[2]
+    pair_signals = gathered[3] if request.include_pairs else []
+    for part in (health_w, hot_w, etf_w, pair_w):
+        warnings.extend(part)
+
     factor_result, factor_task = _load_latest_completed_factor_result(warnings)
     factor_summary = summarize_factor_analysis_result(factor_result, factor_task)
     factor_scores = _compute_candidate_factor_scores(codes, factor_summary, warnings)
-    candidates = await _collect_candidates(codes, warnings, factor_scores)
+
+    # Candidates from local bins (fast, no joblib)
+    cand_w: list[str] = []
+    candidates = await _collect_candidates(codes, cand_w, factor_scores)
+    warnings.extend(cand_w)
+
+    risk_summary: dict = {"status": "skipped", "message": "include_risk=false"}
+    if request.include_risk:
+        risk_w: list[str] = []
+        risk_summary = await _timed(
+            _collect_risk_summary(codes, request.risk_start_date, request.risk_end_date, risk_w),
+            15.0,
+            {"status": "timeout"},
+            warnings,
+            "组合风险",
+        )
+        warnings.extend(risk_w)
+
     try:
         from .ai_strategy import attach_ai_strategy_scores_to_candidates, summarize_ai_strategy_scores
 
@@ -717,12 +1167,6 @@ async def run_screening_workflow(request: ScreeningRunRequest | None = None):
         logger.warning(f"Screening AI strategy scoring failed: {exc}")
         warnings.append(f"AI策略联动评分失败：{exc}")
         ai_strategy_summary = {"status": "unavailable", "error": str(exc)}
-    risk_summary = await _collect_risk_summary(
-        codes,
-        request.risk_start_date,
-        request.risk_end_date,
-        warnings,
-    )
 
     if request.include_llm:
         warnings.append("已收到 include_llm=true，但第一版工作流暂不自动消耗大模型额度。")
@@ -739,30 +1183,184 @@ async def run_screening_workflow(request: ScreeningRunRequest | None = None):
         warnings=warnings,
         include_llm=request.include_llm,
     )
+    result["candidate_source"] = candidate_source
+
+    if trust_report is not None:
+        result["data_trust"] = {
+            "trusted": trust_report.get("trusted"),
+            "status": trust_report.get("status"),
+            "metrics": trust_report.get("metrics"),
+            "reasons": trust_report.get("reasons"),
+            "checked_at": trust_report.get("checked_at"),
+        }
+        result["trading_allowed"] = bool(trust_report.get("trading_allowed"))
+        if not trust_report.get("trusted"):
+            from core.data_trust import apply_untrusted_screening_block
+
+            result = apply_untrusted_screening_block(result, trust_report)
 
     try:
-        import json
         buyable = (result.get("buckets") or {}).get("buyable", [])
-        if buyable:
-            top5 = sorted(buyable, key=lambda x: x.get("score", 0) or 0, reverse=True)[:5]
-            top5_min = [{"code": s.get("code"), "name": s.get("name"), "score": s.get("score")} for s in top5]
-            save_run(date.today().isoformat(), top5_min)
+        if buyable and (trust_report is None or trust_report.get("trusted")):
+            top5 = sorted(
+                buyable,
+                key=lambda x: (
+                    float(x.get("score") or 0),
+                    float((x.get("factor_signal") or {}).get("score") or 0),
+                ),
+                reverse=True,
+            )[:5]
+            top5_min = [
+                {
+                    "code": s.get("code"),
+                    "name": s.get("name"),
+                    "score": s.get("score"),
+                    "reason": s.get("reason"),
+                    "bucket": s.get("bucket"),
+                }
+                for s in top5
+            ]
+            save_run(date.today().isoformat(), top5_min, candidate_source=candidate_source)
+            result["saved_buyable_top5"] = top5_min
     except Exception as e:
         logger.warning(f"History save failed: {e}")
 
-    _check_circuit_breaker(warnings)
+    breaker = _check_circuit_breaker(warnings)
+    result["circuit_breaker"] = breaker
+    if breaker.get("active"):
+        buckets = dict(result.get("buckets") or {})
+        buyable = list(buckets.get("buyable") or [])
+        watch = list(buckets.get("watch_only") or [])
+        for item in buyable:
+            moved = dict(item)
+            moved["action"] = "降级"
+            moved["bucket"] = "watch_only"
+            moved["reason"] = "熔断：近3期推荐 T+5 胜率过低，暂停新开仓"
+            watch.append(moved)
+        buckets["buyable"] = []
+        buckets["watch_only"] = watch
+        result["buckets"] = buckets
+        result["trading_allowed"] = False
+        new_candidates = []
+        for c in result.get("candidates") or []:
+            row = dict(c)
+            if row.get("bucket") == "buyable":
+                row["bucket"] = "watch_only"
+                row["action"] = "降级"
+                row["reason"] = "熔断：近3期推荐 T+5 胜率过低，暂停新开仓"
+            new_candidates.append(row)
+        result["candidates"] = new_candidates
+
     if warnings:
         existing = result.get("warnings") or []
         result["warnings"] = existing + [w for w in warnings if w not in existing]
 
+    result["timing"] = {
+        "total_seconds": round(time.perf_counter() - run_t0, 2),
+        "candidate_count": len(codes),
+    }
+    logger.info(
+        f"screening execute done in {result['timing']['total_seconds']}s "
+        f"candidates={len(codes)} source={candidate_source.get('source')}"
+    )
     return result
+
+
+def _run_screening_task(task_id: str, request_data: dict) -> None:
+    """Background worker for async screening."""
+    try:
+        screening_task_store.update_progress(task_id, 15)
+        request = ScreeningRunRequest(**(request_data or {}))
+        # Run async core in a fresh event loop inside the worker thread
+        result = asyncio.run(execute_screening_workflow(request))
+        screening_task_store.set_completed(task_id, json.dumps(result, ensure_ascii=False, default=str))
+        logger.info(f"screening task {task_id} completed")
+    except Exception as e:
+        logger.exception(f"screening task {task_id} failed: {e}")
+        screening_task_store.set_failed(task_id, str(e))
+
+
+@router.post("/run")
+async def run_screening_workflow(request: ScreeningRunRequest | None = None):
+    """Run post-close screening.
+
+    Default async_mode=true: returns {task_id, status:running} immediately.
+    Poll GET /api/screening/status/{task_id} until completed.
+    Set async_mode=false for legacy one-shot (may still time out in browser).
+    """
+    import uuid
+    import threading
+
+    request = request or ScreeningRunRequest()
+
+    if not request.async_mode:
+        return await execute_screening_workflow(request)
+
+    task_id = str(uuid.uuid4())
+    try:
+        screening_task_store.init_db()
+        screening_task_store.create_task(
+            task_id,
+            json.dumps(request.model_dump(), ensure_ascii=False, default=str),
+        )
+    except Exception as e:
+        logger.error(f"create screening task failed: {e}")
+        raise HTTPException(status_code=500, detail=f"创建筛选任务失败: {e}")
+
+    thread = threading.Thread(
+        target=_run_screening_task,
+        args=(task_id, request.model_dump(mode="json")),
+        name=f"screening-{task_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+
+    return {
+        "task_id": task_id,
+        "status": "running",
+        "progress": 5,
+        "message": "盘后选股任务已启动，请轮询 /api/screening/status/{task_id}",
+        "async": True,
+    }
+
+
+@router.get("/status/{task_id}")
+async def get_screening_task_status(task_id: str):
+    """Poll async screening task status."""
+    task = screening_task_store.get_task(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    status = task.get("status") or "unknown"
+    progress = int(task.get("progress") or 0)
+    base = {
+        "task_id": task_id,
+        "status": status,
+        "progress": progress,
+        "created_at": task.get("created_at"),
+        "updated_at": task.get("updated_at"),
+        "error": task.get("error"),
+    }
+    if status == "completed" and task.get("result_json"):
+        try:
+            result = json.loads(task["result_json"])
+        except Exception:
+            result = {}
+        # Flatten result fields for frontend convenience + keep wrapper
+        if isinstance(result, dict):
+            return {**result, **base, "result": result}
+        return {**base, "result": result}
+    if status == "failed":
+        return base
+    return base
 
 
 @router.get("/report")
 async def get_screening_report():
+    """Rolling T+5 verification report for saved buyable recommendations."""
     try:
-        import json, numpy as np, qlib
-        from qlib.data import D
+        import numpy as np
+
         runs = get_recent_runs(limit=20)
         if not runs:
             return {"status": "unavailable", "message": "no_screening_history"}
@@ -770,67 +1368,32 @@ async def get_screening_report():
         period_results = []
         all_winrates = []
         all_returns = []
-        for run in runs:
-            buyable = json.loads(run["top_buyable_json"])
-            if not buyable:
+        # Oldest-first for chronological rolling stats in recent_3
+        for run in reversed(runs):
+            stats = verify_run_t5(run, persist=True)
+            if not stats:
                 continue
-            run_date = run["run_date"]
-            try:
-                cal = list(D.calendar(freq="day"))
-                cal_str = [str(d)[:10] for d in cal]
-                if run_date not in cal_str:
-                    continue
-                idx = cal_str.index(run_date)
-                t5_idx = min(idx + 5, len(cal_str) - 1)
-                t5_date = cal_str[t5_idx]
-                if t5_date == run_date:
-                    continue
-            except Exception:
-                continue
-            wins = 0
-            total = 0
-            returns = []
-            stock_results = []
-            for stock in buyable:
-                code = stock.get("code", "")
-                if not code:
-                    continue
-                try:
-                    prices = D.features([code], ["$close"], start_time=run_date, end_time=t5_date)
-                    if prices is None or prices.empty:
-                        continue
-                    cs = prices["$close"]
-                    if len(cs) < 2:
-                        continue
-                    t0 = float(cs.iloc[0])
-                    t5 = float(cs.iloc[-1])
-                    if t0 <= 0:
-                        continue
-                    ret = (t5 / t0) - 1
-                    total += 1
-                    returns.append(ret)
-                    if ret > 0:
-                        wins += 1
-                    stock_results.append({"code": code, "name": stock.get("name"), "t5_return": round(ret, 4), "hit": ret > 0})
-                except Exception:
-                    continue
-            if total == 0:
-                continue
-            wr = wins / total
-            avg_ret = sum(returns) / len(returns)
-            all_winrates.append(wr)
-            all_returns.append(avg_ret)
-            period_results.append({"run_date": run_date, "win_rate": round(wr, 4), "avg_t5_return": round(avg_ret, 4), "stocks": total, "won": wins, "stock_details": stock_results})
-            update_verification(run_date, wr, avg_ret)
+            all_winrates.append(stats["win_rate"])
+            all_returns.append(stats["avg_t5_return"])
+            period_results.append(stats)
 
         if not period_results:
-            return {"status": "insufficient_data", "message": "not_enough_history"}
+            return {
+                "status": "insufficient_data",
+                "message": "not_enough_history_or_t5_not_ready",
+                "total_runs": len(runs),
+            }
 
         rolling_20_wr = round(float(np.mean(all_winrates)) if all_winrates else 0, 4)
         rolling_20_avg_ret = round(float(np.mean(all_returns)) if all_returns else 0, 4)
         recent_3_wr = all_winrates[-3:] if len(all_winrates) >= 3 else all_winrates
-        recent_3_avg = round(float(np.mean(recent_3_wr)) if recent_3_wr else 0, 4)
-        cb_active = len(recent_3_wr) >= 3 and all(w < 0.4 for w in recent_3_wr)
+        recent_3_ret = all_returns[-3:] if len(all_returns) >= 3 else all_returns
+        recent_3_avg_wr = round(float(np.mean(recent_3_wr)) if recent_3_wr else 0, 4)
+        recent_3_avg_ret = round(float(np.mean(recent_3_ret)) if recent_3_ret else 0, 4)
+        cb_active = (
+            len(recent_3_wr) >= CIRCUIT_BREAKER_MIN_PERIODS
+            and all(w < CIRCUIT_BREAKER_WIN_RATE for w in recent_3_wr)
+        )
 
         return {
             "status": "available",
@@ -838,10 +1401,13 @@ async def get_screening_report():
             "periods_with_data": len(period_results),
             "rolling_20_win_rate": rolling_20_wr,
             "rolling_20_avg_t5_return": rolling_20_avg_ret,
-            "recent_3_win_rate": recent_3_avg,
+            "recent_3_win_rate": recent_3_avg_wr,
+            "recent_3_avg_t5_return": recent_3_avg_ret,
             "circuit_breaker_active": cb_active,
-            "suggestion": "defensive" if cb_active else ("normal" if rolling_20_wr >= 0.5 else "cautious"),
-            "period_details": period_results,
+            "suggestion": (
+                "defensive" if cb_active else ("normal" if rolling_20_wr >= 0.5 else "cautious")
+            ),
+            "period_details": list(reversed(period_results)),  # newest first for UI
         }
     except Exception as e:
         logger.error(f"Report failed: {e}")

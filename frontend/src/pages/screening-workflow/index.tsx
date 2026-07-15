@@ -1,5 +1,5 @@
 import { useMemo } from "react"
-import { useMutation } from "@tanstack/react-query"
+import { useMutation, useQuery } from "@tanstack/react-query"
 import { AlertCircle, CheckCircle2, Clock3, Eye, ListChecks, Loader2, RefreshCw, ShieldAlert } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -127,8 +127,14 @@ export function ScreeningWorkflowPage() {
   const mutation = useMutation({
     mutationFn: () => api.screening.run(generatedStrategy ? { generated_strategy: generatedStrategy } : undefined),
   })
+  const reportQuery = useQuery({
+    queryKey: ["screening", "report"],
+    queryFn: () => api.screening.report(),
+    refetchInterval: 120_000,
+  })
 
   const data = mutation.data
+  const report = reportQuery.data
 
   const openTradePlan = () => {
     const codes = Object.values(data?.buckets || {})
@@ -160,7 +166,7 @@ export function ScreeningWorkflowPage() {
             盘后选股
           </h1>
           <p className="text-sm text-muted-foreground">
-            汇总数据健康、热点、ETF、均值回归、配对和风险信号，生成候选分桶。
+            默认从最新智能股票池 TopN 取候选；本地 bin 算均值回归（异步任务，不再受 90 秒 HTTP 超时限制）。
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -195,6 +201,91 @@ export function ScreeningWorkflowPage() {
           已纳入AI生成策略：本轮盘后选股会把最近一次“用此策略跑回测”的策略参数作为辅助决策依据。
         </div>
       )}
+
+      {data?.candidate_source && (
+        <div className="rounded-md border border-border bg-muted/40 p-3 text-sm">
+          <span className="font-medium">候选来源：</span>
+          {data.candidate_source.source === "stock_pool" && (
+            <span>
+              股票池「{data.candidate_source.pool_name}」Top{data.candidate_source.count}
+              （刷新日 {data.candidate_source.as_of}）
+            </span>
+          )}
+          {data.candidate_source.source === "request" && <span>请求指定名单</span>}
+          {data.candidate_source.source === "hardcoded_fallback" && (
+            <span className="text-amber-700 dark:text-amber-300">
+              硬编码兜底（请先刷新智能股票池）
+            </span>
+          )}
+          {data.trading_allowed === false && (
+            <span className="ml-2 text-red-600">· 当前禁止新开仓信号</span>
+          )}
+        </div>
+      )}
+
+      {(data?.circuit_breaker?.active || report?.circuit_breaker_active) && (
+        <div className="flex items-start gap-2 rounded-md border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-300">
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            熔断已触发：近 3 期推荐 T+5 胜率偏低，buyable 已清空。建议暂停新开仓，进入观察期。
+          </span>
+        </div>
+      )}
+
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">信号回验（T+5）</CardTitle>
+          <CardDescription>基于历史盘后推荐落库结果的滚动绩效，胜率与收益分开统计</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {reportQuery.isLoading ? (
+            <div className="text-sm text-muted-foreground">加载回验中…</div>
+          ) : report?.status === "available" ? (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
+              <div>
+                <div className="text-muted-foreground">近20期胜率</div>
+                <div className="text-lg font-semibold">
+                  {typeof report.rolling_20_win_rate === "number"
+                    ? `${(report.rolling_20_win_rate * 100).toFixed(1)}%`
+                    : "--"}
+                </div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">近20期 T+5 均收益</div>
+                <div className="text-lg font-semibold">
+                  {typeof report.rolling_20_avg_t5_return === "number"
+                    ? `${(report.rolling_20_avg_t5_return * 100).toFixed(2)}%`
+                    : "--"}
+                </div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">近3期胜率</div>
+                <div className="text-lg font-semibold">
+                  {typeof report.recent_3_win_rate === "number"
+                    ? `${(report.recent_3_win_rate * 100).toFixed(1)}%`
+                    : "--"}
+                </div>
+              </div>
+              <div>
+                <div className="text-muted-foreground">建议</div>
+                <div className="text-lg font-semibold">
+                  {report.suggestion === "defensive"
+                    ? "防守/暂停"
+                    : report.suggestion === "cautious"
+                      ? "谨慎"
+                      : "正常"}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground">
+              {report?.message === "no_screening_history"
+                ? "暂无筛选历史。请先运行盘后选股并等待 T+5 后回验。"
+                : report?.message || "回验数据不足"}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <div className="grid gap-4 md:grid-cols-4">
         <Card>

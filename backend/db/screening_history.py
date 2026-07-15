@@ -5,7 +5,7 @@ Stores top-N buyable stocks per run for rolling performance validation.
 """
 import sqlite3
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -29,25 +29,48 @@ def init_db():
             created_at TEXT NOT NULL,
             win_rate_verified REAL,
             avg_t5_return REAL,
-            verified_at TEXT
+            verified_at TEXT,
+            candidate_source_json TEXT
         )
     """)
+    # Lightweight migration for DBs created before candidate_source_json
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(screening_history)").fetchall()}
+    if "candidate_source_json" not in cols:
+        conn.execute("ALTER TABLE screening_history ADD COLUMN candidate_source_json TEXT")
     conn.commit()
     conn.close()
 
 
-def save_run(run_date: str, buyable_top5: list[dict]) -> int:
+def save_run(
+    run_date: str,
+    buyable_top5: list[dict],
+    candidate_source: dict | None = None,
+) -> int:
     """Save top-5 buyable stocks from a screening run. Returns row id."""
     init_db()
     conn = _get_db()
     top_json = json.dumps(buyable_top5, ensure_ascii=False)
+    source_json = json.dumps(candidate_source or {}, ensure_ascii=False)
     now = datetime.now().isoformat()
     conn.execute(
-        "INSERT OR REPLACE INTO screening_history (run_date, top_buyable_json, created_at) VALUES (?, ?, ?)",
-        (run_date, top_json, now),
+        """
+        INSERT INTO screening_history
+            (run_date, top_buyable_json, created_at, candidate_source_json)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(run_date) DO UPDATE SET
+            top_buyable_json=excluded.top_buyable_json,
+            created_at=excluded.created_at,
+            candidate_source_json=excluded.candidate_source_json,
+            win_rate_verified=NULL,
+            avg_t5_return=NULL,
+            verified_at=NULL
+        """,
+        (run_date, top_json, now, source_json),
     )
     conn.commit()
-    row_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    row_id = conn.execute(
+        "SELECT id FROM screening_history WHERE run_date = ?", (run_date,)
+    ).fetchone()[0]
     conn.close()
     return row_id
 
@@ -68,7 +91,7 @@ def get_last_n_runs(n: int = 3, min_age_days: int = 5) -> list[dict]:
     """Get last N runs that are at least min_age_days old (for verified T+N returns)."""
     init_db()
     conn = _get_db()
-    cutoff = (date.today().isoformat())
+    cutoff = (date.today() - timedelta(days=max(int(min_age_days), 0))).isoformat()
     rows = conn.execute(
         "SELECT * FROM screening_history WHERE run_date <= ? ORDER BY run_date DESC LIMIT ?",
         (cutoff, n),
@@ -78,13 +101,27 @@ def get_last_n_runs(n: int = 3, min_age_days: int = 5) -> list[dict]:
 
 
 def update_verification(run_date: str, win_rate: float, avg_t5_return: float):
-    """Update verified win rate and T+5 return for a historical run."""
+    """Update verified win rate and T+5 return for a historical run (separate fields)."""
     init_db()
     conn = _get_db()
     now = datetime.now().isoformat()
     conn.execute(
         "UPDATE screening_history SET win_rate_verified=?, avg_t5_return=?, verified_at=? WHERE run_date=?",
-        (round(win_rate, 4), round(avg_t5_return, 4), now, run_date),
+        (round(float(win_rate), 4), round(float(avg_t5_return), 4), now, run_date),
     )
     conn.commit()
     conn.close()
+
+
+def get_latest_buyable(limit: int = 3) -> list[dict]:
+    """Latest saved buyable list (for dashboard focus)."""
+    runs = get_recent_runs(limit=1)
+    if not runs:
+        return []
+    try:
+        items = json.loads(runs[0].get("top_buyable_json") or "[]")
+    except Exception:
+        return []
+    if not isinstance(items, list):
+        return []
+    return items[:limit]

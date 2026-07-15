@@ -122,7 +122,7 @@ export const commonInstructions = {
     { title: "模型选择", description: "支持 LightGBM、XGBoost 等机器学习模型" },
     { title: "训练参数", description: "设置训练起止日期，建议至少 1 年数据" },
     { title: "Top K 策略", description: "每期选择因子评分最高的 K 只股票" },
-    { title: "调仓周期", description: "每隔 N 天调仓一次，常用 20 日" },
+    { title: "调仓周期", description: "每 N 个交易日调仓一次（已接入引擎），非调仓日持有；常用 5/10/20 日" },
     { title: "交易成本", description: "设置佣金率和滑点，影响回测准确性" },
     { title: "夏普比率", description: "年化收益 / 波动率，越大越好，>1 为优秀" },
     { title: "最大回撤", description: "从峰值到谷底的最大跌幅，越小越好" },

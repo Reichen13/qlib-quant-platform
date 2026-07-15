@@ -307,6 +307,11 @@ export interface ScreeningRunRequest {
   risk_start_date?: string
   risk_end_date?: string
   generated_strategy?: Record<string, any>
+  allow_untrusted_data?: boolean
+  candidate_top_n?: number
+  include_risk?: boolean
+  include_pairs?: boolean
+  async_mode?: boolean
 }
 
 export interface ScreeningRunResponse {
@@ -322,6 +327,30 @@ export interface ScreeningRunResponse {
   buckets: Record<string, ScreeningCandidate[]>
   llm_review: Record<string, any>
   warnings: string[]
+  candidate_source?: Record<string, any>
+  trading_allowed?: boolean
+  circuit_breaker?: {
+    active?: boolean
+    message?: string | null
+    recent_win_rates?: number[]
+    recent_avg_t5_returns?: number[]
+  }
+  saved_buyable_top5?: Array<Record<string, any>>
+  data_trust?: Record<string, any>
+}
+
+export interface ScreeningReportResponse {
+  status: string
+  message?: string
+  total_runs?: number
+  periods_with_data?: number
+  rolling_20_win_rate?: number
+  rolling_20_avg_t5_return?: number
+  recent_3_win_rate?: number
+  recent_3_avg_t5_return?: number
+  circuit_breaker_active?: boolean
+  suggestion?: string
+  period_details?: Array<Record<string, any>>
 }
 
 // 因子 IC 类型
@@ -736,15 +765,55 @@ export const api = {
       fetch(`${API_BASE}/api/etf/list`).then(r => handleResponse<any>(r)),
   },
 
-  // 盘后选股工作流
+  // 盘后选股工作流（默认异步任务 + 轮询，避免浏览器 90s 超时）
   screening: {
-    run: (params?: ScreeningRunRequest) =>
-      fetch(`${API_BASE}/api/screening/run`, {
+    run: async (params?: ScreeningRunRequest) => {
+      const body = { async_mode: true, ...(params || {}) }
+      const started = await fetch(`${API_BASE}/api/screening/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(params || {}),
-        timeoutMs: 120_000,
-      }).then(r => handleResponse<ScreeningRunResponse>(r)),
+        body: JSON.stringify(body),
+        timeoutMs: 30_000,
+      }).then((r) => handleResponse<any>(r))
+
+      // Legacy sync response already has buckets
+      if (started?.buckets || started?.candidates) {
+        return started as ScreeningRunResponse
+      }
+
+      const taskId = started?.task_id as string | undefined
+      if (!taskId) {
+        throw new Error(started?.message || "盘后选股未返回 task_id")
+      }
+
+      const deadline = Date.now() + 5 * 60_000 // 5 min client poll budget
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 1500))
+        const st = await fetch(
+          `${API_BASE}/api/screening/status/${encodeURIComponent(taskId)}`,
+          { timeoutMs: 30_000 },
+        ).then((r) => handleResponse<any>(r))
+
+        if (st?.status === "completed") {
+          // status endpoint flattens result fields onto the payload
+          if (st.buckets || st.candidates) return st as ScreeningRunResponse
+          if (st.result) return st.result as ScreeningRunResponse
+          throw new Error("任务完成但结果为空")
+        }
+        if (st?.status === "failed") {
+          throw new Error(st.error || "盘后选股任务失败")
+        }
+      }
+      throw new Error("盘后选股轮询超时（5分钟），请查看后端日志")
+    },
+    status: (taskId: string) =>
+      fetch(`${API_BASE}/api/screening/status/${encodeURIComponent(taskId)}`, {
+        timeoutMs: 30_000,
+      }).then((r) => handleResponse<any>(r)),
+    report: () =>
+      fetch(`${API_BASE}/api/screening/report`, { timeoutMs: 60_000 }).then((r) =>
+        handleResponse<ScreeningReportResponse>(r),
+      ),
   },
 
   // 数据管理
@@ -902,6 +971,8 @@ export const api = {
   dashboard: {
     summary: () =>
       fetch(`${API_BASE}/api/dashboard/summary`).then(r => handleResponse<any>(r)),
+    focus: () =>
+      fetch(`${API_BASE}/api/dashboard/focus`, { timeoutMs: 30_000 }).then(r => handleResponse<any>(r)),
   },
 
   // 宏观策略
@@ -1052,6 +1123,16 @@ export const api = {
       }).then(r => handleResponse<any>(r)),
     status: (taskId: string) =>
       fetch(`${API_BASE}/api/dl-models/status/${taskId}`).then(r => handleResponse<any>(r)),
+    predict: (modelName: string, topN: number = 20) =>
+      fetch(`${API_BASE}/api/dl-models/predict/${encodeURIComponent(modelName)}?top_n=${topN}`, {
+        method: "POST",
+      }).then(r => handleResponse<any>(r)),
+    predictStatus: (taskId: string) =>
+      fetch(`${API_BASE}/api/dl-models/predict/status/${taskId}`).then(r => handleResponse<any>(r)),
+    latestPrediction: (modelName: string) =>
+      fetch(`${API_BASE}/api/dl-models/predict/latest/${encodeURIComponent(modelName)}`).then(r => handleResponse<any>(r)),
+    signal: (topN: number = 10) =>
+      fetch(`${API_BASE}/api/dl-models/signal?top_n=${topN}`).then(r => handleResponse<any>(r)),
   },
 
   // 智能股票池

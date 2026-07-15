@@ -104,7 +104,7 @@ export function StockPoolPage() {
           <CardContent className="pt-6">
             <div className="flex gap-2">
               <Input
-                placeholder="股票池名称，如 沪深300低估值"
+                placeholder="股票池名称，如 核心研究池低估值"
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 className="max-w-sm"

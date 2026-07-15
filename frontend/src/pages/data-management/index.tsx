@@ -655,7 +655,7 @@ export function DataManagementPage() {
                 <TableCell>财务数据</TableCell>
                 <TableCell>本地数据库</TableCell>
                 <TableCell>季度更新</TableCell>
-                <TableCell>CSI300 成分股</TableCell>
+                <TableCell>核心研究池（约650只）</TableCell>
                 <TableCell>2019年起</TableCell>
               </TableRow>
             </TableBody>

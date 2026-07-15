@@ -15,6 +15,7 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -218,52 +219,43 @@ class StockPoolEngine:
             latest_date = latest_data.index.get_level_values("datetime").max()
             latest_factors = latest_data.xs(latest_date, level="datetime")
 
-            # ICIR 加权：如果配置了 ICIR 加权，从缓存读取 ICIR
+            # ICIR 加权：截面 z-score × 带符号 ICIR（负 IC 因子反向使用，禁止 abs 丢掉方向）
+            from core.factor_scoring import instrument_to_yf_code, score_with_signed_icir
+
             scores = {}
             if config.icir_weighted:
-                icir_map = self._load_icir_cache(config.icir_window)
+                icir_map, ic_map = self._load_icir_cache(config.icir_window)
                 if icir_map:
-                    for instrument in latest_factors.index:
-                        factor_vals = latest_factors.loc[instrument]
-                        score = 0.0
-                        total_weight = 0.0
-                        for fname in factor_names:
-                            val = factor_vals.get(fname, np.nan)
-                            if not np.isnan(val):
-                                w = abs(icir_map.get(fname, 0.0))
-                                score += val * w
-                                total_weight += w
-                        if total_weight > 0:
-                            score /= total_weight
-                        # 转换回 yfinance 格式
-                        yf_code = instrument.replace("SH", "").replace("SZ", "") + (".SS" if "SH" in instrument else ".SZ")
-                        scores[yf_code] = float(score)
+                    raw_scores = score_with_signed_icir(
+                        latest_factors,
+                        icir_map=icir_map,
+                        ic_map=ic_map,
+                        factor_names=list(factor_names),
+                    )
+                    for instrument, score in raw_scores.items():
+                        scores[instrument_to_yf_code(instrument)] = float(score)
                 else:
-                    # ICIR cache missing - cross-sectional z-score standardization fallback (Stage 4)
-                    self._warnings.append("ICIR cache missing, degraded to cross-sectional z-score equal-weight scoring")
+                    self._warnings.append(
+                        "ICIR cache missing, degraded to cross-sectional z-score equal-weight scoring"
+                    )
                     logger.warning("ICIR cache unavailable, using cross-sectional z-score degradation")
-                    # Per-factor cross-sectional z-score: prevents large-magnitude factors from dominating
-                    import numpy as np
-                    z_factors = latest_factors.copy()
-                    for col in z_factors.columns:
-                        c = z_factors[col]
-                        valid = c.notna() & np.isfinite(c)
-                        if valid.sum() > 1:
-                            z_factors.loc[valid, col] = (c[valid] - c[valid].mean()) / (c[valid].std() or 1.0)
-                        else:
-                            z_factors[col] = 0.0
-                    z_factors = z_factors.fillna(0.0)
-                    for instrument in z_factors.index:
-                        factor_vals = z_factors.loc[instrument]
-                        valid_vals = [v for v in factor_vals.values if not np.isnan(v)]
-                        yf_code = instrument.replace("SH", "").replace("SZ", "") + (".SS" if "SH" in instrument else ".SZ")
-                        scores[yf_code] = float(np.mean(valid_vals)) if valid_vals else 0.0
+                    raw_scores = score_with_signed_icir(
+                        latest_factors,
+                        icir_map={},
+                        ic_map={},
+                        factor_names=list(factor_names),
+                    )
+                    for instrument, score in raw_scores.items():
+                        scores[instrument_to_yf_code(instrument)] = float(score)
             else:
-                for instrument in latest_factors.index:
-                    factor_vals = latest_factors.loc[instrument]
-                    valid_vals = [v for v in factor_vals.values if not np.isnan(v)]
-                    yf_code = instrument.replace("SH", "").replace("SZ", "") + (".SS" if "SH" in instrument else ".SZ")
-                    scores[yf_code] = float(np.mean(valid_vals)) if valid_vals else 0.0
+                raw_scores = score_with_signed_icir(
+                    latest_factors,
+                    icir_map={},
+                    ic_map={},
+                    factor_names=list(factor_names),
+                )
+                for instrument, score in raw_scores.items():
+                    scores[instrument_to_yf_code(instrument)] = float(score)
 
             # 排序
             ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
@@ -279,15 +271,21 @@ class StockPoolEngine:
         except Exception as e:
             raise e
 
-    def _load_icir_cache(self, window: int) -> dict:
-        """从 parquet 缓存加载 ICIR 值"""
+    def _load_icir_cache(self, window: int) -> tuple[dict, dict]:
+        """从 parquet 缓存加载 ICIR/IC（带符号）。返回 (icir_map, ic_map)。"""
         import pandas as pd
         cache_path = Path.home() / ".qlib" / "cache" / "factor_icir.parquet"
         if cache_path.exists():
             df = pd.read_parquet(cache_path)
             if "icir" in df.columns and "factor" in df.columns:
-                return dict(zip(df["factor"], df["icir"]))
-        return {}
+                icir_map = dict(zip(df["factor"], df["icir"]))
+                ic_map = (
+                    dict(zip(df["factor"], df["ic"]))
+                    if "ic" in df.columns
+                    else {}
+                )
+                return icir_map, ic_map
+        return {}, {}
 
     def _neutralize_industry(self, scored: list[dict]) -> list[dict]:
         """行业中性化：行业内标准化得分"""
@@ -409,7 +407,7 @@ class StockPoolEngine:
         l2 = Layer2FactorScoring(**config.get("layer2", {}))
         l3 = Layer3PortfolioConstraints(**config.get("layer3", {}))
 
-        # 从真实数据获取初始股票范围：默认使用全市场 A 股，而不是固定沪深300。
+        # 从真实数据获取初始股票范围：默认使用全市场 A 股，而不是核心研究池。
         provider = self._get_provider()
         all_stocks = provider.get_all_stocks()
         if all_stocks:
