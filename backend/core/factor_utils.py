@@ -175,6 +175,7 @@ def neutralize_factor(
     factor_values: pd.Series,
     industry_map: dict[str, str],
     method: str = "industry",
+    market_cap_data: dict | None = None,
 ) -> pd.Series:
     """
     截面 OLS 中性化。
@@ -186,6 +187,7 @@ def neutralize_factor(
         industry_map: {instrument: industry_name}
         method: "industry" (行业回归), "market_cap" (log市值回归),
                 "industry+market_cap" (行业+市值联合回归)
+        market_cap_data: 可选预加载市值 {code: {date: mcap}}，避免每个因子重复打 Baostock
     返回:
         同 index 的中性化 Series
     """
@@ -196,18 +198,19 @@ def neutralize_factor(
     if factor_values.index.names[0] is None:
         factor_values.index.names = ["instrument", "datetime"]
 
-    # 如果需要市值中性化，加载市值数据
-    market_cap_data = None
+    # 如果需要市值中性化，优先用调用方预加载的数据
     if "market_cap" in method:
-        dates = factor_values.index.get_level_values("datetime").unique()
-        instruments = factor_values.index.get_level_values("instrument").unique().tolist()
-        start = str(dates.min())[:10]
-        end = str(dates.max())[:10]
-        market_cap_data = _load_market_cap(instruments, start, end)
+        if market_cap_data is None:
+            dates = factor_values.index.get_level_values("datetime").unique()
+            instruments = factor_values.index.get_level_values("instrument").unique().tolist()
+            start = str(dates.min())[:10]
+            end = str(dates.max())[:10]
+            market_cap_data = _load_market_cap(instruments, start, end)
         if not market_cap_data:
             logger.warning("市值数据不可用，回退为行业中性化")
             if method == "market_cap":
                 return factor_values  # 无法中性化
+            method = "industry"
 
     dates = factor_values.index.get_level_values("datetime").unique()
     neutralized_parts = []

@@ -248,7 +248,7 @@ def _run_factor_analysis(params: FactorAnalysisRequest, progress_cb: ProgressCal
         for code in stock_codes:
             try:
                 prices = raw_df.xs(code, level="instrument")["$close"].sort_index()
-                ret = prices.pct_change(pred_period).shift(-pred_period)
+                ret = prices.pct_change(pred_period, fill_method=None).shift(-pred_period)
                 for dt, val in ret.items():
                     if not np.isnan(val):
                         future_returns[(code, dt)] = val
@@ -260,13 +260,53 @@ def _run_factor_analysis(params: FactorAnalysisRequest, progress_cb: ProgressCal
         label_dates = sorted(fr_series.index.get_level_values("datetime").unique()) if not fr_series.empty else []
         label_available_until = str(label_dates[-1])[:10] if label_dates else None
 
-        # ── 5. 加载行业映射（始终加载，用于行业加权 IC 分解）──
+        # ── 5. 加载行业映射；评估中性化是否真的可做（避免 158 次无效重试）──
         _emit_progress(progress_cb, 68, "加载行业映射")
         all_codes = df_features.index.get_level_values("instrument").unique().tolist()
         industry_map = load_industry_mapping(all_codes)
-        if params.neutralize == "industry":
-            valid_count = sum(1 for v in industry_map.values() if v != "未知")
-            logger.info(f"启用行业中性化，行业映射: {valid_count}/{len(industry_map)} 只有效行业")
+        valid_ind_count = sum(1 for v in industry_map.values() if v and v != "未知")
+        quality_warnings: list[str] = []
+
+        neutralize_method = params.neutralize if params.neutralize and params.neutralize != "none" else None
+        market_cap_data = None
+        if neutralize_method:
+            needs_industry = neutralize_method in ("industry", "industry+market_cap")
+            needs_mcap = "market_cap" in neutralize_method
+            if needs_industry and valid_ind_count < 10:
+                quality_warnings.append(
+                    f"行业映射有效仅 {valid_ind_count}/{len(industry_map)}，行业中性化已跳过"
+                )
+                if neutralize_method == "industry":
+                    neutralize_method = None
+                elif neutralize_method == "industry+market_cap":
+                    neutralize_method = "market_cap"
+            if neutralize_method and needs_mcap:
+                # 市值只加载一次；逐因子调用 Baostock 会把 70% 卡死数小时
+                _emit_progress(progress_cb, 69, "预加载市值（仅一次）")
+                from core.factor_utils import _load_market_cap
+                dates_all = df_features.index.get_level_values("datetime").unique()
+                market_cap_data = _load_market_cap(
+                    all_codes,
+                    str(dates_all.min())[:10],
+                    str(dates_all.max())[:10],
+                )
+                if not market_cap_data:
+                    quality_warnings.append("市值数据不可用，市值中性化已跳过")
+                    if neutralize_method == "market_cap":
+                        neutralize_method = None
+                    elif neutralize_method == "industry+market_cap":
+                        neutralize_method = "industry" if valid_ind_count >= 10 else None
+            if neutralize_method:
+                logger.info(
+                    f"启用中性化 method={neutralize_method}, "
+                    f"行业有效={valid_ind_count}, 市值股票={len(market_cap_data or {})}"
+                )
+            else:
+                logger.warning("中性化请求已全部跳过（数据不足），按原始因子计算 IC")
+
+        do_industry_contrib = valid_ind_count >= 15
+        if not do_industry_contrib:
+            quality_warnings.append("行业映射不足，已跳过行业 IC 分解（加速）")
 
         # ── 6. 计算每个因子的 Spearman Rank IC ──
         from scipy.stats import spearmanr
@@ -279,49 +319,65 @@ def _run_factor_analysis(params: FactorAnalysisRequest, progress_cb: ProgressCal
         # 计算全部158个因子IC/ICIR,仅前端返回时截断top_k
         for idx, feat_name in enumerate(feature_names):
             try:
-                # 真实进度 70→94，按因子推进
-                if idx == 0 or (idx + 1) % 10 == 0 or idx + 1 == n_features:
-                    pct = 70 + int(24 * (idx + 1) / n_features)
+                # 每个因子都推进进度，避免长时间停在 70%
+                pct = 70 + int(24 * (idx + 1) / n_features)
+                if idx == 0 or (idx + 1) % 2 == 0 or idx + 1 == n_features:
                     _emit_progress(progress_cb, pct, f"计算因子 IC {idx + 1}/{n_features}")
 
                 feat_col = df_features[feat_name] if feat_name in df_features.columns else df_features.iloc[:, feature_names.index(feat_name)]
 
-                # ── 可选中性化 ──
+                # ── 可选中性化（市值已预加载）──
                 feat_for_ic = feat_col
-                neutralized = False
-                if params.neutralize and params.neutralize != "none" and industry_map:
-                    logger.debug(f"中性化因子 {feat_name}: {params.neutralize}")
-                    feat_for_ic = neutralize_factor(feat_col, industry_map, method=params.neutralize)
-                    neutralized = True
+                if neutralize_method:
+                    feat_for_ic = neutralize_factor(
+                        feat_col,
+                        industry_map,
+                        method=neutralize_method,
+                        market_cap_data=market_cap_data,
+                    )
 
-                # 按日期计算 daily IC
+                # 按日期计算 daily IC（对齐后 groupby，避免双层 xs 过慢）
                 daily_ics = []
-                test_dates = df_features.index.get_level_values("datetime").unique()
-
-                for dt in test_dates:
-                    try:
-                        fv = feat_for_ic.xs(dt, level="datetime").dropna()
-                        fr = fr_series.xs(dt, level="datetime").dropna()
-                        common = fv.index.intersection(fr.index)
-
-                        if len(common) < 15:
+                try:
+                    common_idx = feat_for_ic.index.intersection(fr_series.index)
+                    if len(common_idx) >= 15:
+                        aligned = pd.DataFrame({
+                            "f": feat_for_ic.loc[common_idx].astype(float),
+                            "r": fr_series.loc[common_idx].astype(float),
+                        }).replace([np.inf, -np.inf], np.nan).dropna()
+                        if not aligned.empty:
+                            for _, g in aligned.groupby(level="datetime"):
+                                if len(g) < 15:
+                                    continue
+                                fv_vals = g["f"].values
+                                fr_vals = g["r"].values
+                                if len(fv_vals) < 15:
+                                    continue
+                                ic, _ = spearmanr(fv_vals, fr_vals)
+                                if not np.isnan(ic):
+                                    daily_ics.append(float(ic))
+                except Exception as e:
+                    logger.debug(f"因子 {feat_name} 批量 IC 失败，回退逐日: {e}")
+                    test_dates = df_features.index.get_level_values("datetime").unique()
+                    for dt in test_dates:
+                        try:
+                            fv = feat_for_ic.xs(dt, level="datetime").dropna()
+                            fr = fr_series.xs(dt, level="datetime").dropna()
+                            common = fv.index.intersection(fr.index)
+                            if len(common) < 15:
+                                continue
+                            fv_vals = fv[common].values
+                            fr_vals = fr[common].values
+                            valid = np.isfinite(fv_vals) & np.isfinite(fr_vals)
+                            fv_vals = fv_vals[valid]
+                            fr_vals = fr_vals[valid]
+                            if len(fv_vals) < 15:
+                                continue
+                            ic, _ = spearmanr(fv_vals, fr_vals)
+                            if not np.isnan(ic):
+                                daily_ics.append(ic)
+                        except Exception:
                             continue
-
-                        fv_vals = fv[common].values
-                        fr_vals = fr[common].values
-
-                        valid = np.isfinite(fv_vals) & np.isfinite(fr_vals)
-                        fv_vals = fv_vals[valid]
-                        fr_vals = fr_vals[valid]
-
-                        if len(fv_vals) < 15:
-                            continue
-
-                        ic, _ = spearmanr(fv_vals, fr_vals)
-                        if not np.isnan(ic):
-                            daily_ics.append(ic)
-                    except Exception:
-                        continue
 
                 if daily_ics:
                     all_daily_ics[feat_name] = daily_ics  # 保存用于聚类
@@ -332,11 +388,13 @@ def _run_factor_analysis(params: FactorAnalysisRequest, progress_cb: ProgressCal
                     # ── 增强 IC 统计 ──
                     enhanced = compute_enhanced_ic_stats(daily_ics)
 
-                    # ── 行业加权 IC（始终计算，用原始因子值评估行业集中度）──
-                    ind_contrib = compute_industry_weighted_ic(
-                        feat_col if params.neutralize != "industry" else feat_for_ic,
-                        fr_series, industry_map
-                    )
+                    # ── 行业加权 IC（仅在有有效行业时计算）──
+                    ind_contrib = None
+                    if do_industry_contrib:
+                        ind_contrib = compute_industry_weighted_ic(
+                            feat_col if neutralize_method != "industry" else feat_for_ic,
+                            fr_series, industry_map
+                        )
 
                     factors_ics.append(FactorIC(
                         factor=feat_name,
@@ -381,8 +439,10 @@ def _run_factor_analysis(params: FactorAnalysisRequest, progress_cb: ProgressCal
                 "positive_factors": sum(1 for f in factors_ics if f.ic > 0),
                 "negative_factors": sum(1 for f in factors_ics if f.ic < 0),
                 "best_factor": factors_ics[0].factor if factors_ics else None,
-                "neutralized": bool(params.neutralize and params.neutralize != "none"),
-                "neutralize_method": params.neutralize if params.neutralize != "none" else None,
+                "neutralized": bool(neutralize_method),
+                "neutralize_method": neutralize_method,
+                "neutralize_requested": params.neutralize if params.neutralize and params.neutralize != "none" else None,
+                "quality_warnings": quality_warnings,
                 "effective_factors": cluster_result["n_effective"],
                 "factor_reduction_pct": cluster_result["reduction_pct"],
                 "clusters": cluster_result["clusters"],
